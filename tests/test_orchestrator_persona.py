@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from tests.common import ROOT  # noqa: F401  # ensures SourceCode on sys.path
+from orchestrator.main import FoxforgeOrchestrator
+
+
+class OrchestratorPersonaTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.orch = FoxforgeOrchestrator.__new__(FoxforgeOrchestrator)
+        self.orch.repo_root = Path(ROOT)
+        self.orch.manifesto_path = self.orch.repo_root / "Runtime" / "config" / "foxforge_manifesto.md"
+        self.orch._manifesto_cache_mtime = -1.0
+        self.orch._manifesto_cache_text = ""
+
+    def test_strip_alias_prefix_for_vocative_address(self) -> None:
+        text = self.orch._strip_foxforge_vocative_prefix("Guidey, add a reminder for tomorrow")
+        self.assertEqual(text, "add a reminder for tomorrow")
+
+    def test_does_not_strip_when_alias_is_subject(self) -> None:
+        text = self.orch._strip_foxforge_vocative_prefix("Foxforge is helping my workflow")
+        self.assertEqual(text, "Foxforge is helping my workflow")
+
+    def test_detects_self_query_with_alias(self) -> None:
+        self.assertTrue(self.orch._is_foxforge_self_query("Foxforge, what is your tech stack?"))
+        self.assertTrue(self.orch._is_foxforge_self_query("GB who are you?"))
+        self.assertFalse(self.orch._is_foxforge_self_query("Foxforge set a task for tomorrow"))
+
+    def test_identity_reply_contains_alias_and_origin(self) -> None:
+        reply = self.orch._foxforge_identity_reply().lower()
+        self.assertIn("foxforge", reply)
+        self.assertIn("guide fierri", reply)
+        self.assertIn("origin story", reply)
+        self.assertIn("seth canfield", reply)
+        self.assertIn("elma", reply)
+
+    def test_persona_block_includes_manifesto_principles(self) -> None:
+        persona = self.orch._foxforge_persona_block().lower()
+        self.assertIn("you are foxforge", persona)
+        if self.orch.manifesto_path.exists():
+            self.assertIn("foxforge manifesto principles", persona)
+
+
+if __name__ == "__main__":
+    unittest.main()

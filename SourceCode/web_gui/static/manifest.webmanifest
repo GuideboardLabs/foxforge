@@ -1,0 +1,20 @@
+{
+  "name": "Foxforge",
+  "short_name": "Foxforge",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f1722",
+  "theme_color": "#0f1722",
+  "description": "Foxforge family dashboard and chat workspace.",
+  "icons": [
+    {
+      "src": "/static/branding/logo.png",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/branding/GuideBoard.png",
+      "type": "image/png"
+    }
+  ]
+}

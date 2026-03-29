@@ -1,0 +1,159 @@
+"""Recency sensitivity and text signal detection utilities."""
+
+from __future__ import annotations
+
+import re
+
+RECENCY_TERMS: frozenset[str] = frozenset([
+    "latest", "current", "recent", "recently", "today", "right now",
+    "as of", "this week", "this month", "this year", "now",
+    "news", "what's new", "whats new", "new in", "what happened",
+    "just released", "just announced", "breaking", "nowadays",
+    "these days", "currently", "live", "real-time", "realtime",
+    "update", "updates", "trend", "trending",
+    # sports / event recency signals
+    "next fight", "fight card", "fight night", "this weekend",
+    "main event", "next event", "upcoming event", "upcoming fight",
+    "ppv", "next ppv", "card", "on the card", "fight week",
+    "next match", "upcoming match", "next game", "next bout",
+])
+
+_WEB_OFFER_MARKER_PATTERNS: tuple[str, ...] = (
+    r"\blatest\b",
+    r"\bcurrent\b",
+    r"\brecent\b",
+    r"\btoday\b",
+    r"\bthis week\b",
+    r"\bthis month\b",
+    r"\bnews\b",
+    r"\bwhat'?s new\b",
+    r"\bnew in\b",
+    r"\bwhat happened\b",
+    r"\bupdate(?:s)?\b",
+    r"\breddit\b",
+    r"\b(?:x|twitter)\b",
+    r"\bsource(?:s)?\b",
+    r"\bcitation(?:s)?\b",
+    r"\blink(?:s)?\b",
+    r"\bcrawl\b",
+    r"\bscrape\b",
+    r"\bweb\b",
+    r"\bfact check\b",
+    r"\btrend(?:ing|s)?\b",
+    r"\bright now\b",
+    r"\bas of\b",
+    r"\bnowadays\b",
+    r"\bthese days\b",
+    r"\bjust released\b",
+    r"\bjust announced\b",
+    r"\bbreaking\b",
+    r"\bthis year\b",
+    r"\bcurrently\b",
+    r"\blive\b",
+    r"https?://",
+)
+
+
+_EVOLVING_TOPIC_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "Who is/runs/leads/owns the ..." — positional roles that change
+    re.compile(r"\bwho\s+(?:is|are|was|runs?|leads?|owns?|heads?|manages?)\s+(?:the\s+)?", re.I),
+    # "Who is the X of Y" — CEO of Tesla, president of France
+    re.compile(r"\bwho\s+is\s+(?:the\s+)?\w+\s+of\b", re.I),
+    # "What's the [metric]" — unemployment, inflation, price, rate, GDP, population
+    re.compile(
+        r"\bwhat(?:'s| is| are)\s+(?:the\s+)?(?:current\s+)?"
+        r"(?:unemployment|inflation|interest|gdp|population|price|cost|rate|salary|wage|minimum wage"
+        r"|gas price|stock price|market cap|net worth|cap rate|mortgage)",
+        re.I,
+    ),
+    # "How much does/is X" — prices, costs, salaries
+    re.compile(r"\bhow much\s+(?:does|is|are|do)\b", re.I),
+    # "Is X still [state]" / "Does X still [verb]" — checking if something changed
+    re.compile(r"\bis\s+\w+\s+still\b", re.I),
+    re.compile(r"\bdoes\s+\w+\s+still\b", re.I),
+    # Champion / winner / MVP / record holder — titles that rotate
+    re.compile(r"\b(?:champion|winner|mvp|record holder|number one|world record|ballon d.or|heisman)\b", re.I),
+    # Standings, rankings, leaderboard — inherently time-varying
+    re.compile(r"\b(?:standings|rankings?|leaderboard|playoff|seed(?:ing)?|bracket)\b", re.I),
+    # Political / leadership office holders
+    re.compile(r"\b(?:president|prime minister|chancellor|governor|mayor|ceo|cfo|cto|chairman|secretary of)\b", re.I),
+    # "When is the next [event]"
+    re.compile(r"\bwhen\s+is\s+(?:the\s+)?next\b", re.I),
+    # Software versioning
+    re.compile(r"\b(?:latest|newest|current)\s+version\s+of\b", re.I),
+    re.compile(r"\bwhat\s+version\s+(?:is|of)\b", re.I),
+    # Availability / legality — policies change
+    re.compile(r"\bis\s+\w+\s+(?:legal|illegal|banned|available|approved)\s+in\b", re.I),
+)
+
+
+def is_evolving_topic(text: str) -> bool:
+    """Return True if the query concerns a topic whose answer changes over time,
+    even though the user didn't use explicit recency keywords."""
+    low = str(text or "").strip()
+    if not low:
+        return False
+    # Don't double-fire if already caught by recency terms
+    if is_recency_sensitive(low):
+        return False
+    return any(pat.search(low) for pat in _EVOLVING_TOPIC_PATTERNS)
+
+
+def is_recency_sensitive(text: str) -> bool:
+    """Return True if the query explicitly asks for current or live information."""
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    for term in RECENCY_TERMS:
+        pattern = rf"\b{re.escape(term)}\b"
+        if re.search(pattern, low, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def is_recency_sensitive_from_history(prior_messages: list, lookback: int = 4) -> bool:
+    """Return True if recent assistant messages established a recency/training-data framing."""
+    for msg in reversed(prior_messages[-lookback:]):
+        if str(msg.get("role", "")).strip().lower() != "assistant":
+            continue
+        content = str(msg.get("content", "")).strip().lower()
+        if any(phrase in content for phrase in [
+            "as of ", "last i knew", "my training", "training data",
+            "may have changed", "may be outdated", "want me to search",
+            "want me to forage", "live search", "live forage",
+        ]):
+            return True
+    return False
+
+
+def extract_rejected_tool(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    patterns = (
+        r"\b(?:don[' ]?t|do not|dont)\s+want\s+(?:to\s+)?(?:use|work with|via)\s+([a-zA-Z0-9._\- ]{2,40})\b",
+        r"\b(?:not using|no)\s+([a-zA-Z0-9._\- ]{2,40})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = str(match.group(1) or "").strip(" .,!?:;\"'")
+        if candidate:
+            return candidate[:40]
+    return ""
+
+
+def should_offer_web(text: str, lane: str) -> bool:
+    """Return True if web research should be offered for this query and lane."""
+    lane_key = lane.strip().lower()
+    if lane_key == "research":
+        return True
+    if lane_key != "project":
+        return False
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    if any(re.search(pattern, low, flags=re.IGNORECASE) for pattern in _WEB_OFFER_MARKER_PATTERNS):
+        return True
+    return is_evolving_topic(text)

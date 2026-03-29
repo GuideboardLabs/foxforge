@@ -1,0 +1,75 @@
+Guideboard Service-Only License 1.0 (GSOL-1.0)
+
+Copyright (c) 2026 Guideboard contributors
+
+This is a source-available license. It is not an OSI open source license.
+
+1. Definitions
+
+"Software" means this repository and its files.
+
+"Sell the Software Product" means to charge a fee or other consideration
+primarily for a copy, license, transfer, access, or use of the Software
+itself (including rebranded versions, packaged distributions, or hosted
+offerings where the Software's functionality is the primary paid value).
+
+"Service Offering" means work performed for others, such as consulting,
+integration, customization, training, support, or operations assistance.
+
+2. License Grant
+
+Subject to the terms below, you are granted a worldwide, non-exclusive,
+royalty-free license to use, copy, modify, and redistribute the Software.
+
+3. Commercial Rule (Service Allowed, Product Sale Prohibited)
+
+You may charge for Service Offerings related to the Software.
+
+You may not Sell the Software Product.
+
+You may not charge a license fee, subscription fee, access fee, or resale fee
+for the Software itself.
+
+You may recover reasonable pass-through distribution costs (for example,
+physical media or transfer costs) only if no fee is charged for the Software
+license or Software access itself.
+
+4. Redistribution Conditions
+
+If you redistribute the Software (modified or unmodified), you must:
+
+- include this LICENSE file and all existing copyright notices
+- state that the Software is licensed under "Guideboard Service-Only License 1.0"
+- clearly mark modified files and the date of modification
+- preserve third-party notices and licenses for third-party components
+
+5. No Trademark License
+
+This license does not grant rights to use names, logos, or trademarks of the
+copyright holders, except for accurate attribution.
+
+6. Third-Party Components
+
+Third-party components included with or required by the Software are licensed
+under their own terms. You are responsible for complying with those terms.
+
+7. Termination
+
+Any use not allowed by this license automatically terminates your rights under
+this license. Rights may be reinstated if the violation is cured within
+30 days of written notice from a copyright holder.
+
+8. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
+OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+9. Earlier Releases
+
+Any versions already distributed under prior licenses remain available under
+those earlier terms for those specific copies.

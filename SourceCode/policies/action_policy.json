@@ -1,0 +1,17 @@
+﻿{
+  "system_name": "Foxforge",
+  "content_filtering": false,
+  "approval_required_for": [
+    "sending messages",
+    "calendar booking/cancellation",
+    "purchases/payments",
+    "data deletion",
+    "external submissions"
+  ],
+  "default_mode": "draft_then_confirm",
+  "personal_data_rules": {
+    "separate_personal_memory": true,
+    "store_path": "Runtime/memory/personal",
+    "least_privilege_connectors": true
+  }
+}

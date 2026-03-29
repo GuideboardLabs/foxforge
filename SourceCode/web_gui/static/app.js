@@ -1,0 +1,9869 @@
+const FILE_PATH_REGEX = /([A-Za-z]:(?:\\|\/)[^\r\n"'<>|?*]+?\.[A-Za-z0-9]{1,12}|\/(?:[\w.\-]+\/){2,}[\w.\-]+\.[A-Za-z0-9]{1,12})/g;
+
+const COMPOSER_PLACEHOLDERS = {
+  talk: [
+    "Talk with Foxforge...",
+    "What's on your mind?",
+    "Ask anything...",
+    "Start a conversation...",
+    "What are you thinking about?",
+  ],
+  forage: [
+    "Discovery request...",
+    "What should I research?",
+    "Search and synthesize...",
+    "Dig into a topic...",
+  ],
+  make: [
+    "Make request...",
+    "What should I build?",
+    "Describe what you need...",
+    "Create something...",
+  ],
+};
+const HTTP_URL_REGEX = /https?:\/\/[^\s<>"'`]+/gi;
+const MARKDOWN_LINK_URL_REGEX = /\[[^\]]*]\((https?:\/\/[^\s)]+)\)/gi;
+const SOURCE_SECTION_HEADING_REGEX = /^\s{0,3}(?:#{1,6}\s*)?(?:sources?|references?|citations?)\s*:?\s*$/i;
+const SOURCE_LINE_REGEX = /^\s*(?:[-*]|\d+[.)])\s+.+$/;
+const ASSISTANT_HTML_CACHE = new WeakMap();
+const ASSISTANT_SOURCE_STACK_CACHE = new WeakMap();
+const FONT_CONFIG_API_URL = "/api/settings/fonts";
+const FONT_CONFIG_URL = "/static/fonts/font-config.json";
+
+const REFLECTION_HINT_REGEX = /self-reflection check\s*\(([a-z0-9]{6,})\)/gi;
+const REFLECT_COMMAND_REGEX = /\/reflect-answer\s+([a-z0-9]{6,})\b/gi;
+const PENDING_CREATED_REGEX = /pending action created:\s*(web_[a-z0-9]+)\b/gi;
+const PENDING_COMMAND_REGEX = /\/action-(?:answer|ignore)\s+(web_[a-z0-9]+)\b/gi;
+const FORAGE_HINT_REGEX = /\[FORAGE:\s*"([^"]+)"\]/gi;
+const ADD_TASK_REGEX     = /\[ADD_TASK:\s*"([^"]+)"(?:[^\]]*due="([^"]*)")?\]/gi;
+const ADD_EVENT_REGEX    = /\[ADD_EVENT:\s*"([^"]+)"(?:[^\]]*date="([^"]*)")?(?:[^\]]*time="([^"]*)")?\]/gi;
+const ADD_SHOPPING_REGEX = /\[ADD_SHOPPING:\s*"([^"]+)"\]/gi;
+const ADD_ROUTINE_REGEX  = /\[ADD_ROUTINE:\s*"([^"]+)"(?:[^\]]*schedule="([^"]*)")?(?:[^\]]*weekday="([^"]*)")?(?:[^\]]*day="([^"]*)")?(?:[^\]]*time="([^"]*)")?(?:[^\]]*until="([^"]*)")?\]/gi;
+const PLANNER_PET_RELATION_OPTIONS = [
+  { value: "cat", label: "Cat" },
+  { value: "dog", label: "Dog" },
+  { value: "fish", label: "Fish" },
+  { value: "snake", label: "Snake" },
+  { value: "hamster_rodent", label: "Hamster / Rodent" },
+  { value: "turtle", label: "Turtle" },
+];
+const PLANNER_PERSON_RELATION_OPTIONS = [
+  { value: "son", label: "Son" },
+  { value: "daughter", label: "Daughter" },
+  { value: "wife", label: "Wife" },
+  { value: "husband", label: "Husband" },
+  { value: "nephew", label: "Nephew" },
+  { value: "niece", label: "Niece" },
+  { value: "uncle", label: "Uncle" },
+  { value: "aunt", label: "Aunt" },
+  { value: "sister", label: "Sister" },
+  { value: "brother", label: "Brother" },
+  { value: "friend", label: "Friend" },
+];
+const PLANNER_MEMBER_ROLE_OPTIONS = [
+  { value: "owner", label: "Owner" },
+  { value: "adult", label: "Adult" },
+  { value: "child", label: "Child" },
+];
+const PLANNER_CONTACT_DETAIL_KEYS = [
+  "nickname",
+  "birthday",
+  "age",
+  "age_is_estimate",
+  "gender",
+  "school_or_work",
+  "likes",
+  "dislikes",
+  "important_dates",
+  "medical_notes",
+  "email",
+  "phone",
+  "notes",
+];
+const PROJECT_PIPELINE_MODES = [
+  { value: "discovery", label: "Discovery" },
+  { value: "make", label: "Make" },
+];
+const TOPIC_TYPES = [
+  { value: "sports",         label: "Sports" },
+  { value: "technical",      label: "Technical" },
+  { value: "medical",        label: "Medical" },
+  { value: "animal_care",    label: "Animal Care" },
+  { value: "finance",        label: "Finance" },
+  { value: "history",        label: "History" },
+  { value: "general",        label: "General" },
+  { value: "science",        label: "Science" },
+  { value: "math",           label: "Math" },
+  { value: "politics",       label: "Politics" },
+  { value: "current_events", label: "Current Events" },
+  { value: "underground",    label: "Underground (Uncensored)" },
+  { value: "business",       label: "Business" },
+  { value: "law",            label: "Law" },
+  { value: "education",      label: "Education" },
+  { value: "travel",         label: "Travel" },
+  { value: "food",           label: "Food" },
+  { value: "gaming",         label: "Gaming" },
+  { value: "books",          label: "Books" },
+  { value: "real_estate",    label: "Real Estate" },
+  { value: "automotive",     label: "Automotive" },
+  { value: "parenting",      label: "Parenting" },
+  { value: "tv_shows",       label: "TV Shows" },
+  { value: "movies",         label: "Movies" },
+  { value: "music",          label: "Music" },
+  { value: "art",            label: "Art" },
+];
+const LIFE_ADMIN_PROFILE_DETAIL_FIELDS = [
+  ["full_name", "Full name"],
+  ["gender", "Gender"],
+  ["birthday", "Birthday"],
+  ["location", "Location"],
+  ["work", "Work"],
+  ["likes", "Likes"],
+  ["dislikes", "Dislikes"],
+  ["notes", "Notes"],
+];
+const LIFE_ADMIN_FAMILY_DETAIL_FIELDS = [
+  ["nickname", "Nickname"],
+  ["age", "Age"],
+  ["birthday", "Birthday"],
+  ["gender", "Gender"],
+  ["school_or_work", "School / Work"],
+  ["likes", "Likes"],
+  ["dislikes", "Dislikes"],
+  ["important_dates", "Important dates"],
+  ["medical_notes", "Medical notes"],
+];
+const LIFE_ADMIN_PET_DETAIL_FIELDS = [
+  ["breed", "Breed"],
+  ["sex", "Sex"],
+  ["age", "Age"],
+  ["birthday", "Birthday"],
+  ["weight", "Weight"],
+  ["food", "Food"],
+  ["medications", "Medications"],
+  ["vet", "Vet"],
+  ["microchip", "Microchip"],
+  ["behavior_notes", "Behavior"],
+];
+const LIFE_ADMIN_REMINDER_DETAIL_FIELDS = [
+  ["person", "Person"],
+  ["start_date", "Start"],
+  ["end_date", "End"],
+  ["location", "Location"],
+  ["channel", "Channel"],
+  ["priority", "Priority"],
+];
+const MAKE_TARGETS = [
+  { value: "auto",         label: "Auto" },
+  { value: "essay",        label: "Essay" },
+  { value: "brief",        label: "Brief" },
+  { value: "app",          label: "App" },
+  { value: "product",      label: "Product" },
+  { value: "gap_analysis", label: "Gap Analysis" },
+  { value: "novel",        label: "Novel" },
+  { value: "report",       label: "Report" },
+  { value: "tool",         label: "Tool / Script" },
+];
+const PLANNER_MONTH_VIEW_PAST_OFFSET = -2;
+const PLANNER_MONTH_VIEW_FUTURE_OFFSET = 12;
+const HOME_COMPANION_DEFAULT_NAME = "Scout";
+const HOME_PHRASE_WINDOWS = [
+  { key: "night", startHour: 0, endHour: 4 },
+  { key: "morning", startHour: 5, endHour: 11 },
+  { key: "afternoon", startHour: 12, endHour: 16 },
+  { key: "evening", startHour: 17, endHour: 21 },
+  { key: "night", startHour: 22, endHour: 23 },
+];
+const WEATHER_CODE_LABELS = {
+  0: "Clear",
+  1: "Mostly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Freezing fog",
+  51: "Light drizzle",
+  53: "Drizzle",
+  55: "Dense drizzle",
+  56: "Light freezing drizzle",
+  57: "Freezing drizzle",
+  61: "Light rain",
+  63: "Rain",
+  65: "Heavy rain",
+  66: "Light freezing rain",
+  67: "Freezing rain",
+  71: "Light snow",
+  73: "Snow",
+  75: "Heavy snow",
+  77: "Snow grains",
+  80: "Light showers",
+  81: "Showers",
+  82: "Heavy showers",
+  85: "Light snow showers",
+  86: "Heavy snow showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with hail",
+  99: "Severe thunderstorm with hail",
+};
+const HOME_COMPANION_SKETCHES = [
+  {
+    id: "sit",
+    lines: [
+      "M32 206 C58 192 90 190 120 196 C152 202 182 201 210 190",
+      "M74 161 C66 126 78 98 104 88 C133 76 165 88 176 118 C184 140 184 163 171 177 C155 193 131 198 108 193 C90 189 78 178 74 161",
+      "M96 84 C85 70 86 50 99 37 C114 23 136 23 151 36 C167 49 169 72 157 87",
+      "M97 49 L82 31",
+      "M153 47 L172 33",
+      "M112 72 C120 79 130 79 138 72",
+      "M116 93 C122 99 130 99 136 93",
+      "M83 147 C73 156 68 173 74 189",
+      "M163 152 C176 164 179 181 169 196",
+      "M103 186 C96 198 95 210 102 220",
+      "M145 187 C152 199 153 212 148 222",
+      "M122 108 C124 111 127 111 130 108",
+      "M111 117 C115 121 120 123 126 123 C132 123 137 121 141 117",
+    ],
+  },
+  {
+    id: "alert",
+    lines: [
+      "M28 206 C56 194 96 193 126 198 C157 203 186 203 214 192",
+      "M68 164 C60 134 67 109 87 96 C106 83 132 84 149 95 C168 108 179 130 176 155 C173 182 151 200 123 201 C95 202 75 189 68 164",
+      "M72 93 C60 82 57 64 64 50 C72 35 88 28 104 32 C117 35 128 44 132 56",
+      "M131 59 C139 44 151 34 168 33 C183 33 197 42 202 57 C206 70 203 83 193 94",
+      "M80 111 C95 103 108 103 121 112",
+      "M119 97 C124 102 130 104 137 104 C144 104 150 102 156 97",
+      "M91 150 C78 158 71 173 74 188",
+      "M160 154 C173 164 179 180 171 195",
+      "M106 189 C102 202 104 215 112 224",
+      "M143 190 C147 203 146 215 140 224",
+      "M109 121 C112 124 115 124 118 121",
+      "M95 129 C102 136 111 139 121 139 C131 139 140 136 147 129",
+    ],
+  },
+  {
+    id: "rest",
+    lines: [
+      "M36 205 C63 196 90 194 118 198 C148 202 180 201 208 191",
+      "M72 168 C67 146 73 123 89 109 C106 94 129 90 149 99 C171 108 183 129 181 151 C179 173 163 191 141 197 C116 204 87 197 72 168",
+      "M90 106 C80 96 76 81 80 67 C84 52 97 40 112 37 C127 35 141 42 149 54",
+      "M149 58 C156 45 169 37 184 38 C198 39 210 49 214 63 C218 77 213 91 202 100",
+      "M98 120 C108 125 120 126 131 122",
+      "M118 112 C121 115 124 115 127 112",
+      "M95 151 C109 163 128 165 143 156",
+      "M84 176 C77 188 77 203 86 214",
+      "M152 176 C161 188 163 204 156 217",
+      "M167 130 C176 126 185 129 192 136",
+      "M170 118 C178 114 186 115 193 121",
+    ],
+  },
+];
+
+function escapeHtml(unsafe) {
+  const div = document.createElement("div");
+  div.textContent = String(unsafe || "");
+  return div.innerHTML;
+}
+
+function normalizeProjectSlug(raw) {
+  const text = String(raw || "").trim();
+  const cleaned = text.replace(/\s+/g, "_").toLowerCase();
+  return cleaned || "general";
+}
+
+function normalizeTopicId(raw) {
+  return String(raw || "").trim() || "general";
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padded = `${String(base64String || "").trim()}${"=".repeat((4 - (String(base64String || "").trim().length % 4 || 4)) % 4)}`
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const raw = window.atob(padded);
+  const output = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index += 1) {
+    output[index] = raw.charCodeAt(index);
+  }
+  return output;
+}
+
+function isInstalledWebApp() {
+  try {
+    if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) {
+      return true;
+    }
+  } catch (_err) {}
+  return Boolean(window.navigator && window.navigator.standalone);
+}
+
+function isProbablyIosDevice() {
+  const ua = String(window.navigator?.userAgent || "");
+  const platform = String(window.navigator?.platform || "");
+  const maxTouchPoints = Number(window.navigator?.maxTouchPoints || 0);
+  return /iPad|iPhone|iPod/i.test(ua) || (platform === "MacIntel" && maxTouchPoints > 1);
+}
+
+function supportsWebPushClient() {
+  return Boolean(
+    window.isSecureContext &&
+      "Notification" in window &&
+      "serviceWorker" in navigator &&
+      "PushManager" in window
+  );
+}
+
+function cloneLifeAdminRecord(source, defaults) {
+  const base = typeof defaults === "function" ? defaults() : { ...(defaults || {}) };
+  for (const key of Object.keys(base)) {
+    base[key] = String(source && source[key] != null ? source[key] : "").trim();
+  }
+  return base;
+}
+
+function blankLifeAdminProfileForm() {
+  return {
+    preferred_name: "",
+    full_name: "",
+    gender: "",
+    birthday: "",
+    location: "",
+    work: "",
+    likes: "",
+    dislikes: "",
+    notes: "",
+  };
+}
+
+function blankLifeAdminFamilyForm() {
+  return {
+    name: "",
+    relationship: "",
+    notes: "",
+    nickname: "",
+    age: "",
+    birthday: "",
+    gender: "",
+    school_or_work: "",
+    likes: "",
+    dislikes: "",
+    important_dates: "",
+    medical_notes: "",
+  };
+}
+
+function blankLifeAdminPetForm() {
+  return {
+    name: "",
+    species: "",
+    notes: "",
+    breed: "",
+    sex: "",
+    age: "",
+    birthday: "",
+    weight: "",
+    food: "",
+    medications: "",
+    vet: "",
+    microchip: "",
+    behavior_notes: "",
+  };
+}
+
+function blankLifeAdminReminderForm() {
+  return {
+    label: "",
+    frequency: "",
+    time: "",
+    notes: "",
+    person: "",
+    start_date: "",
+    end_date: "",
+    location: "",
+    channel: "",
+    priority: "",
+  };
+}
+
+function blankWaypointContactDetails() {
+  return {
+    nickname: "",
+    birthday: "",
+    age: "",
+    age_is_estimate: false,
+    gender: "",
+    school_or_work: "",
+    likes: "",
+    dislikes: "",
+    important_dates: "",
+    medical_notes: "",
+    email: "",
+    phone: "",
+    notes: "",
+  };
+}
+
+function blankWaypointContactFormDefaults() {
+  return {
+    name: "",
+    kind: "person",
+    relationship: "friend",
+    location_name: "",
+    location_address: "",
+    ...blankWaypointContactDetails(),
+  };
+}
+
+function blankWaypointMemberFormDefaults() {
+  return {
+    name: "",
+    kind: "person",
+    relationship: "wife",
+    member_role: "adult",
+    create_login: false,
+    username: "",
+    pin: "",
+    color: "#4285f4",
+    location_name: "",
+    location_address: "",
+    ...blankWaypointContactDetails(),
+  };
+}
+
+function blankWaypointMemberEditorForm(color = "#4285f4") {
+  return {
+    id: "",
+    name: "",
+    kind: "person",
+    relationship: "wife",
+    member_role: "adult",
+    create_login: false,
+    profile_user_id: "",
+    username: "",
+    pin: "",
+    color,
+    location_name: "",
+    location_address: "",
+    ...blankWaypointContactDetails(),
+  };
+}
+
+function homePhraseWindowKey(rawDate) {
+  const d = rawDate instanceof Date ? rawDate : new Date(rawDate);
+  const hour = d.getHours();
+  for (const row of HOME_PHRASE_WINDOWS) {
+    if (hour >= row.startHour && hour <= row.endHour) {
+      return row.key;
+    }
+  }
+  return "day";
+}
+
+function formatInlineMarkdown(line) {
+  const raw = String(line || "");
+  const fileTokens = [];
+  FILE_PATH_REGEX.lastIndex = 0;
+  const tokenized = raw.replace(FILE_PATH_REGEX, (matchedPath) => {
+    const idx = fileTokens.push(matchedPath) - 1;
+    return `@@GB_FILE_${idx}@@`;
+  });
+
+  let html = escapeHtml(tokenized);
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/@@GB_FILE_(\d+)@@/g, (_match, idxText) => {
+    const idx = Number(idxText || -1);
+    const matchedPath = idx >= 0 && idx < fileTokens.length ? fileTokens[idx] : "";
+    if (!matchedPath) {
+      return "";
+    }
+    return `<button type="button" class="md-inline-link file-inline-link" data-file-path="${encodeURIComponent(matchedPath)}">${escapeHtml(
+      matchedPath
+    )}</button>`;
+  });
+  return html;
+}
+
+function markdownToHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let listMode = "";
+  let inCode = false;
+  const codeLines = [];
+
+  const closeList = () => {
+    if (listMode === "ul") {
+      html.push("</ul>");
+    } else if (listMode === "ol") {
+      html.push("</ol>");
+    }
+    listMode = "";
+  };
+
+  const openList = (nextMode) => {
+    const target = nextMode === "ol" ? "ol" : "ul";
+    if (listMode === target) {
+      return;
+    }
+    closeList();
+    html.push(target === "ol" ? "<ol>" : "<ul>");
+    listMode = target;
+  };
+
+  const flushCode = () => {
+    if (codeLines.length === 0) {
+      return;
+    }
+    closeList();
+    const block = escapeHtml(codeLines.join("\n"));
+    html.push(`<pre><code>${block}</code></pre>`);
+    codeLines.length = 0;
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        inCode = false;
+        flushCode();
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${formatInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      openList("ul");
+      html.push(`<li>${formatInlineMarkdown(bullet[1])}</li>`);
+      continue;
+    }
+
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (numbered) {
+      openList("ol");
+      html.push(`<li>${formatInlineMarkdown(numbered[1])}</li>`);
+      continue;
+    }
+
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      closeList();
+      html.push(`<blockquote>${formatInlineMarkdown(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    if (!line.trim()) {
+      closeList();
+      html.push('<div class="md-gap"></div>');
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${formatInlineMarkdown(line)}</p>`);
+  }
+
+  if (inCode) {
+    flushCode();
+  }
+  closeList();
+  return html.join("");
+}
+
+function normalizeDetectedUrl(rawUrl) {
+  let text = String(rawUrl || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.startsWith("<") && text.endsWith(">")) {
+    text = text.slice(1, -1).trim();
+  }
+  while (text && /[.,;!?]+$/.test(text)) {
+    text = text.slice(0, -1);
+  }
+  while (text.endsWith(")") && (text.match(/\(/g) || []).length < (text.match(/\)/g) || []).length) {
+    text = text.slice(0, -1);
+  }
+  return text.trim();
+}
+
+function sourceDomainFromUrl(rawUrl) {
+  const normalized = normalizeDetectedUrl(rawUrl);
+  if (!normalized) {
+    return "";
+  }
+  try {
+    const parsed = new URL(normalized);
+    const host = String(parsed.hostname || "").trim().toLowerCase();
+    return host.replace(/^www\./, "");
+  } catch (_err) {
+    return "";
+  }
+}
+
+function sourceIconUrlForDomain(domain) {
+  const safeDomain = String(domain || "").trim().toLowerCase();
+  if (!safeDomain) {
+    return "";
+  }
+  return `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(safeDomain)}`;
+}
+
+function collectSourceEntriesFromText(text) {
+  const raw = String(text || "");
+  const rows = [];
+  const seenDomains = new Set();
+  const pushSource = (rawUrl, rawDomain = "") => {
+    let domain = String(rawDomain || "").trim().toLowerCase();
+    domain = domain.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
+    const url = normalizeDetectedUrl(rawUrl);
+    if (!domain && url) {
+      domain = sourceDomainFromUrl(url);
+    }
+    if (!domain || seenDomains.has(domain)) {
+      return;
+    }
+    seenDomains.add(domain);
+    rows.push({
+      domain,
+      url: url || (domain ? `https://${domain}` : ""),
+      icon: sourceIconUrlForDomain(domain),
+      letter: domain.slice(0, 1).toUpperCase() || "?",
+    });
+  };
+
+  MARKDOWN_LINK_URL_REGEX.lastIndex = 0;
+  let mdMatch;
+  while ((mdMatch = MARKDOWN_LINK_URL_REGEX.exec(raw)) !== null) {
+    pushSource(mdMatch[1]);
+  }
+
+  HTTP_URL_REGEX.lastIndex = 0;
+  let urlMatch;
+  while ((urlMatch = HTTP_URL_REGEX.exec(raw)) !== null) {
+    pushSource(urlMatch[0]);
+  }
+
+  return rows;
+}
+
+function collectSourceEntries(contentText, metadataSources) {
+  const rows = [];
+  const seenDomains = new Set();
+  const pushSource = (rawUrl, rawDomain = "") => {
+    let domain = String(rawDomain || "").trim().toLowerCase();
+    domain = domain.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
+    const url = normalizeDetectedUrl(rawUrl);
+    if (!domain && url) {
+      domain = sourceDomainFromUrl(url);
+    }
+    if (!domain || seenDomains.has(domain)) {
+      return;
+    }
+    seenDomains.add(domain);
+    rows.push({
+      domain,
+      url: url || (domain ? `https://${domain}` : ""),
+      icon: sourceIconUrlForDomain(domain),
+      letter: domain.slice(0, 1).toUpperCase() || "?",
+    });
+  };
+
+  const meta = Array.isArray(metadataSources) ? metadataSources : [];
+  for (const row of meta) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+    pushSource(
+      row.url || row.source_url || row.link || "",
+      row.domain || row.source_domain || row.host || row.site || ""
+    );
+  }
+
+  const contentRows = collectSourceEntriesFromText(contentText);
+  for (const row of contentRows) {
+    pushSource(row?.url || "", row?.domain || "");
+  }
+  return rows;
+}
+
+function stripTrailingSourceSection(text) {
+  const raw = String(text || "");
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  if (!lines.length) {
+    return "";
+  }
+
+  let end = lines.length - 1;
+  while (end >= 0 && !String(lines[end] || "").trim()) {
+    end -= 1;
+  }
+  if (end < 0) {
+    return "";
+  }
+
+  let headingIndex = -1;
+  for (let i = end; i >= Math.max(0, end - 20); i -= 1) {
+    if (SOURCE_SECTION_HEADING_REGEX.test(String(lines[i] || "").trim())) {
+      headingIndex = i;
+      break;
+    }
+  }
+  if (headingIndex >= 0) {
+    let sourceLike = true;
+    for (let i = headingIndex + 1; i <= end; i += 1) {
+      const row = String(lines[i] || "").trim();
+      if (!row) {
+        continue;
+      }
+      const hasUrl = /https?:\/\/\S+/i.test(row);
+      const looksLikeSourceLine = hasUrl || SOURCE_LINE_REGEX.test(row) || /^source\s*[:\-]/i.test(row);
+      if (!looksLikeSourceLine) {
+        sourceLike = false;
+        break;
+      }
+    }
+    if (sourceLike) {
+      return lines.slice(0, headingIndex).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+  }
+
+  return raw.trim();
+}
+
+function collapseMarkdownLinksToLabels(text) {
+  return String(text || "").replace(/\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi, (_match, label, url) => {
+    const cleanLabel = String(label || "").trim();
+    const domain = sourceDomainFromUrl(url);
+    if (!cleanLabel || /^https?:\/\//i.test(cleanLabel)) {
+      return domain || cleanLabel || "source";
+    }
+    return cleanLabel;
+  });
+}
+
+function collapsePlainUrlsToDomains(text) {
+  return String(text || "").replace(/https?:\/\/[^\s<>"'`]+/gi, (url) => {
+    const domain = sourceDomainFromUrl(url);
+    return domain || "source";
+  });
+}
+
+function normalizeTalkDisplayMarkdown(text) {
+  const trimmed = stripTrailingSourceSection(String(text || ""));
+  const noMarkdownLinks = collapseMarkdownLinksToLabels(trimmed);
+  return collapsePlainUrlsToDomains(noMarkdownLinks).trim();
+}
+
+function startsWithEmoji(text) {
+  return /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(String(text || "").trim());
+}
+
+function decorateAssistantMarkdown(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  return lines
+    .map((line) => {
+      const heading = String(line || "").match(/^(#{1,6}\s+)(.*)$/);
+      if (heading) {
+        const level = Math.max(1, Math.min(6, String(heading[1] || "").trim().length));
+        const body = String(heading[2] || "").trim();
+        if (!body || startsWithEmoji(body)) {
+          return line;
+        }
+        if (level === 1) return `${heading[1]}\u2728 ${body}`;
+        if (level === 2) return `${heading[1]}\uD83D\uDD39 ${body}`;
+        if (level === 3) return `${heading[1]}\uD83D\uDCDD ${body}`;
+        return line;
+      }
+
+      const boldHeading = String(line || "").match(/^\s*\*\*([^*][^*]{1,80})\*\*\s*:?\s*$/);
+      if (boldHeading) {
+        const label = String(boldHeading[1] || "").trim();
+        if (!label) {
+          return line;
+        }
+        return `### ${startsWithEmoji(label) ? label : `\uD83D\uDCDD ${label}`}`;
+      }
+      return line;
+    })
+    .join("\n");
+}
+
+function stripTalkPrefix(text) {
+  const raw = String(text || "");
+  const low = raw.trim().toLowerCase();
+  if (low === "/talk") {
+    return "";
+  }
+  if (low.startsWith("/talk ")) {
+    return raw.trim().slice(6);
+  }
+  return raw;
+}
+
+function extractAssistantActionTargets(text) {
+  const raw = String(text || "");
+  const reflections = new Set();
+  const pending = new Set();
+  let match;
+
+  REFLECTION_HINT_REGEX.lastIndex = 0;
+  while ((match = REFLECTION_HINT_REGEX.exec(raw)) !== null) {
+    reflections.add(String(match[1] || "").trim().toLowerCase());
+  }
+
+  REFLECT_COMMAND_REGEX.lastIndex = 0;
+  while ((match = REFLECT_COMMAND_REGEX.exec(raw)) !== null) {
+    reflections.add(String(match[1] || "").trim().toLowerCase());
+  }
+
+  PENDING_CREATED_REGEX.lastIndex = 0;
+  while ((match = PENDING_CREATED_REGEX.exec(raw)) !== null) {
+    pending.add(String(match[1] || "").trim().toLowerCase());
+  }
+
+  PENDING_COMMAND_REGEX.lastIndex = 0;
+  while ((match = PENDING_COMMAND_REGEX.exec(raw)) !== null) {
+    pending.add(String(match[1] || "").trim().toLowerCase());
+  }
+
+  const forageSeeds = [];
+  FORAGE_HINT_REGEX.lastIndex = 0;
+  while ((match = FORAGE_HINT_REGEX.exec(raw)) !== null) {
+    const seed = String(match[1] || "").trim();
+    if (seed) forageSeeds.push(seed);
+  }
+
+  const waypointActions = [];
+  ADD_TASK_REGEX.lastIndex = 0;
+  while ((match = ADD_TASK_REGEX.exec(raw)) !== null) {
+    const title = String(match[1] || "").trim();
+    const due   = String(match[2] || "").trim();
+    if (title) waypointActions.push({ type: "task", title, due });
+  }
+  ADD_EVENT_REGEX.lastIndex = 0;
+  while ((match = ADD_EVENT_REGEX.exec(raw)) !== null) {
+    const title = String(match[1] || "").trim();
+    const date  = String(match[2] || "").trim();
+    const time  = String(match[3] || "").trim();
+    if (title) waypointActions.push({ type: "event", title, date, time });
+  }
+  ADD_SHOPPING_REGEX.lastIndex = 0;
+  while ((match = ADD_SHOPPING_REGEX.exec(raw)) !== null) {
+    const item = String(match[1] || "").trim();
+    if (item) waypointActions.push({ type: "shopping", title: item });
+  }
+
+  ADD_ROUTINE_REGEX.lastIndex = 0;
+  while ((match = ADD_ROUTINE_REGEX.exec(raw)) !== null) {
+    const title    = String(match[1] || "").trim();
+    const schedule = String(match[2] || "weekly_day").trim();
+    const weekday  = String(match[3] || "").trim();
+    const day      = String(match[4] || "").trim();
+    const time     = String(match[5] || "").trim();
+    const until    = String(match[6] || "").trim();
+    if (title) waypointActions.push({ type: "routine", title, schedule, weekday, day, time, until });
+  }
+
+  return {
+    reflectionIds: Array.from(reflections).filter(Boolean),
+    pendingIds: Array.from(pending).filter(Boolean),
+    forageSeeds,
+    waypointActions,
+  };
+}
+
+function isIsoDate(text) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(text || "").trim());
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function startOfLocalDay(rawDate) {
+  const d = rawDate instanceof Date ? rawDate : new Date(rawDate);
+  if (Number.isNaN(d.getTime())) {
+    return new Date();
+  }
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function startOfWeek(rawDate) {
+  const d = startOfLocalDay(rawDate);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+
+function addDays(rawDate, days) {
+  const d = startOfLocalDay(rawDate);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function addMonths(rawDate, months) {
+  const d = startOfLocalDay(rawDate);
+  d.setDate(1);
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+function daysInMonth(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+
+function addMonthsClamped(rawDate, months) {
+  const d = startOfLocalDay(rawDate);
+  const year = d.getFullYear();
+  const monthIndex = d.getMonth();
+  const day = d.getDate();
+  const target = new Date(year, monthIndex + Number(months || 0), 1);
+  const maxDay = daysInMonth(target.getFullYear(), target.getMonth());
+  target.setDate(Math.min(day, maxDay));
+  return startOfLocalDay(target);
+}
+
+function normalizeRecurrenceType(raw) {
+  const value = String(raw || "none").trim().toLowerCase();
+  if (["weekly_day", "monthly_day_of_month", "monthly_nth_weekday"].includes(value)) {
+    return value;
+  }
+  return "none";
+}
+
+function jsDayToMonday0(jsDay) {
+  const value = Number(jsDay || 0);
+  return (value + 6) % 7;
+}
+
+function monday0ToJsDay(value) {
+  const day = Number(value || 0);
+  return (day + 1) % 7;
+}
+
+function nthWeekdayInMonth(year, monthIndex, weekday, nth) {
+  const wd = Math.max(0, Math.min(6, Number(weekday || 0)));
+  const n = Math.max(1, Math.min(5, Number(nth || 1)));
+  if (n === 5) {
+    const last = new Date(year, monthIndex + 1, 0);
+    const back = (last.getDay() - wd + 7) % 7;
+    return new Date(year, monthIndex, last.getDate() - back);
+  }
+  const first = new Date(year, monthIndex, 1);
+  const offset = (wd - first.getDay() + 7) % 7;
+  const day = 1 + offset + (n - 1) * 7;
+  if (day > daysInMonth(year, monthIndex)) {
+    return null;
+  }
+  return new Date(year, monthIndex, day);
+}
+
+function toDateKey(rawDate) {
+  const d = startOfLocalDay(rawDate);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function parseDateKey(raw) {
+  const text = String(raw || "").trim();
+  if (!isIsoDate(text)) {
+    return null;
+  }
+  const [y, m, d] = text.split("-").map((x) => Number(x));
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    return null;
+  }
+  return new Date(y, m - 1, d);
+}
+
+function normalizeTimeText(raw) {
+  const text = String(raw || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return "";
+  }
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) {
+    return "";
+  }
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+    return "";
+  }
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function timeTextToMinutes(raw) {
+  const normalized = normalizeTimeText(raw);
+  if (!normalized) {
+    return 24 * 60 + 1;
+  }
+  const parts = normalized.split(":").map((x) => Number(x));
+  const hh = Number.isFinite(parts[0]) ? parts[0] : 0;
+  const mm = Number.isFinite(parts[1]) ? parts[1] : 0;
+  return hh * 60 + mm;
+}
+
+if (!window.Vue || !document.getElementById("app")) {
+  throw new Error("Vue runtime or #app mount node is missing.");
+}
+
+const app = window.Vue.createApp({
+  data() {
+    return {
+      conversations: [],
+      activeConversationId: null,
+      activeConversation: null,
+      activeProject: "general",
+      activeApp: "home",
+      homePhrase: "",
+      homeWeatherExpanded: false,
+      homeWeatherLocationDraft: "",
+      homeWeather: {
+        locationQuery: "",
+        locationLabel: "",
+        latitude: null,
+        longitude: null,
+        timezone: "auto",
+        temperatureF: null,
+        apparentF: null,
+        highF: null,
+        lowF: null,
+        weatherCode: null,
+        windMph: null,
+        precipitationChance: null,
+        isDay: null,
+        updatedAt: "",
+        loading: false,
+        error: "",
+      },
+      homeCompanionSketches: HOME_COMPANION_SKETCHES,
+      homeCompanionIndex: 0,
+      homeCompanionName: HOME_COMPANION_DEFAULT_NAME,
+      homeCompanionNameDraft: HOME_COMPANION_DEFAULT_NAME,
+      homeCompanionRenaming: false,
+      inputMode: "talk",
+      theme: "Night",
+      themeOptions: ["Night", "Day"],
+      fontOptions: [],
+      activeFontId: "",
+      fontConfigError: "",
+      topicTypeOptions: TOPIC_TYPES,
+      draft: "",
+      composerImages: [],
+      replyTargetMsg: null,
+      voiceSupported: false,
+      voiceActive: false,
+      ttsEnabled: false,
+      _voiceRecognition: null,
+      sendingByConversation: {},
+      sendingJobStage: {},
+      quickActionBusy: {},
+      completedWaypointActions: {},
+      chatMenuOpen: false,
+      sidebarOpen: false,
+      sidebarCollapsed: false,
+      mdOverlayOpen: false,
+      actionsOverlayOpen: false,
+      panelOverlayOpen: false,
+      mdTitle: "File Preview",
+      mdPath: "",
+      mdHtml: "",
+      panelStatus: {
+        pending_actions: 0,
+        open_reflections: 0,
+        learned_lessons: 0,
+        handoff_waiting_output: 0,
+        handoff_ready_for_ingest: 0,
+        pending_handoffs: 0,
+        active_projects: 0,
+        web_mode: "auto",
+        cloud_mode: "off",
+        foraging_paused: false,
+        foraging_active_jobs: 0,
+        foraging_yielding: false,
+        gemini_critique_enabled: false,
+        gemini_critique_keys: 0,
+        briefings_unread: 0,
+        action_proposals_pending: 0,
+        watchtower_active: 0,
+        topics_with_research: 0,
+      },
+      watchtowerForm: { topic: "", profile: "general", schedule: "daily", schedule_hour: 7 },
+      briefingsFilter: { mode: "unread", search: "" },
+      lifeAdminForms: {
+        profile: blankLifeAdminProfileForm(),
+        family: blankLifeAdminFamilyForm(),
+        pet: blankLifeAdminPetForm(),
+        reminder: blankLifeAdminReminderForm(),
+        notes: "",
+      },
+      lifeAdminState: {
+        profileDetailsOpen: false,
+        familyDetailsOpen: false,
+        petDetailsOpen: false,
+        reminderDetailsOpen: false,
+        familyEditingKey: "",
+        petEditingKey: "",
+        reminderEditingKey: "",
+        memoryFilter: "all",
+      },
+      actionProposals: [],
+      jobWebStack: {},
+      sourceExpandedMsgs: {},
+      lessonsUnreadCount: 0,
+      lessonsReadIds: {},
+      lessonsUnreadCheckedAt: 0,
+      reflectionsUnreadCount: 0,
+      reflectionsReadIds: {},
+      reflectionsUnreadCheckedAt: 0,
+      pendingActions: [],
+      pendingActionsLoading: false,
+      panelKey: "",
+      panelData: [],
+      contentTreeRoot: "",
+      contentTreeNodes: [],
+      contentTreeNodeCount: 0,
+      contentTreeTruncated: false,
+      contentTreeExpanded: {},
+      _contentTreeProject: "",
+      lessonsSortBy: "newest",
+      panelLoading: false,
+      projectDetail: null,
+      projectPipeline: {
+        project: "general",
+        mode: "discovery",
+        target: "auto",
+        topic_type: "general",
+        updated_at: "",
+      },
+      topicForm: { name: "", type: "", description: "", seed_question: "", parent_id: "" },
+      topicPickerOpen: false,
+      topicPickerSearch: "",
+      topicPickerRows: [],
+      topicPickerMode: "set",
+      undergroundWarningOpen: false,
+      undergroundWarningPendingTopic: null,
+      topicFormUndergroundWarning: false,
+      activeTopicId: "general",
+      topicDetailData: null,
+      _activePanelTopicId: "",
+      lessonsFilterByTopic: false,
+      sidebarPanelsCollapsed: true,
+      resetModalOpen: false,
+      resetConfirmText: "",
+      resetRunning: false,
+      resetLog: [],
+      waypoint: {
+        thread_id: "waypoint_main",
+        messages: [],
+        tasks: [],
+        reminders: [],
+        events: [],
+        event_patterns: [],
+        insights: { summary_lines: [], priorities: [], watchouts: [], suggestions: [], patterns: [], conflicts: [], counts: {}, week_window: {} },
+        shopping_food: [],
+        shopping_general: [],
+        contacts: [],
+        members: [],
+        contact_locations: [],
+        open_tasks_count: 0,
+        open_reminders_count: 0,
+        profile_color: "#4285f4",
+      },
+      waypointLoaded: false,
+      waypointTopTab: "calendar",
+      waypointDraft: "",
+      waypointBuilderOpen: false,
+      waypointBuilder: {
+        command: "shopping_add",
+        shopping_category: "food",
+        shopping_item: "",
+        shopping_items: "",
+        shopping_id: "",
+        task_title: "",
+        task_due_date: "",
+        task_priority: "medium",
+        task_id: "",
+        task_reason: "",
+        event_title: "",
+        event_date: "",
+        event_start: "",
+        event_end: "",
+        event_location_contact_id: "",
+        event_location: "",
+        event_id: "",
+      },
+      waypointSending: false,
+      waypointInsightBusy: {},
+      waypointChatExpanded: false,
+      waypointTaskSubmitting: false,
+      waypointEventSubmitting: false,
+      waypointShoppingSubmitting: false,
+      waypointContactSubmitting: false,
+      waypointMemberSubmitting: false,
+      waypointMemberEditorOpen: false,
+      waypointMemberEditorSubmitting: false,
+      waypointMemberEditorMode: "add",
+      waypointMemberDeleteConfirm: "",
+      waypointMemberEditorDetailsOpen: false,
+      waypointTaskModalOpen: false,
+      waypointTaskEditId: "",
+      waypointEventModalOpen: false,
+      waypointEventEditId: "",
+      waypointShoppingModalOpen: false,
+      waypointShoppingEditId: "",
+      waypointContactModalOpen: false,
+      waypointContactEditId: "",
+      waypointContactDeleteConfirm: "",
+      waypointContactDetailsOpen: false,
+      projectPickerOpen: false,
+      projectPickerLoading: false,
+      projectPickerSubmitting: false,
+      projectPickerSearch: "",
+      projectPickerRows: [],
+      projectPickerForm: {
+        project: "",
+        description: "",
+      },
+      projectPickerError: "",
+      projectTargetModalOpen: false,
+      projectTargetSubmitting: false,
+      projectTargetError: "",
+      projectTargetForm: {
+        target: "auto",
+      },
+      waypointMemberEditorForm: blankWaypointMemberEditorForm("#4285f4"),
+      familyProfileModalOpen: false,
+      emailSettingsModalOpen: false,
+      webPushModalOpen: false,
+      morningDigestModalOpen: false,
+      botSettingsModalOpen: false,
+      botSettingsSubmitting: false,
+      botConfig: {
+        telegram: { enabled: false, bot_token: "" },
+        discord: { enabled: false, bot_token: "" },
+      },
+      botMappings: [],
+      botPending: [],
+      botUserForm: { platform: "telegram", platform_user_id: "", platform_username: "", foxforge_user_id: "" },
+      botProfiles: [],
+      digestSettings: { enabled: false, hour: 7, locationLabel: "", locationLat: null, locationLon: null },
+      digestLocationDraft: "",
+      emailSettingsSubmitting: false,
+      emailSettingsForm: { notification_email: "", smtp_user: "", smtp_password: "", dnd_enabled: false, dnd_start: "22:00", dnd_end: "08:00" },
+      webPushSubmitting: false,
+      webPushSettings: {
+        server_supported: false,
+        public_key: "",
+        vapid_subject: "",
+        enabled: true,
+        subscription_count: 0,
+        has_subscription: false,
+        last_error: "",
+        last_test_sent_at: "",
+      },
+      webPushPermission: "default",
+      webPushInstalled: false,
+      webPushRegistrationReady: false,
+      _webPushRegistration: null,
+      familyProfileSubmitting: false,
+      familyProfileForm: {
+        username: "",
+        display_name: "",
+        role: "adult",
+        color: "#4285f4",
+        pin: "",
+        pin_confirm: "",
+      },
+      taskReminderOpen: false,
+      taskReminderSubmitting: false,
+      taskReminderDialog: {
+        taskId: "",
+        taskTitle: "",
+        date: "",
+        time: "",
+        sliderMinutes: 0,
+      },
+      waypointDayPanelExpanded: true,
+      waypointTaskForm: {
+        title: "",
+        list_name: "general",
+        priority: "medium",
+        due_date: "",
+        member_ids: [],
+        location: "",
+        recurrence_enabled: false,
+        recurrence_type: "weekly_day",
+        recurrence_interval: 1,
+        recurrence_weekday: 0,
+        recurrence_day: 1,
+        recurrence_nth: 1,
+        recurrence_until: "",
+      },
+      purchaseRecos: [],
+      waypointEventForm: {
+        title: "",
+        date: "",
+        start_time: "",
+        end_time: "",
+        reminder_time: "",
+        location_contact_id: "",
+        location: "",
+        member_ids: [],
+        recurrence_enabled: false,
+        recurrence_type: "weekly_day",
+        recurrence_interval: 1,
+        recurrence_weekday: jsDayToMonday0(new Date().getDay()),
+        recurrence_day: new Date().getDate(),
+        recurrence_nth: 1,
+        recurrence_until: "",
+      },
+      waypointShoppingForm: {
+        title: "",
+        category: "food",
+      },
+      waypointContactForm: blankWaypointContactFormDefaults(),
+      waypointMemberForm: blankWaypointMemberFormDefaults(),
+      waypointCalendarView: "month",
+      waypointCalendarDate: startOfLocalDay(new Date()),
+      waypointSelectedDateKey: toDateKey(startOfLocalDay(new Date())),
+      waypointCalendarLabel: "Calendar",
+      waypointCalendarHtml: "",
+      waypointCalendarMemberFilterOpen: false,
+      waypointMemberFilterPopStyle: {},
+      waypointCalendarFilteredMemberIds: [],
+      waypointCalendarTypeFilter: "both",
+      waypointMonthPreviewOpen: false,
+      auth: {
+        enabled: false,
+        authenticated: false,
+        profile: null,
+      },
+      authShowForm: false,
+      loginUsername: "",
+      loginPassword: "",
+      authError: "",
+      thinkingNowTs: Date.now(),
+      msgCopiedId: "",
+      _boundWindowClick: null,
+      _boundResize: null,
+      _boundHashChange: null,
+      _boundKeydown: null,
+      _boundSwipeMove: null,
+      _boundSidebarTouchStart: null,
+      _boundSidebarTouchEnd: null,
+      swipeOpen: {},
+      _sidebarSwipeState: null,
+      _waypointPollTimer: null,
+      _panelPollTimer: null,
+      _homePhraseTimer: null,
+      _homeWeatherPollTimer: null,
+      _thinkingTimer: null,
+      _composerPlaceholderTimer: null,
+      composerPlaceholderIdx: 0,
+      composerPlaceholderFading: false,
+      _stableAppVh: 0,
+      cancelEnableDelayMs: 1800000,
+    };
+  },
+
+  computed: {
+    digestHourOptions() {
+      const fmt = (h) => {
+        const ampm = h < 12 ? "AM" : "PM";
+        const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+        return { value: h, label: `${h12}:00 ${ampm}` };
+      };
+      return [5, 6, 7, 8, 9, 10].map(fmt);
+    },
+    composerPlaceholder() {
+      const mode = this.inputMode || "talk";
+      const pool = COMPOSER_PLACEHOLDERS[mode] || COMPOSER_PLACEHOLDERS.talk;
+      return pool[this.composerPlaceholderIdx % pool.length];
+    },
+    activeMessages() {
+      return Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages : [];
+    },
+    activeMessagesWithDividers() {
+      return this.withDayDividers(this.activeMessages);
+    },
+    waypointMessagesWithDividers() {
+      return this.withDayDividers(Array.isArray(this.waypoint?.messages) ? this.waypoint.messages : []);
+    },
+    activeConversationSending() {
+      const id = String(this.activeConversationId || "").trim();
+      if (!id) {
+        return false;
+      }
+      return Boolean(this.sendingByConversation[id]);
+    },
+    activeConversationSendingIsForaging() {
+      const meta = this.conversationSendingMeta(this.activeConversationId);
+      return Boolean(meta && meta.foraging);
+    },
+    activeConversationElapsedSec() {
+      const meta = this.conversationSendingMeta(this.activeConversationId);
+      if (!meta) return 0;
+      const started = Number(meta.startedAt || 0);
+      if (!Number.isFinite(started) || started <= 0) return 0;
+      const elapsedMs = Math.max(0, Number(this.thinkingNowTs || Date.now()) - started);
+      return Math.floor(elapsedMs / 1000);
+    },
+    activeConversationCanCancel() {
+      const meta = this.conversationSendingMeta(this.activeConversationId);
+      if (!meta || !meta.requestId) return false;
+      return !Boolean(meta.cancelRequested);
+    },
+    activeConversationSendingLabel() {
+      const s = this.sendingJobStage[String(this.activeConversationId || "").trim()];
+      return s ? String(s.label || "") : "";
+    },
+    activeTitle() {
+      return String(this.activeConversation?.title || "Foxforge");
+    },
+    lifeAdminContext() {
+      return Array.isArray(this.panelData) && this.panelData.length ? (this.panelData[0] || {}) : {};
+    },
+    secondBrainContext() {
+      return Array.isArray(this.panelData) && this.panelData.length ? (this.panelData[0] || {}) : {};
+    },
+    secondBrainSourceRows() {
+      const raw = this.secondBrainContext?.source_breakdown;
+      const rows = raw && typeof raw === "object" ? Object.entries(raw) : [];
+      return rows
+        .map(([key, count]) => ({ key: String(key || ""), count: Number(count || 0) }))
+        .filter((row) => row.key && Number.isFinite(row.count) && row.count > 0)
+        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+    },
+    secondBrainStatusRows() {
+      const raw = this.secondBrainContext?.status_breakdown;
+      const rows = raw && typeof raw === "object" ? Object.entries(raw) : [];
+      return rows
+        .map(([key, count]) => ({ key: String(key || ""), count: Number(count || 0) }))
+        .filter((row) => row.key && Number.isFinite(row.count) && row.count > 0)
+        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+    },
+    watchtowerRows() {
+      const rows = Array.isArray(this.panelData) && this.panelKey === "watchtower" ? this.panelData : [];
+      return rows
+        .map((row) => ({
+          ...row,
+          _schedule_label: this.watchScheduleLabel(row),
+          _last_run_label: this.relativeTimeLabel(row?.last_run_at),
+          _last_briefing_label: this.relativeTimeLabel(row?.last_briefing_at),
+        }))
+        .sort((a, b) => {
+          const aEnabled = a?.enabled ? 0 : 1;
+          const bEnabled = b?.enabled ? 0 : 1;
+          if (aEnabled !== bEnabled) return aEnabled - bEnabled;
+          const aUnread = Number(a?.unread_briefings || 0);
+          const bUnread = Number(b?.unread_briefings || 0);
+          if (aUnread !== bUnread) return bUnread - aUnread;
+          return String(a?.created_at || "").localeCompare(String(b?.created_at || ""));
+        });
+    },
+    watchtowerSummary() {
+      const rows = this.watchtowerRows;
+      const enabled = rows.filter((row) => Boolean(row?.enabled)).length;
+      const unread = rows.reduce((sum, row) => sum + Number(row?.unread_briefings || 0), 0);
+      const totalBriefings = rows.reduce((sum, row) => sum + Number(row?.briefing_count || 0), 0);
+      return {
+        watch_count: rows.length,
+        enabled_count: enabled,
+        unread_count: unread,
+        total_briefings: totalBriefings,
+      };
+    },
+    briefingRows() {
+      const rows = Array.isArray(this.panelData) && this.panelKey === "briefings" ? this.panelData : [];
+      const mode = String(this.briefingsFilter?.mode || "unread").trim().toLowerCase();
+      const rawSearch = String(this.briefingsFilter?.search || "").trim().toLowerCase();
+      return rows
+        .filter((row) => {
+          if (mode === "unread") return !Boolean(row?.read);
+          if (mode === "read") return Boolean(row?.read);
+          return true;
+        })
+        .filter((row) => {
+          if (!rawSearch) return true;
+          const hay = [
+            row?.topic,
+            row?.headline,
+            row?.summary,
+            row?.preview,
+            (Array.isArray(row?.key_points) ? row.key_points.join(" ") : ""),
+          ]
+            .map((x) => String(x || "").toLowerCase())
+            .join(" ");
+          return hay.includes(rawSearch);
+        })
+        .sort((a, b) => {
+          const aUnread = a?.read ? 1 : 0;
+          const bUnread = b?.read ? 1 : 0;
+          if (aUnread !== bUnread) return aUnread - bUnread;
+          return String(b?.created_at || "").localeCompare(String(a?.created_at || ""));
+        });
+    },
+    lifeAdminRecords() {
+      const rows = Array.isArray(this.lifeAdminContext?.records) ? this.lifeAdminContext.records.slice() : [];
+      rows.sort((a, b) => {
+        const aPinned = String(a?.status || "").toLowerCase() === "pinned" ? 0 : 1;
+        const bPinned = String(b?.status || "").toLowerCase() === "pinned" ? 0 : 1;
+        if (aPinned !== bPinned) return aPinned - bPinned;
+        const aUpdated = String(a?.updated_at || "");
+        const bUpdated = String(b?.updated_at || "");
+        if (aUpdated > bUpdated) return -1;
+        if (aUpdated < bUpdated) return 1;
+        return String(a?.subject || "").localeCompare(String(b?.subject || ""));
+      });
+      return rows;
+    },
+    filteredLifeAdminRecords() {
+      const rows = this.lifeAdminRecords;
+      const filter = String(this.lifeAdminState?.memoryFilter || "all").toLowerCase();
+      if (filter === "all") return rows;
+      if (filter === "pinned") return rows.filter((row) => String(row?.status || "").toLowerCase() === "pinned");
+      if (filter === "needs_review") {
+        return rows.filter((row) => {
+          const status = String(row?.status || "").toLowerCase();
+          const confidence = Number(row?.confidence || 0);
+          return status === "captured" || status === "stale" || confidence < 0.7;
+        });
+      }
+      if (filter === "forgotten") return rows.filter((row) => String(row?.status || "").toLowerCase() === "forgotten");
+      if (filter === "recent") {
+        return rows
+          .filter((row) => String(row?.last_used_at || "").trim())
+          .sort((a, b) => String(b?.last_used_at || "").localeCompare(String(a?.last_used_at || "")));
+      }
+      return rows;
+    },
+    homeGreetingName() {
+      return String(this.auth?.profile?.display_name || this.auth?.profile?.username || "there");
+    },
+    homeCompanionSketch() {
+      const sketches = Array.isArray(this.homeCompanionSketches) ? this.homeCompanionSketches : [];
+      if (!sketches.length) return null;
+      const idx = Number(this.homeCompanionIndex || 0);
+      const safeIndex = Number.isFinite(idx) && idx >= 0 ? idx % sketches.length : 0;
+      return sketches[safeIndex] || sketches[0] || null;
+    },
+    homeCompanionDisplayName() {
+      const value = String(this.homeCompanionName || "").trim();
+      return value || HOME_COMPANION_DEFAULT_NAME;
+    },
+    homeCompanionStrokeColor() {
+      return this.theme === "Day" ? "rgba(37, 58, 70, 0.92)" : "rgba(205, 228, 238, 0.9)";
+    },
+    homeTodayDateKey() {
+      return toDateKey(startOfLocalDay(new Date()));
+    },
+    homeTodayLabel() {
+      return startOfLocalDay(new Date()).toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      });
+    },
+    homeTodayEntries() {
+      const key = String(this.homeTodayDateKey || "").trim();
+      if (!key) {
+        return [];
+      }
+      const idx = this.buildWaypointEventIndex(this.waypointCalendarEntries());
+      const rows = Array.isArray(idx[key]) ? idx[key].slice() : [];
+      rows.sort((a, b) => {
+        // Rolled-over (overdue) tasks always float to the top
+        const aRolled = a?.rolled_from_date ? 0 : 1;
+        const bRolled = b?.rolled_from_date ? 0 : 1;
+        if (aRolled !== bRolled) return aRolled - bRolled;
+        const aTime = timeTextToMinutes(a?.start_time);
+        const bTime = timeTextToMinutes(b?.start_time);
+        if (aTime !== bTime) {
+          return aTime - bTime;
+        }
+        const aTitle = String(a?.title || "").toLowerCase();
+        const bTitle = String(b?.title || "").toLowerCase();
+        if (aTitle < bTitle) {
+          return -1;
+        }
+        if (aTitle > bTitle) {
+          return 1;
+        }
+        return 0;
+      });
+      return rows;
+    },
+    homeTodayPreviewEntries() {
+      return this.homeTodayEntries;
+    },
+    homeTodaySummaryLine() {
+      const total = this.homeTodayEntries.length;
+      const reminders = Number(this.waypoint?.open_reminders_count || 0);
+      if (total <= 0 && reminders <= 0) {
+        return "Nothing due yet. You're clear right now.";
+      }
+      const totalText = `${total} item${total === 1 ? "" : "s"} today`;
+      if (reminders <= 0) {
+        return totalText;
+      }
+      return `${totalText} • ${reminders} open reminder${reminders === 1 ? "" : "s"}`;
+    },
+    junctionPanelBadgeCount() {
+      const values = [
+        this.panelStatus?.pending_actions,
+        this.panelStatus?.foraging_active_jobs,
+        this.reflectionsUnreadCount,
+        this.lessonsUnreadCount,
+        this.panelStatus?.topics_with_research,
+        this.panelStatus?.briefings_unread,
+        this.panelStatus?.watchtower_active,
+      ];
+      return values.reduce((sum, value) => {
+        const count = Number(value || 0);
+        return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
+      }, 0);
+    },
+    overlayCloseVisible() {
+      return Boolean(
+        this.mdOverlayOpen ||
+        this.actionsOverlayOpen ||
+        this.panelOverlayOpen ||
+        this.taskReminderOpen ||
+        this.waypointTaskModalOpen ||
+        this.waypointEventModalOpen ||
+        this.waypointShoppingModalOpen ||
+        this.waypointContactModalOpen ||
+        this.projectPickerOpen ||
+        this.projectTargetModalOpen ||
+        this.topicPickerOpen ||
+        this.familyProfileModalOpen ||
+        this.waypointMemberEditorOpen ||
+        this.webPushModalOpen ||
+        this.emailSettingsModalOpen ||
+        this.botSettingsModalOpen ||
+        this.resetModalOpen
+      );
+    },
+    homeLastConversation() {
+      const activeId = String(this.activeConversationId || "").trim();
+      if (activeId) {
+        const active = (Array.isArray(this.conversations) ? this.conversations : []).find(
+          (row) => String(row?.id || "").trim() === activeId
+        );
+        if (active) {
+          return active;
+        }
+      }
+      const rows = Array.isArray(this.conversations) ? this.conversations : [];
+      return rows.length ? rows[0] : null;
+    },
+    homeLastConversationUpdatedLabel() {
+      const ts = String(this.homeLastConversation?.updated_at || "").trim();
+      if (!ts) {
+        return "Last active: just now";
+      }
+      const text = this.formatDate(ts);
+      if (!text) {
+        return "Last active: just now";
+      }
+      return `Last active: ${text}`;
+    },
+    homeWeatherLocationDisplay() {
+      const label = String(this.homeWeather?.locationLabel || "").trim();
+      if (label) {
+        return label;
+      }
+      const query = String(this.homeWeather?.locationQuery || "").trim();
+      return query || "Set your weather location";
+    },
+    homeWeatherConditionLabel() {
+      const code = Number(this.homeWeather?.weatherCode);
+      if (!Number.isFinite(code)) {
+        return "Weather unavailable";
+      }
+      return WEATHER_CODE_LABELS[code] || "Weather update";
+    },
+    homeWeatherEmoji() {
+      const code = Number(this.homeWeather?.weatherCode);
+      const isDay = Number(this.homeWeather?.isDay) === 1;
+      if (!Number.isFinite(code)) {
+        return "🌤️";
+      }
+      if (code === 0) {
+        return isDay ? "☀️" : "🌙";
+      }
+      if (code <= 2) {
+        return isDay ? "🌤️" : "☁️";
+      }
+      if (code === 3) {
+        return "☁️";
+      }
+      if (code === 45 || code === 48) {
+        return "🌫️";
+      }
+      if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        return "🌧️";
+      }
+      if ((code >= 71 && code <= 77) || code === 85 || code === 86) {
+        return "❄️";
+      }
+      if (code >= 95) {
+        return "⛈️";
+      }
+      return "🌦️";
+    },
+    homeWeatherTempLabel() {
+      const valueF = Number(this.homeWeather?.temperatureF);
+      if (!Number.isFinite(valueF)) {
+        return "--";
+      }
+      const valueC = Math.round(((valueF - 32) * 5) / 9);
+      return `${Math.round(valueF)}°F / ${valueC}°C`;
+    },
+    homeWeatherCompactTemp() {
+      const valueF = Number(this.homeWeather?.temperatureF);
+      if (!Number.isFinite(valueF)) {
+        return "--";
+      }
+      return `${Math.round(valueF)}°`;
+    },
+    homeWeatherHighLowLabel() {
+      const high = Number(this.homeWeather?.highF);
+      const low = Number(this.homeWeather?.lowF);
+      if (!Number.isFinite(high) || !Number.isFinite(low)) {
+        return "";
+      }
+      return `H ${Math.round(high)}° · L ${Math.round(low)}°`;
+    },
+    homeWeatherUpdatedLabel() {
+      const raw = String(this.homeWeather?.updatedAt || "").trim();
+      if (!raw) {
+        return "";
+      }
+      const when = new Date(raw);
+      if (Number.isNaN(when.getTime())) {
+        return "";
+      }
+      return when.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    },
+    projectModeLabel() {
+      return this.projectModeTitle(this.projectPipeline?.mode);
+    },
+    projectBuildTargetLabel() {
+      return this.projectTargetTitle(this.projectPipeline?.target);
+    },
+    projectBuildTargetOptions() {
+      return MAKE_TARGETS;
+    },
+    makeTargetLabel() {
+      const r = MAKE_TARGETS.find((x) => x.value === (this.projectPipeline?.target || "auto"));
+      return r ? r.label : "Auto";
+    },
+    isDiscoveryMode() {
+      return (this.projectPipeline?.mode || "discovery") === "discovery";
+    },
+    isMakeMode() {
+      return this.projectPipeline?.mode === "make";
+    },
+    topicFormValid() {
+      return (
+        String(this.topicForm.name || "").trim().length > 0 &&
+        String(this.topicForm.type || "").trim().length > 0 &&
+        String(this.topicForm.description || "").trim().length >= 50 &&
+        String(this.topicForm.seed_question || "").trim().length > 0
+      );
+    },
+    topicDescriptionCharCount() {
+      return String(this.topicForm.description || "").trim().length;
+    },
+    filteredTopicPickerRows() {
+      const q = String(this.topicPickerSearch || "").trim().toLowerCase();
+      if (!q) return this.topicPickerRows;
+      return this.topicPickerRows.filter(
+        (t) =>
+          String(t.name || "").toLowerCase().includes(q) ||
+          String(t.type || "").toLowerCase().includes(q)
+      );
+    },
+    taskReminderPreviewDateLabel() {
+      const dateText = String(this.taskReminderDialog?.date || "").trim();
+      const timeText = normalizeTimeText(this.taskReminderDialog?.time || "");
+      if (!isIsoDate(dateText) || !timeText) {
+        return "Pick a day and time for this reminder.";
+      }
+      const base = parseDateKey(dateText);
+      if (!base) {
+        return "Pick a valid reminder date.";
+      }
+      const [hh, mm] = timeText.split(":").map((x) => Number(x));
+      const when = new Date(base.getFullYear(), base.getMonth(), base.getDate(), Number(hh || 0), Number(mm || 0), 0, 0);
+      if (Number.isNaN(when.getTime())) {
+        return "Pick a valid reminder time.";
+      }
+      return when.toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    },
+    taskReminderPreviewTimeLabel() {
+      const dateText = String(this.taskReminderDialog?.date || "").trim();
+      const timeText = normalizeTimeText(this.taskReminderDialog?.time || "");
+      if (!isIsoDate(dateText) || !timeText) {
+        return "--:--";
+      }
+      const base = parseDateKey(dateText);
+      if (!base) {
+        return "--:--";
+      }
+      const [hh, mm] = timeText.split(":").map((x) => Number(x));
+      const when = new Date(base.getFullYear(), base.getMonth(), base.getDate(), Number(hh || 0), Number(mm || 0), 0, 0);
+      if (Number.isNaN(when.getTime())) {
+        return "--:--";
+      }
+      return when.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    },
+    waypointSelectedDateLabel() {
+      const parsed = parseDateKey(String(this.waypointSelectedDateKey || ""));
+      const date = parsed || startOfLocalDay(this.waypointCalendarDate || new Date());
+      return date.toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+    },
+    waypointSelectedEntries() {
+      const key = String(this.waypointSelectedDateKey || "").trim();
+      if (!isIsoDate(key)) {
+        return [];
+      }
+      const idx = this.buildWaypointEventIndex(this.waypointCalendarEntries());
+      const rows = Array.isArray(idx[key]) ? idx[key].slice() : [];
+      // Rolled-over tasks float to top, then by time
+      rows.sort((a, b) => {
+        const aRolled = a?.rolled_from_date ? 0 : 1;
+        const bRolled = b?.rolled_from_date ? 0 : 1;
+        if (aRolled !== bRolled) return aRolled - bRolled;
+        return timeTextToMinutes(a?.start_time) - timeTextToMinutes(b?.start_time);
+      });
+      return rows;
+    },
+    waypointCalendarHasMemberFilters() {
+      return this.normalizeWaypointMemberIds(this.waypointCalendarFilteredMemberIds || []).length > 0;
+    },
+    waypointCalendarFilterLabel() {
+      const ids = this.normalizeWaypointMemberIds(this.waypointCalendarFilteredMemberIds || []);
+      if (!ids.length) {
+        return "All Members";
+      }
+      if (ids.length === 1) {
+        const opt = (this.waypointMemberOptions || []).find((row) => String(row?.value || "") === ids[0]);
+        return opt ? String(opt.label || "1 member") : "1 member";
+      }
+      return `${ids.length} members`;
+    },
+    waypointCanShowMonthPreview() {
+      if (String(this.waypointCalendarView || "").trim().toLowerCase() !== "month") {
+        return false;
+      }
+      const anchor = startOfLocalDay(this.waypointCalendarDate || new Date());
+      const today = startOfLocalDay(new Date());
+      return anchor.getFullYear() !== today.getFullYear() || anchor.getMonth() !== today.getMonth();
+    },
+    waypointMonthPreviewReport() {
+      return this.buildWaypointMonthPreviewReport();
+    },
+    foragingStatusShort() {
+      if (this.panelStatus.foraging_paused) {
+        return "Foraging Paused";
+      }
+      const active = Number(this.panelStatus.foraging_active_jobs || 0);
+      if (active > 0) {
+        if (this.panelStatus.foraging_yielding) {
+          return `Foraging Yielding (${active})`;
+        }
+        return `Foraging Active (${active})`;
+      }
+      if (this.panelStatus.foraging_yielding) {
+        return "Foraging Yielding";
+      }
+      return "Foraging Ready";
+    },
+    foragingStatusTitle() {
+      const active = Number(this.panelStatus.foraging_active_jobs || 0);
+      const paused = Boolean(this.panelStatus.foraging_paused);
+      const yielding = Boolean(this.panelStatus.foraging_yielding);
+      return `Foraging status: ${paused ? "paused" : "running"} | active jobs: ${active} | yielding: ${
+        yielding ? "yes" : "no"
+      }`;
+    },
+    panelTitle() {
+      if (this.panelKey === "foraging") {
+        return "Foraging Control";
+      }
+      if (this.panelKey === "reflections") {
+        return "Reflection Moments";
+      }
+      if (this.panelKey === "lessons") {
+        return "Guideposts";
+      }
+      if (this.panelKey === "handoffs") {
+        return "Handoffs";
+      }
+      if (this.panelKey === "outbox") {
+        return "Outbox";
+      }
+      if (this.panelKey === "projects") {
+        return "Fieldbook";
+      }
+      if (this.panelKey === "project_detail") {
+        return `Fieldbook Detail: ${this.activeProject}`;
+      }
+      if (this.panelKey === "content") {
+        return `Content: ${this.activeProject}`;
+      }
+      if (this.panelKey === "watchtower") {
+        return "Watchtower";
+      }
+      if (this.panelKey === "briefings") {
+        return "Briefings";
+      }
+      if (this.panelKey === "life-admin") {
+        return "Life Admin";
+      }
+      if (this.panelKey === "second-brain") {
+        return "Second Brain";
+      }
+      if (this.panelKey === "topics") {
+        return "Fieldbook";
+      }
+      if (this.panelKey === "topic_detail") {
+        return this.topicDetailData ? `Fieldbook: ${this.topicDetailData.name}` : "Fieldbook Detail";
+      }
+      if (this.panelKey === "system") {
+        return "Settings";
+      }
+      return "Junction Panel";
+    },
+    panelSubtitle() {
+      if (this.panelKey === "foraging") {
+        return "Background Foraging jobs, progress checkpoints, and quick controls.";
+      }
+      if (this.panelKey === "reflections") {
+        return "Recent self-reflection blurbs with read/unread tracking.";
+      }
+      if (this.panelKey === "lessons") {
+        return "Learned guidance with confidence, status, and source context.";
+      }
+      if (this.panelKey === "handoffs") {
+        return "Thread handoff queue and ingest status.";
+      }
+      if (this.panelKey === "outbox") {
+        return "Response files waiting for ingest or already processed.";
+      }
+      if (this.panelKey === "projects") {
+        return "Per-project Fieldbook progress, artifacts, and routed lanes.";
+      }
+      if (this.panelKey === "project_detail") {
+        return "Project-scoped Fieldbook artifacts, recent events, and handoff threads.";
+      }
+      if (this.panelKey === "content") {
+        return "Project file browser with collapsible folders and click-to-preview.";
+      }
+      if (this.panelKey === "watchtower") {
+        return "Monitoring watches, run cadence, and watch-level signal health.";
+      }
+      if (this.panelKey === "briefings") {
+        return "Actionable briefings with confidence, risks, and next steps.";
+      }
+      if (this.panelKey === "forage-cards") {
+        return "Saved research cards from completed Forage runs. Pin to keep.";
+      }
+      if (this.panelKey === "life-admin") {
+        return "Persistent household context injected into the personal assistant.";
+      }
+      if (this.panelKey === "second-brain") {
+        return "Memory dashboard, waypoint-linked context, fading facts, and the weekly household briefing.";
+      }
+      if (this.panelKey === "topics") {
+        return "Research topics — artifact counts, last activity, and mode.";
+      }
+      if (this.panelKey === "topic_detail") {
+        return "Topic artifacts, sub-topics, and research history.";
+      }
+      if (this.panelKey === "system") {
+        return "App preferences, global controls, and environment management.";
+      }
+      return "Live Junction status indicators.";
+    },
+    panelRows() {
+      const rows = Array.isArray(this.panelData) ? [...this.panelData] : [];
+      if (this.panelKey !== "lessons") {
+        return rows;
+      }
+
+      const mode = String(this.lessonsSortBy || "newest").trim().toLowerCase();
+      const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+      const rowTs = (row) => {
+        const raw = String((row && (row.created_at || row.updated_at || row.ts)) || "").trim();
+        if (!raw) {
+          return 0;
+        }
+        const parsed = Date.parse(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const rowScore = (row) => {
+        const n = Number((row && (row.confidence ?? row.score)) || 0);
+        return Number.isFinite(n) ? n : 0;
+      };
+      const rowName = (row) => String((row && (row.principle || row.summary || row.id)) || "").trim();
+      const rowProject = (row) => String((row && row.project) || "").trim();
+
+      if (mode === "name") {
+        rows.sort((a, b) => {
+          const cmp = collator.compare(rowName(a), rowName(b));
+          if (cmp !== 0) {
+            return cmp;
+          }
+          return rowTs(b) - rowTs(a);
+        });
+        return rows;
+      }
+
+      if (mode === "project") {
+        rows.sort((a, b) => {
+          const pcmp = collator.compare(rowProject(a), rowProject(b));
+          if (pcmp !== 0) {
+            return pcmp;
+          }
+          const ncmp = collator.compare(rowName(a), rowName(b));
+          if (ncmp !== 0) {
+            return ncmp;
+          }
+          return rowTs(b) - rowTs(a);
+        });
+        return rows;
+      }
+
+      if (mode === "score") {
+        rows.sort((a, b) => {
+          const diff = rowScore(b) - rowScore(a);
+          if (diff !== 0) {
+            return diff;
+          }
+          return rowTs(b) - rowTs(a);
+        });
+        return rows;
+      }
+
+      rows.sort((a, b) => {
+        const diff = rowTs(b) - rowTs(a);
+        if (diff !== 0) {
+          return diff;
+        }
+        return rowScore(b) - rowScore(a);
+      });
+      if (this.lessonsFilterByTopic && this.activeProject) {
+        return rows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
+      }
+      return rows;
+    },
+    waypointBuilderCommandOptions() {
+      return [
+        { value: "shopping_add", label: "Shopping: Add item" },
+        { value: "shopping_complete", label: "Shopping: Mark complete" },
+        { value: "shopping_delete", label: "Shopping: Delete item" },
+        { value: "task_add", label: "Task: Add" },
+        { value: "task_complete", label: "Task: Complete" },
+        { value: "task_blocked", label: "Task: Blocked reason" },
+        { value: "event_add", label: "Event: Add" },
+        { value: "event_delete", label: "Event: Delete" },
+        { value: "show_contacts", label: "Show contacts" },
+        { value: "show_members", label: "Show members" },
+        { value: "show_tasks", label: "Show tasks" },
+        { value: "show_reminders", label: "Show reminders" },
+        { value: "show_shopping", label: "Show shopping" },
+        { value: "show_events", label: "Show events" },
+        { value: "summary", label: "Summary" },
+        { value: "help", label: "Help" },
+      ];
+    },
+    waypointBuilderFields() {
+      const cmd = String(this.waypointBuilder?.command || "").trim();
+      if (cmd === "shopping_add") {
+        return [
+          {
+            key: "shopping_category",
+            label: "Category",
+            type: "select",
+            options: [
+              { value: "food", label: "Grocery / Food" },
+              { value: "general", label: "General" },
+            ],
+          },
+          {
+            key: "shopping_items",
+            label: "Items",
+            type: "textarea",
+            placeholder: "milk, eggs, lettuce\nor one item per line",
+          },
+        ];
+      }
+      if (cmd === "shopping_complete" || cmd === "shopping_delete") {
+        return [{ key: "shopping_id", label: "Shopping ID", type: "text", placeholder: "e.g. 855c09c2" }];
+      }
+      if (cmd === "task_add") {
+        return [
+          { key: "task_title", label: "Task title", type: "text", placeholder: "Fix sink, call doctor..." },
+          { key: "task_due_date", label: "Due date", type: "date" },
+          {
+            key: "task_priority",
+            label: "Priority",
+            type: "select",
+            options: [
+              { value: "high", label: "High" },
+              { value: "medium", label: "Medium" },
+              { value: "low", label: "Low" },
+            ],
+          },
+        ];
+      }
+      if (cmd === "task_complete") {
+        return [{ key: "task_id", label: "Task ID", type: "text", placeholder: "e.g. 41f5b773" }];
+      }
+      if (cmd === "task_blocked") {
+        return [
+          { key: "task_id", label: "Task ID", type: "text", placeholder: "e.g. 41f5b773" },
+          { key: "task_reason", label: "Reason", type: "textarea", placeholder: "needed a wrench first" },
+        ];
+      }
+      if (cmd === "event_add") {
+        const locationOptions = [{ value: "", label: "Select saved host contact" }, ...this.waypointHostContactLocationOptions];
+        return [
+          { key: "event_title", label: "Event title", type: "text", placeholder: "Vet appointment" },
+          { key: "event_date", label: "Date", type: "date" },
+          { key: "event_start", label: "Start time", type: "time" },
+          { key: "event_end", label: "End time", type: "time" },
+          { key: "event_location_contact_id", label: "Host contact address", type: "select", options: locationOptions },
+        ];
+      }
+      if (cmd === "event_delete") {
+        return [{ key: "event_id", label: "Event ID", type: "text", placeholder: "e.g. 06bab024" }];
+      }
+      return [];
+    },
+    waypointContactKindOptions() {
+      return [
+        { value: "person", label: "Person" },
+        { value: "pet", label: "Pet" },
+      ];
+    },
+    waypointContactRelationshipOptions() {
+      const kind = String(this.waypointContactForm?.kind || "person").trim().toLowerCase();
+      return kind === "pet" ? PLANNER_PET_RELATION_OPTIONS : PLANNER_PERSON_RELATION_OPTIONS;
+    },
+    waypointMemberRelationshipOptions() {
+      const kind = String(this.waypointMemberForm?.kind || "person").trim().toLowerCase();
+      return kind === "pet" ? PLANNER_PET_RELATION_OPTIONS : PLANNER_PERSON_RELATION_OPTIONS;
+    },
+    waypointMemberEditorRelationshipOptions() {
+      const kind = String(this.waypointMemberEditorForm?.kind || "person").trim().toLowerCase();
+      return kind === "pet" ? PLANNER_PET_RELATION_OPTIONS : PLANNER_PERSON_RELATION_OPTIONS;
+    },
+    waypointMemberRoleOptions() {
+      return PLANNER_MEMBER_ROLE_OPTIONS;
+    },
+    waypointMemberOptions() {
+      const rows = Array.isArray(this.waypoint?.members) ? this.waypoint.members : [];
+      return rows
+        .map((row) => {
+          const id = String(row?.id || "").trim();
+          if (!id) {
+            return null;
+          }
+          const name = String(row?.name || row?.username || id).trim();
+          return {
+            value: id,
+            label: name,
+          };
+        })
+        .filter(Boolean);
+    },
+    waypointMemberColorMap() {
+      const map = {};
+      for (const m of (this.waypoint?.members || [])) {
+        if (m.id) map[String(m.id)] = String(m.color || "").trim();
+      }
+      return map;
+    },
+    waypointContactLocationOptions() {
+      const rows = Array.isArray(this.waypoint?.contact_locations) ? this.waypoint.contact_locations : [];
+      const list = [];
+      for (const row of rows) {
+        const id = String(row?.id || "").trim();
+        if (!id) {
+          continue;
+        }
+        list.push({
+          value: id,
+          label: String(row?.label || row?.name || id).trim(),
+          is_member: Boolean(row?.is_member),
+          location: String(row?.location || "").trim(),
+        });
+      }
+      return list;
+    },
+    waypointHostContactLocationOptions() {
+      return this.waypointContactLocationOptions.filter((row) => !row.is_member);
+    },
+    waypointRecurrenceTypeOptions() {
+      return [
+        { value: "weekly_day", label: "By day (every Wednesday)" },
+        { value: "monthly_nth_weekday", label: "By day ordinal (every 2nd Monday)" },
+        { value: "monthly_day_of_month", label: "By date (every 15th)" },
+      ];
+    },
+    waypointRecurrenceWeekdayOptions() {
+      return [
+        { value: 0, label: "Monday" },
+        { value: 1, label: "Tuesday" },
+        { value: 2, label: "Wednesday" },
+        { value: 3, label: "Thursday" },
+        { value: 4, label: "Friday" },
+        { value: 5, label: "Saturday" },
+        { value: 6, label: "Sunday" },
+      ];
+    },
+    waypointRecurrenceNthOptions() {
+      return [
+        { value: 1, label: "1st" },
+        { value: 2, label: "2nd" },
+        { value: 3, label: "3rd" },
+        { value: 4, label: "4th" },
+        { value: 5, label: "Last" },
+      ];
+    },
+    waypointBuilderPreview() {
+      return this.buildWaypointCommandFromBuilder();
+    },
+    projectPickerFilteredRows() {
+      const rows = Array.isArray(this.projectPickerRows) ? this.projectPickerRows : [];
+      const query = String(this.projectPickerSearch || "").trim().toLowerCase();
+      if (!query) {
+        return rows;
+      }
+      return rows.filter((row) => {
+        const project = String(row?.project || "").trim().toLowerCase();
+        const description = String(row?.description || "").trim().toLowerCase();
+        return project.includes(query) || description.includes(query);
+      });
+    },
+    webPushPermissionLabel() {
+      const permission = String(this.webPushPermission || "default").trim().toLowerCase();
+      if (permission === "granted") {
+        return "Allowed";
+      }
+      if (permission === "denied") {
+        return "Blocked in browser settings";
+      }
+      return "Not requested yet";
+    },
+    webPushLastError() {
+      return String(this.webPushSettings?.last_error || "").trim();
+    },
+    webPushStatusLine() {
+      if (!supportsWebPushClient()) {
+        return "This browser context cannot use Web Push. Use HTTPS or install the app first.";
+      }
+      if (!this.webPushSettings.server_supported) {
+        return "Server-side Web Push is not ready yet.";
+      }
+      if (this.webPushSettings.has_subscription) {
+        return "This device is subscribed and can receive Foxforge notifications.";
+      }
+      return "This device is not subscribed yet.";
+    },
+    webPushInstallLine() {
+      if (isProbablyIosDevice() && !this.webPushInstalled) {
+        return "On iPhone, open this site in Safari, use Share -> Add to Home Screen, then launch the installed web app and enable notifications there.";
+      }
+      if (!window.isSecureContext) {
+        return "Web Push requires HTTPS, except on localhost.";
+      }
+      return "";
+    },
+  },
+
+  watch: {
+    "topicForm.type"(val) {
+      this.topicFormUndergroundWarning = String(val || "").trim().toLowerCase() === "underground";
+    },
+  },
+
+  methods: {
+    refreshWebPushClientState() {
+      this.webPushPermission = "Notification" in window ? String(Notification.permission || "default") : "default";
+      this.webPushInstalled = isInstalledWebApp();
+      this.webPushRegistrationReady = Boolean(this._webPushRegistration);
+    },
+
+    async initializeWebPushSupport() {
+      this.refreshWebPushClientState();
+      if (!supportsWebPushClient()) {
+        return;
+      }
+      try {
+        const registration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+        this._webPushRegistration = registration;
+        this.webPushRegistrationReady = true;
+      } catch (err) {
+        console.warn("Service worker registration failed:", err);
+      } finally {
+        this.refreshWebPushClientState();
+      }
+    },
+
+    async getWebPushRegistration() {
+      if (this._webPushRegistration) {
+        return this._webPushRegistration;
+      }
+      if (!supportsWebPushClient()) {
+        return null;
+      }
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        this._webPushRegistration = registration;
+        this.webPushRegistrationReady = true;
+        return registration;
+      } catch (_err) {
+        return null;
+      }
+    },
+
+    async refreshWebPushSettings() {
+      this.refreshWebPushClientState();
+      if (this.auth.enabled && !this.auth.authenticated) {
+        this.webPushSettings = {
+          server_supported: false,
+          public_key: "",
+          vapid_subject: "",
+          enabled: true,
+          subscription_count: 0,
+          has_subscription: false,
+          last_error: "",
+          last_test_sent_at: "",
+        };
+        return;
+      }
+      try {
+        const payload = await this.apiGet("/api/settings/web-push");
+        this.webPushSettings = {
+          server_supported: Boolean(payload.server_supported),
+          public_key: String(payload.public_key || "").trim(),
+          vapid_subject: String(payload.vapid_subject || "").trim(),
+          enabled: Boolean(payload.enabled),
+          subscription_count: Number(payload.subscription_count || 0),
+          has_subscription: Boolean(payload.has_subscription),
+          last_error: String(payload.last_error || "").trim(),
+          last_test_sent_at: String(payload.last_test_sent_at || "").trim(),
+        };
+      } catch (err) {
+        this.webPushSettings = {
+          server_supported: false,
+          public_key: "",
+          vapid_subject: "",
+          enabled: true,
+          subscription_count: 0,
+          has_subscription: false,
+          last_error: String(err.message || err),
+          last_test_sent_at: "",
+        };
+      }
+    },
+
+    openWebPushSettingsModal() {
+      this.chatMenuOpen = false;
+      this.webPushModalOpen = true;
+      this.updateBodyClasses();
+      this.refreshWebPushSettings();
+    },
+
+    closeWebPushSettingsModal() {
+      this.webPushModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async enableWebPush() {
+      this.webPushSubmitting = true;
+      try {
+        this.refreshWebPushClientState();
+        if (!supportsWebPushClient()) {
+          throw new Error("This browser does not currently support Web Push in this context.");
+        }
+        if (isProbablyIosDevice() && !this.webPushInstalled) {
+          throw new Error("On iPhone, add Foxforge to your Home Screen first, then open the installed web app and try again.");
+        }
+        const registration = await this.getWebPushRegistration();
+        if (!registration) {
+          throw new Error("Service worker registration is not ready yet.");
+        }
+        await this.refreshWebPushSettings();
+        const publicKey = String(this.webPushSettings.public_key || "").trim();
+        if (!this.webPushSettings.server_supported || !publicKey) {
+          throw new Error(this.webPushLastError || "Server-side Web Push is not configured.");
+        }
+        const permission = await Notification.requestPermission();
+        this.webPushPermission = permission;
+        if (permission !== "granted") {
+          throw new Error("Notification permission was not granted.");
+        }
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+        }
+        await this.apiPost("/api/settings/web-push/subscribe", {
+          installed: this.webPushInstalled,
+          subscription: subscription.toJSON(),
+        });
+        await this.refreshWebPushSettings();
+      } catch (err) {
+        window.alert(String(err.message || err));
+      } finally {
+        this.webPushSubmitting = false;
+        this.refreshWebPushClientState();
+      }
+    },
+
+    async disableWebPush() {
+      this.webPushSubmitting = true;
+      try {
+        const registration = await this.getWebPushRegistration();
+        let endpoint = "";
+        if (registration) {
+          const subscription = await registration.pushManager.getSubscription();
+          endpoint = String(subscription?.endpoint || "").trim();
+          if (subscription) {
+            try {
+              await subscription.unsubscribe();
+            } catch (_err) {}
+          }
+        }
+        if (!endpoint) {
+          throw new Error("Could not find a subscription for this device.");
+        }
+        await this.apiPost("/api/settings/web-push/unsubscribe", { endpoint });
+        await this.refreshWebPushSettings();
+      } catch (err) {
+        window.alert("Could not disable push: " + String(err.message || err));
+      } finally {
+        this.webPushSubmitting = false;
+      }
+    },
+
+    async testWebPushSettings() {
+      this.webPushSubmitting = true;
+      try {
+        await this.apiPost("/api/settings/web-push/test", {});
+        window.alert("Test push queued. Check this device.");
+        await this.refreshWebPushSettings();
+      } catch (err) {
+        window.alert("Push test failed: " + String(err.message || err));
+      } finally {
+        this.webPushSubmitting = false;
+      }
+    },
+
+    async markConversationRead(conversationId, options = {}) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return null;
+      }
+      try {
+        const payload = await this.apiPost(`/api/conversations/${encodeURIComponent(id)}/read`, {});
+        const convo = payload && payload.conversation ? payload.conversation : null;
+        if (convo && String(this.activeConversationId || "").trim() === id) {
+          this.activeConversation = convo;
+        }
+        if (options.refreshList !== false) {
+          await this.refreshConversations();
+        }
+        return convo;
+      } catch (_err) {
+        return null;
+      }
+    },
+
+    conversationSendingMeta(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return null;
+      }
+      const row = this.sendingByConversation ? this.sendingByConversation[id] : null;
+      if (!row) {
+        return null;
+      }
+      if (typeof row === "object") {
+        return row;
+      }
+      return {
+        requestId: "",
+        startedAt: Date.now(),
+        cancelRequested: false,
+        foraging: false,
+      };
+    },
+
+    isConversationSending(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return false;
+      }
+      return Boolean(this.conversationSendingMeta(id));
+    },
+
+    setConversationSending(conversationId, value) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const next = Object.assign({}, this.sendingByConversation || {});
+      if (value) {
+        if (typeof value === "object") {
+          next[id] = {
+            requestId: String(value.requestId || "").trim(),
+            startedAt: Number(value.startedAt || Date.now()),
+            cancelRequested: Boolean(value.cancelRequested),
+            foraging: Boolean(value.foraging),
+          };
+        } else {
+          next[id] = {
+            requestId: "",
+            startedAt: Date.now(),
+            cancelRequested: false,
+            foraging: false,
+          };
+        }
+      } else {
+        delete next[id];
+        const nextStage = Object.assign({}, this.sendingJobStage);
+        delete nextStage[id];
+        this.sendingJobStage = nextStage;
+      }
+      this.sendingByConversation = next;
+    },
+
+    isMobileLayout() {
+      return window.matchMedia("(max-width: 980px)").matches;
+    },
+
+    panelBadgeValue(rawCount) {
+      const count = Number(rawCount || 0);
+      if (!Number.isFinite(count) || count <= 0) {
+        return "";
+      }
+      return String(Math.max(1, Math.floor(count)));
+    },
+
+    lessonsStorageKey() {
+      const profileId = String(this.auth?.profile?.id || "anon").trim() || "anon";
+      return `foxforge_lessons_read_${profileId}`;
+    },
+
+    reflectionsStorageKey() {
+      const profileId = String(this.auth?.profile?.id || "anon").trim() || "anon";
+      return `foxforge_reflections_read_${profileId}`;
+    },
+
+    loadLessonReadState() {
+      let next = {};
+      try {
+        const raw = localStorage.getItem(this.lessonsStorageKey());
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            next = parsed;
+          }
+        }
+      } catch (_err) {
+        next = {};
+      }
+      this.lessonsReadIds = next;
+    },
+
+    loadReflectionReadState() {
+      let next = {};
+      try {
+        const raw = localStorage.getItem(this.reflectionsStorageKey());
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            next = parsed;
+          }
+        }
+      } catch (_err) {
+        next = {};
+      }
+      this.reflectionsReadIds = next;
+    },
+
+    saveLessonReadState() {
+      try {
+        localStorage.setItem(this.lessonsStorageKey(), JSON.stringify(this.lessonsReadIds || {}));
+      } catch (_err) {}
+    },
+
+    saveReflectionReadState() {
+      try {
+        localStorage.setItem(this.reflectionsStorageKey(), JSON.stringify(this.reflectionsReadIds || {}));
+      } catch (_err) {}
+    },
+
+    markLessonsAsRead(rows) {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        return;
+      }
+      const map = Object.assign({}, this.lessonsReadIds || {});
+      let changed = false;
+      for (const row of list) {
+        const id = String(row?.id || "").trim();
+        if (!id) {
+          continue;
+        }
+        if (!map[id]) {
+          map[id] = 1;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        this.lessonsUnreadCount = 0;
+        return;
+      }
+      this.lessonsReadIds = map;
+      this.lessonsUnreadCount = 0;
+      this.saveLessonReadState();
+    },
+
+    markReflectionsAsRead(rows) {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        return;
+      }
+      const map = Object.assign({}, this.reflectionsReadIds || {});
+      let changed = false;
+      for (const row of list) {
+        const id = String(row?.id || "").trim();
+        if (!id) {
+          continue;
+        }
+        if (!map[id]) {
+          map[id] = 1;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        this.reflectionsUnreadCount = 0;
+        return;
+      }
+      this.reflectionsReadIds = map;
+      this.reflectionsUnreadCount = 0;
+      this.saveReflectionReadState();
+    },
+
+    reflectionIsRead(row) {
+      const id = String(row?.id || "").trim();
+      if (!id) {
+        return true;
+      }
+      return Boolean((this.reflectionsReadIds || {})[id]);
+    },
+
+    toggleReflectionRead(row) {
+      const id = String(row?.id || "").trim();
+      if (!id) {
+        return;
+      }
+      const map = Object.assign({}, this.reflectionsReadIds || {});
+      if (map[id]) {
+        delete map[id];
+      } else {
+        map[id] = 1;
+      }
+      this.reflectionsReadIds = map;
+      this.saveReflectionReadState();
+      this.refreshReflectionsUnreadCount(true);
+    },
+
+    async refreshLessonsUnreadCount(force = false) {
+      const now = Date.now();
+      if (!force && now - Number(this.lessonsUnreadCheckedAt || 0) < 30000) {
+        return;
+      }
+      this.lessonsUnreadCheckedAt = now;
+      try {
+        const payload = await this.apiGet("/api/panel/lessons?limit=200");
+        const rows = Array.isArray(payload.lessons) ? payload.lessons : [];
+        const readMap = this.lessonsReadIds || {};
+        let unread = 0;
+        for (const row of rows) {
+          const id = String(row?.id || "").trim();
+          if (!id) {
+            continue;
+          }
+          if (!readMap[id]) {
+            unread += 1;
+          }
+        }
+        this.lessonsUnreadCount = unread;
+      } catch (_err) {
+        this.lessonsUnreadCount = Number(this.panelStatus.learned_lessons || 0);
+      }
+    },
+
+    async refreshReflectionsUnreadCount(force = false) {
+      const now = Date.now();
+      if (!force && now - Number(this.reflectionsUnreadCheckedAt || 0) < 30000) {
+        return;
+      }
+      this.reflectionsUnreadCheckedAt = now;
+      try {
+        const payload = await this.apiGet("/api/panel/reflections-history?limit=300");
+        const rows = Array.isArray(payload.reflections) ? payload.reflections : [];
+        const readMap = this.reflectionsReadIds || {};
+        let unread = 0;
+        for (const row of rows) {
+          const id = String(row?.id || "").trim();
+          if (!id) {
+            continue;
+          }
+          if (!readMap[id]) {
+            unread += 1;
+          }
+        }
+        this.reflectionsUnreadCount = unread;
+      } catch (_err) {
+        this.reflectionsUnreadCount = Number(this.panelStatus.open_reflections || 0);
+      }
+    },
+
+    reflectionMomentTitle(row) {
+      const summary = String(row?.summary || "").trim();
+      if (summary) {
+        return summary.length > 88 ? `${summary.slice(0, 85)}...` : summary;
+      }
+      return String(row?.question_for_user || "Reflection moment");
+    },
+
+    reflectionMomentBlurb(row) {
+      const improve = Array.isArray(row?.what_to_improve) ? row.what_to_improve : [];
+      const firstImprove = String(improve[0] || "").trim();
+      const experiment = String(row?.next_experiment || "").trim();
+      const question = String(row?.question_for_user || "").trim();
+      const parts = [];
+      if (firstImprove) {
+        parts.push(`Realized: ${firstImprove}`);
+      }
+      if (experiment) {
+        parts.push(`Changed approach: ${experiment}`);
+      }
+      if (question) {
+        parts.push(`Check-in prompt: ${question}`);
+      }
+      if (parts.length === 0) {
+        return String(row?.summary || "Reflection logged.");
+      }
+      return parts.join(" ");
+    },
+
+    lessonSummary(row) {
+      return String(row?.summary || row?.principle || "Lesson").trim();
+    },
+
+    lessonConfidenceValue(row) {
+      const value = Number(row?.confidence ?? row?.score ?? 0);
+      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+    },
+
+    lessonConfidenceText(row) {
+      const value = this.lessonConfidenceValue(row);
+      return `${value.toFixed(2)} (${Math.round(value * 100)}%)`;
+    },
+
+    lessonConfidenceClass(row) {
+      const value = this.lessonConfidenceValue(row);
+      if (value >= 0.8) return "is-high";
+      if (value >= 0.6) return "is-medium";
+      return "is-low";
+    },
+
+    lessonStatusText(row) {
+      const value = String(row?.status || "").trim().toLowerCase();
+      if (!value) return "candidate";
+      return value.replace(/_/g, " ");
+    },
+
+    lessonStatusClass(row) {
+      const value = String(row?.status || "").trim().toLowerCase();
+      if (value === "approved") return "is-approved";
+      if (value === "candidate") return "is-candidate";
+      if (value === "rejected") return "is-rejected";
+      if (value === "expired") return "is-expired";
+      return "is-neutral";
+    },
+
+    lessonOriginText(row) {
+      const value = String(row?.origin_type || row?.source || "").trim().toLowerCase();
+      return value ? value.replace(/_/g, " ") : "unknown";
+    },
+
+    lessonGuidanceLines(row) {
+      const raw = String(row?.guidance || row?.trigger || "").replace(/\r\n/g, "\n").trim();
+      if (!raw) return [];
+      const lines = raw
+        .split("\n")
+        .map((line) => String(line || "").trim())
+        .filter((line) => line.length > 0)
+        .map((line) => line.replace(/^\-\s+/, ""));
+      if (lines.length > 1) {
+        return lines.slice(0, 3);
+      }
+      const sentenceParts = lines[0]
+        .split(/(?<=[.!?])\s+/)
+        .map((line) => String(line || "").trim())
+        .filter((line) => line.length > 0);
+      return (sentenceParts.length ? sentenceParts : lines).slice(0, 3);
+    },
+
+    lessonCanApprove(row) {
+      const status = String(row?.status || "").trim().toLowerCase() || "candidate";
+      return status === "candidate";
+    },
+
+    lessonCanReject(row) {
+      const status = String(row?.status || "").trim().toLowerCase() || "candidate";
+      return status === "candidate" || status === "approved";
+    },
+
+    lessonCanExpire(row) {
+      const status = String(row?.status || "").trim().toLowerCase() || "candidate";
+      return status === "approved";
+    },
+
+    async applyLessonAction(row, action) {
+      const id = String(row?.id || "").trim();
+      const verb = String(action || "").trim().toLowerCase();
+      if (!id || !["approve", "reject", "expire"].includes(verb)) {
+        return;
+      }
+      try {
+        const endpoint = `/api/lessons/${encodeURIComponent(id)}/${verb}`;
+        const payload = await this.apiPost(endpoint, {});
+        if (!payload?.ok) {
+          throw new Error(String(payload?.message || "Lesson action failed."));
+        }
+        await this.refreshSystemPanel();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Lesson update failed: ${String(err.message || err)}`);
+      }
+    },
+
+    syncViewportHeight() {
+      const viewport = window.visualViewport;
+      const innerHeight = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
+      const visualHeight = Math.round(viewport?.height || innerHeight || 0);
+      const offsetTop = Math.round(viewport?.offsetTop || 0);
+      // Track max-seen innerHeight as stable baseline. On Android Chrome, window.innerHeight
+      // shrinks along with visualViewport when the keyboard opens, so comparing the two gives
+      // zero delta and keyboard is never detected. Comparing against the pre-keyboard peak fixes this.
+      if (!this._stableAppVh || innerHeight > this._stableAppVh) {
+        this._stableAppVh = innerHeight;
+      }
+      const stableH = this._stableAppVh;
+      const keyboardOpen = Boolean(viewport && stableH && visualHeight < stableH - 100);
+      const appHeight = Math.round(stableH || innerHeight || visualHeight || 0);
+      if (appHeight > 0) {
+        document.documentElement.style.setProperty("--app-vh", `${appHeight}px`);
+      }
+      if (visualHeight > 0) {
+        document.documentElement.style.setProperty("--visual-vh", `${visualHeight}px`);
+      }
+      document.documentElement.style.setProperty("--viewport-offset-top", `${offsetTop}px`);
+      const wasKeyboard = this._wasKeyboardOpen || false;
+      this._wasKeyboardOpen = keyboardOpen;
+      document.body.classList.toggle("keyboard-open", keyboardOpen);
+      if (keyboardOpen) {
+        // Prevent iOS from accumulating scroll offset on fixed layouts (older Safari fallback).
+        if (typeof window.scrollTo === "function") {
+          window.scrollTo(0, 0);
+        }
+
+      }
+    },
+
+    updateBodyClasses() {
+      const body = document.body;
+      const mobile = this.isMobileLayout();
+      body.classList.toggle("sidebar-open", mobile && this.sidebarOpen);
+      body.classList.toggle("sidebar-collapsed", !mobile && this.sidebarCollapsed);
+      body.classList.toggle("md-modal-open", this.mdOverlayOpen);
+      body.classList.toggle("actions-modal-open", this.actionsOverlayOpen);
+      body.classList.toggle("panel-modal-open", this.panelOverlayOpen);
+      body.classList.toggle("task-reminder-open", this.taskReminderOpen);
+      body.classList.toggle(
+        "family-modal-open",
+        this.familyProfileModalOpen ||
+          this.webPushModalOpen ||
+          this.projectPickerOpen ||
+          this.projectTargetModalOpen ||
+          this.waypointMemberEditorOpen ||
+          this.waypointTaskModalOpen ||
+          this.waypointEventModalOpen ||
+          this.waypointShoppingModalOpen ||
+          this.waypointContactModalOpen ||
+          this.emailSettingsModalOpen ||
+          this.botSettingsModalOpen
+      );
+    },
+
+    toggleSidebar() {
+      if (this.isMobileLayout()) {
+        this.sidebarOpen = !this.sidebarOpen;
+      } else {
+        this.sidebarCollapsed = !this.sidebarCollapsed;
+      }
+      this.updateBodyClasses();
+    },
+
+    closeSidebar() {
+      this.sidebarOpen = false;
+      this.updateBodyClasses();
+    },
+
+    goToLandingHome() {
+      this.chatMenuOpen = false;
+      this.actionsOverlayOpen = false;
+      this.panelOverlayOpen = false;
+      if (this.isMobileLayout()) {
+        this.closeSidebar();
+      } else {
+        this.sidebarCollapsed = true;
+      }
+      this.setActiveApp("home");
+      this.updateBodyClasses();
+    },
+
+    setActiveApp(appName) {
+      const key = String(appName || "").trim().toLowerCase();
+      this.activeApp = key === "waypoint" ? "waypoint" : key === "home" ? "home" : "chat";
+      if (this.activeApp !== "waypoint") {
+        this.waypointBuilderOpen = false;
+        this.waypointChatExpanded = false;
+        this.closeWaypointEntryModals();
+      } else {
+        this.waypointChatExpanded = !this.isMobileLayout();
+      }
+      this.updateBodyClasses();
+      this.$nextTick(() => {
+        if (this.activeApp === "waypoint") {
+          this.resizeWaypointComposer();
+          this.scrollWaypointMessages();
+        } else if (this.activeApp === "chat") {
+          this.resizeComposer();
+          this.scrollMessages();
+        }
+      });
+    },
+
+    async openWaypointApp(options = {}) {
+      this.chatMenuOpen = false;
+      this.actionsOverlayOpen = false;
+      this.panelOverlayOpen = false;
+      this.waypointTopTab = "calendar";
+      this.setActiveApp("waypoint");
+      this.waypointChatExpanded = !this.isMobileLayout();
+      if (this.isMobileLayout()) {
+        this.waypointChatExpanded = false;
+      }
+      if (this.isMobileLayout()) {
+        this.closeSidebar();
+      }
+      try {
+        await this.refreshWaypointState();
+      } catch (err) {
+        window.alert(`Waypoints load failed: ${String(err.message || err)}`);
+      }
+      const rawDateKey = String(options?.dateKey || "").trim();
+      const parsedDate = parseDateKey(rawDateKey);
+      if (parsedDate) {
+        this.waypointCalendarDate = startOfLocalDay(parsedDate);
+        this.waypointSelectedDateKey = toDateKey(parsedDate);
+        this.waypointEventForm.date = this.waypointSelectedDateKey;
+      } else {
+        this.waypointCalendarDate = startOfLocalDay(new Date());
+        this.waypointSelectedDateKey = toDateKey(this.waypointCalendarDate);
+      }
+      const requestedView = String(options?.calendarView || "").trim().toLowerCase();
+      if (requestedView) {
+        this.setWaypointCalendarView(requestedView);
+      } else {
+        this.renderWaypointCalendar(this.waypointCalendarEntries());
+      }
+      this.$nextTick(() => {
+        if (options?.focusComposer === false) {
+          return;
+        }
+        if (this.isMobileLayout()) {
+          return;
+        }
+        const node = this.$refs.waypointInput;
+        if (node) {
+          node.focus();
+        }
+      });
+    },
+
+    async openWaypointMonthFromHome() {
+      await this.openWaypointApp({
+        dateKey: this.homeTodayDateKey,
+        calendarView: "month",
+        focusComposer: false,
+      });
+    },
+
+    async openWaypointDayFromHome() {
+      await this.openWaypointApp({
+        dateKey: this.homeTodayDateKey,
+        calendarView: "day",
+        focusComposer: false,
+      });
+    },
+
+    focusWaypointCaptureField(kind) {
+      this.$nextTick(() => {
+        const target =
+          kind === "event"
+            ? this.$refs.waypointEventTitleInput
+            : kind === "shopping"
+              ? this.$refs.waypointShoppingTitleInput
+              : kind === "contact"
+                ? this.$refs.waypointContactNameInput
+                : this.$refs.waypointTaskTitleInput;
+        if (target && typeof target.focus === "function") {
+          target.focus();
+        }
+      });
+    },
+
+    openWaypointCapturePanel(kind, dateKey = "") {
+      const selected = isIsoDate(String(dateKey || "").trim())
+        ? String(dateKey).trim()
+        : isIsoDate(String(this.waypointSelectedDateKey || "").trim())
+          ? String(this.waypointSelectedDateKey || "").trim()
+          : toDateKey(startOfLocalDay(new Date()));
+      if (kind === "event") {
+        this.openWaypointEventModal(selected);
+      } else if (kind === "task") {
+        this.openWaypointTaskModal({ dueDate: selected });
+      } else if (kind === "shopping") {
+        this.openWaypointShoppingModal("food");
+      } else if (kind === "contact") {
+        this.openWaypointContactModal();
+      }
+    },
+
+    async openWaypointAddEventFromHome() {
+      await this.openWaypointApp({
+        dateKey: this.homeTodayDateKey,
+        calendarView: "day",
+        focusComposer: false,
+      });
+      this.openWaypointEventModal(this.homeTodayDateKey);
+    },
+
+    async openWaypointAddTaskFromHome() {
+      await this.openWaypointApp({
+        dateKey: this.homeTodayDateKey,
+        calendarView: "day",
+        focusComposer: false,
+      });
+      this.openWaypointTaskModal({ dueDate: this.homeTodayDateKey });
+    },
+
+    async openWaypointAddShoppingFromHome() {
+      await this.openWaypointApp({
+        dateKey: this.homeTodayDateKey,
+        calendarView: "day",
+        focusComposer: false,
+      });
+      this.openWaypointShoppingModal("food");
+    },
+
+    async openLastConversationFromHome() {
+      const id = String(this.homeLastConversation?.id || "").trim();
+      if (!id) {
+        await this.createConversation();
+        return;
+      }
+      await this.openConversation(id);
+    },
+
+    async openHomeChat() {
+      const id = String(this.homeLastConversation?.id || "").trim();
+      if (id) {
+        await this.openConversation(id);
+        return;
+      }
+      if (Array.isArray(this.conversations) && this.conversations.length) {
+        await this.openConversation(this.conversations[0].id);
+        return;
+      }
+      await this.createConversation();
+    },
+
+    closeWaypointApp() {
+      this.setActiveApp("chat");
+    },
+
+    closeWaypointEntryModals() {
+      this.waypointTaskModalOpen = false;
+      this.waypointEventModalOpen = false;
+      this.waypointShoppingModalOpen = false;
+      this.waypointContactModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    openWaypointTaskModal(options = {}) {
+      const dueDate = isIsoDate(String(options?.dueDate || "").trim()) ? String(options.dueDate).trim() : "";
+      const listName = String(options?.listName || "general").trim() || "general";
+      const memberIds = this.normalizeWaypointMemberIds(options?.memberIds || []);
+      this.closeWaypointEntryModals();
+      this.waypointTaskEditId = "";
+      this.waypointTaskForm.title = "";
+      this.waypointTaskForm.priority = "medium";
+      this.waypointTaskForm.list_name = listName;
+      this.waypointTaskForm.due_date = dueDate;
+      this.waypointTaskForm.member_ids = memberIds;
+      this.waypointTaskForm.location = "";
+      this.waypointTaskForm.recurrence_enabled = false;
+      this.waypointTaskForm.recurrence_type = "weekly_day";
+      this.waypointTaskForm.recurrence_interval = 1;
+      this.waypointTaskForm.recurrence_weekday = 0;
+      this.waypointTaskForm.recurrence_day = 1;
+      this.waypointTaskForm.recurrence_nth = 1;
+      this.waypointTaskForm.recurrence_until = "";
+      this.waypointTaskModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("task");
+    },
+
+    openWaypointTaskEditModal(task) {
+      const row = task && typeof task === "object" ? task : {};
+      const taskId = String(row.id || "").trim();
+      if (!taskId) {
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.waypointTaskEditId = taskId;
+      this.waypointTaskForm.title = String(row.title || "").trim();
+      this.waypointTaskForm.priority = String(row.priority || "medium").trim() || "medium";
+      this.waypointTaskForm.list_name = String(row.list_name || "general").trim() || "general";
+      this.waypointTaskForm.due_date = String(row.due_date || "").trim();
+      this.waypointTaskForm.member_ids = this.normalizeWaypointMemberIds(row.member_ids || []);
+      this.waypointTaskForm.location = String(row.location || "").trim();
+      this.waypointTaskForm.recurrence_enabled = Boolean(row.recurrence_enabled);
+      this.waypointTaskForm.recurrence_type = String(row.recurrence_type || "weekly_day").trim() || "weekly_day";
+      this.waypointTaskForm.recurrence_interval = Number(row.recurrence_interval) || 1;
+      this.waypointTaskForm.recurrence_weekday = Number(row.recurrence_weekday) || 0;
+      this.waypointTaskForm.recurrence_day = Number(row.recurrence_day) || 1;
+      this.waypointTaskForm.recurrence_nth = Number(row.recurrence_nth) || 1;
+      this.waypointTaskForm.recurrence_until = String(row.recurrence_until || "").trim();
+      this.waypointTaskModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("task");
+    },
+
+    closeWaypointTaskModal() {
+      this.waypointTaskModalOpen = false;
+      this.waypointTaskEditId = "";
+      this.updateBodyClasses();
+    },
+
+    openWaypointReminderTaskModal() {
+      this.openWaypointTaskModal({
+        listName: "reminders",
+        dueDate: isIsoDate(String(this.waypointSelectedDateKey || "").trim()) ? String(this.waypointSelectedDateKey).trim() : "",
+      });
+    },
+
+    openWaypointEventModal(dateKey = "") {
+      const selected = isIsoDate(String(dateKey || "").trim())
+        ? String(dateKey).trim()
+        : isIsoDate(String(this.waypointSelectedDateKey || "").trim())
+          ? String(this.waypointSelectedDateKey).trim()
+          : toDateKey(startOfLocalDay(new Date()));
+      const hostOptions = Array.isArray(this.waypointHostContactLocationOptions) ? this.waypointHostContactLocationOptions : [];
+      const defaultHostContactId = hostOptions.length === 1 ? String(hostOptions[0]?.value || "").trim() : "";
+      const selectedWeekday = this.waypointDefaultRecurrenceWeekdayForDate(selected);
+      const selectedNth = this.waypointDefaultRecurrenceNthForDate(selected);
+      const parsedSelected = parseDateKey(selected) || startOfLocalDay(new Date());
+      this.closeWaypointEntryModals();
+      this.waypointEventEditId = "";
+      this.waypointEventForm.title = "";
+      this.waypointEventForm.date = selected;
+      this.waypointEventForm.start_time = "";
+      this.waypointEventForm.end_time = "";
+      this.waypointEventForm.reminder_time = "";
+      this.waypointEventForm.location_contact_id = defaultHostContactId;
+      this.waypointEventForm.location = "";
+      this.waypointEventForm.member_ids = [];
+      this.waypointEventForm.recurrence_enabled = false;
+      this.waypointEventForm.recurrence_type = "weekly_day";
+      this.waypointEventForm.recurrence_interval = 1;
+      this.waypointEventForm.recurrence_weekday = selectedWeekday;
+      this.waypointEventForm.recurrence_day = parsedSelected.getDate();
+      this.waypointEventForm.recurrence_nth = selectedNth;
+      this.waypointEventForm.recurrence_until = "";
+      if (defaultHostContactId) {
+        this.onWaypointEventLocationContactChanged();
+      }
+      this.waypointEventModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("event");
+    },
+
+    openWaypointEventEditModal(eventRow) {
+      const row = eventRow && typeof eventRow === "object" ? eventRow : {};
+      const eventId = String(row.source_id || row.id || "").trim();
+      if (!eventId) {
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.waypointEventEditId = eventId;
+      const hostIds = new Set((this.waypointHostContactLocationOptions || []).map((opt) => String(opt?.value || "").trim()));
+      const contactId = String(row.location_contact_id || "").trim();
+      this.waypointEventForm.title = String(row.title || "").trim();
+      this.waypointEventForm.date = String(row.date || "").trim();
+      this.waypointEventForm.start_time = String(row.start_time || "").trim();
+      this.waypointEventForm.end_time = String(row.end_time || "").trim();
+      this.waypointEventForm.location_contact_id = hostIds.has(contactId) ? contactId : "";
+      this.waypointEventForm.location = String(row.location || "").trim();
+      this.waypointEventForm.reminder_time = this.extractReminderTimeFromNotes(row.notes || "");
+      this.waypointEventForm.member_ids = this.normalizeWaypointMemberIds(row.member_ids || []);
+      const recurrence = this.normalizeWaypointEventRecurrence(row);
+      this.waypointEventForm.recurrence_enabled = Boolean(recurrence.recurrence_enabled);
+      this.waypointEventForm.recurrence_type = String(recurrence.recurrence_type || "weekly_day");
+      this.waypointEventForm.recurrence_interval = Number(recurrence.recurrence_interval || 1);
+      this.waypointEventForm.recurrence_weekday = Number(recurrence.recurrence_weekday || 0);
+      this.waypointEventForm.recurrence_day = Number(recurrence.recurrence_day || 1);
+      this.waypointEventForm.recurrence_nth = Number(recurrence.recurrence_nth || 1);
+      this.waypointEventForm.recurrence_until = String(recurrence.recurrence_until || "");
+      if (this.waypointEventForm.location_contact_id) {
+        this.onWaypointEventLocationContactChanged();
+      }
+      this.waypointEventModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("event");
+    },
+
+    closeWaypointEventModal() {
+      this.waypointEventModalOpen = false;
+      this.waypointEventEditId = "";
+      this.updateBodyClasses();
+    },
+
+    syncWaypointEventRecurrenceFromDate() {
+      const dateKey = String(this.waypointEventForm.date || "").trim();
+      if (!isIsoDate(dateKey)) {
+        return;
+      }
+      this.waypointEventForm.recurrence_weekday = this.waypointDefaultRecurrenceWeekdayForDate(dateKey);
+      this.waypointEventForm.recurrence_day = (parseDateKey(dateKey) || startOfLocalDay(new Date())).getDate();
+      this.waypointEventForm.recurrence_nth = this.waypointDefaultRecurrenceNthForDate(dateKey);
+    },
+
+    openWaypointShoppingModal(defaultCategory = "food") {
+      const category = String(defaultCategory || "food").trim().toLowerCase();
+      this.closeWaypointEntryModals();
+      this.waypointShoppingEditId = "";
+      this.waypointShoppingForm.title = "";
+      this.waypointShoppingForm.category = category === "general" ? "general" : "food";
+      this.waypointShoppingModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("shopping");
+    },
+
+    openWaypointShoppingEditModal(item) {
+      const row = item && typeof item === "object" ? item : {};
+      const itemId = String(row.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.waypointShoppingEditId = itemId;
+      this.waypointShoppingForm.title = String(row.title || "").trim();
+      this.waypointShoppingForm.category = String(row.category || "food").trim().toLowerCase() === "general" ? "general" : "food";
+      this.waypointShoppingModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("shopping");
+    },
+
+    closeWaypointShoppingModal() {
+      this.waypointShoppingModalOpen = false;
+      this.waypointShoppingEditId = "";
+      this.updateBodyClasses();
+    },
+
+    openWaypointContactModal() {
+      this.closeWaypointEntryModals();
+      this.waypointContactEditId = "";
+      this.waypointContactDeleteConfirm = "";
+      this.waypointContactDetailsOpen = true;
+      this.waypointContactForm = blankWaypointContactFormDefaults();
+      this.waypointContactModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("contact");
+    },
+
+    openWaypointContactEditModal(person) {
+      const row = person && typeof person === "object" ? person : {};
+      const contactId = String(row.id || "").trim();
+      if (!contactId) {
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.waypointContactEditId = contactId;
+      this.waypointContactDeleteConfirm = "";
+      this.waypointContactForm = Object.assign(blankWaypointContactFormDefaults(), {
+        name: String(row.name || "").trim(),
+        kind: String(row.kind || "person").trim().toLowerCase() || "person",
+        relationship: String(row.relationship || "friend").trim().toLowerCase() || "friend",
+        location_name: String(row.location_name || "").trim(),
+        location_address: String(row.location_address || "").trim(),
+        notes: String(row.notes || "").trim(),
+        nickname: String(row.nickname || "").trim(),
+        birthday: String(row.birthday || "").trim(),
+        age: String(row.age || "").trim(),
+        age_is_estimate: Boolean(row.age_is_estimate),
+        gender: String(row.gender || "").trim(),
+        school_or_work: String(row.school_or_work || "").trim(),
+        likes: String(row.likes || "").trim(),
+        dislikes: String(row.dislikes || "").trim(),
+        important_dates: String(row.important_dates || "").trim(),
+        medical_notes: String(row.medical_notes || "").trim(),
+        email: String(row.email || "").trim(),
+        phone: String(row.phone || "").trim(),
+      });
+      if (String(this.waypointContactForm.birthday || "").trim()) {
+        this.waypointContactForm.age = "";
+        this.waypointContactForm.age_is_estimate = false;
+      }
+      this.waypointContactDetailsOpen = true;
+      this.waypointContactModalOpen = true;
+      this.updateBodyClasses();
+      this.focusWaypointCaptureField("contact");
+    },
+
+    closeWaypointContactModal() {
+      this.waypointContactModalOpen = false;
+      this.waypointContactEditId = "";
+      this.waypointContactDeleteConfirm = "";
+      this.waypointContactDetailsOpen = false;
+      this.updateBodyClasses();
+    },
+
+    toggleWaypointChatTray() {
+      if (!this.isMobileLayout()) {
+        return;
+      }
+      this.waypointChatExpanded = !this.waypointChatExpanded;
+      if (!this.waypointChatExpanded) {
+        this.waypointBuilderOpen = false;
+      }
+      this.$nextTick(() => {
+        if (!this.waypointChatExpanded) {
+          return;
+        }
+        this.resizeWaypointComposer();
+        this.scrollWaypointMessages();
+        const node = this.$refs.waypointInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    setComposerMode(mode) {
+      const next = mode === "forage" || mode === "make" || mode === "talk" ? mode : "talk";
+      this.inputMode = next;
+      try {
+        localStorage.setItem("foxforge_input_mode", this.inputMode);
+      } catch (_err) {}
+    },
+
+    resetComposerMode() {
+      this.setComposerMode("talk");
+    },
+
+    normalizeThemeName(raw) {
+      const value = String(raw || "").trim();
+      if (this.themeOptions.includes(value)) {
+        return value;
+      }
+      return "Night";
+    },
+
+    async applyFontConfig(preferredFontId = "", persistChoice = false) {
+      const defaultStack = "\"Segoe UI\", \"Trebuchet MS\", sans-serif";
+      this.fontConfigError = "";
+      document.documentElement.style.setProperty("--font-main", defaultStack);
+      const styleId = "foxforge-dynamic-fonts";
+      try {
+        let payload = null;
+        let lastStatus = 0;
+        for (const url of [FONT_CONFIG_API_URL, FONT_CONFIG_URL]) {
+          try {
+            const response = await fetch(url, { cache: "no-store" });
+            if (!response.ok) {
+              lastStatus = response.status;
+              continue;
+            }
+            payload = await response.json();
+            if (payload && typeof payload === "object") {
+              break;
+            }
+          } catch (_err) {}
+        }
+        if (!payload || typeof payload !== "object") {
+          this.fontOptions = [];
+          this.activeFontId = "";
+          this.fontConfigError = `Font config unavailable (${lastStatus || "load failed"}).`;
+          return;
+        }
+        const rows = Array.isArray(payload?.fonts) ? payload.fonts : [];
+        const fonts = [];
+        for (const row of rows) {
+          if (!row || typeof row !== "object") {
+            continue;
+          }
+          const id = String(row.id || "").trim().toLowerCase();
+          const family = String(row.family || "").trim();
+          if (!id || !family || /[{};]/.test(family)) {
+            continue;
+          }
+          let file = String(row.file || "").trim().replace(/\\/g, "/");
+          if (file.startsWith("/")) {
+            file = file.slice(1);
+          }
+          if (file.includes("..")) {
+            file = "";
+          }
+          let format = String(row.format || "").trim().toLowerCase();
+          if (!format && file.toLowerCase().endsWith(".otf")) {
+            format = "opentype";
+          }
+          if (!format) {
+            format = "truetype";
+          }
+          fonts.push({
+            id,
+            family,
+            file,
+            format,
+            weight: String(row.weight || "400").trim() || "400",
+            style: String(row.style || "normal").trim().toLowerCase() || "normal",
+            fallback: String(row.fallback || "").trim(),
+          });
+        }
+        this.fontOptions = fonts.map((row) => ({ id: row.id, family: row.family }));
+        if (!fonts.length) {
+          this.activeFontId = "";
+          return;
+        }
+
+        let faceCss = "";
+        for (const font of fonts) {
+          if (!font.file) {
+            continue;
+          }
+          const srcUrl = `/static/fonts/${encodeURI(font.file)}`;
+          const safeFamily = font.family.replace(/"/g, '\\"');
+          const formatHint = String(font.format || "").trim().toLowerCase();
+          const srcParts = formatHint
+            ? [`url("${srcUrl}") format("${formatHint}")`, `url("${srcUrl}")`]
+            : [`url("${srcUrl}")`];
+          faceCss += `@font-face{font-family:"${safeFamily}";src:${srcParts.join(",")};font-weight:${font.weight};font-style:${font.style};font-display:swap;}\n`;
+        }
+        let styleNode = document.getElementById(styleId);
+        if (!styleNode) {
+          styleNode = document.createElement("style");
+          styleNode.id = styleId;
+          document.head.appendChild(styleNode);
+        }
+        styleNode.textContent = faceCss;
+
+        let savedId = "";
+        let savedFamily = "";
+        try {
+          savedId = String(localStorage.getItem("foxforge_font_id") || "").trim().toLowerCase();
+          savedFamily = String(localStorage.getItem("foxforge_font_family") || "").trim().toLowerCase();
+        } catch (_err) {}
+
+        const forcedId = String(preferredFontId || "").trim().toLowerCase();
+        const configActiveId = String(payload?.active || "").trim().toLowerCase();
+        let active =
+          fonts.find((row) => row.id === forcedId) ||
+          fonts.find((row) => row.id === savedId) ||
+          fonts.find((row) => row.family.toLowerCase() === savedFamily) ||
+          fonts.find((row) => row.id === configActiveId);
+        if (!active) {
+          const activeFamily = String(payload?.active_family || "").trim().toLowerCase();
+          if (activeFamily) {
+            active = fonts.find((row) => row.family.toLowerCase() === activeFamily);
+          }
+        }
+        if (!active) {
+          active = fonts[0];
+        }
+
+        const fallback = String(active?.fallback || payload?.fallback || defaultStack).trim() || defaultStack;
+        const safeFamily = String(active.family || "").replace(/"/g, '\\"');
+        document.documentElement.style.setProperty("--font-main", `"${safeFamily}", ${fallback}`);
+        this.activeFontId = String(active.id || "").trim().toLowerCase();
+
+        try {
+          localStorage.setItem("foxforge_font_id", this.activeFontId);
+          localStorage.setItem("foxforge_font_family", String(active.family || "").trim());
+        } catch (_err) {}
+      } catch (err) {
+        console.warn("Font config load failed:", err);
+        this.fontConfigError = "Could not load font settings.";
+      }
+    },
+
+    async setUiFont(fontId) {
+      const next = String(fontId || "").trim().toLowerCase();
+      if (!next) {
+        return;
+      }
+      await this.applyFontConfig(next, true);
+    },
+
+    applyTheme(rawTheme, persist = true) {
+      const next = this.normalizeThemeName(rawTheme);
+      this.theme = next;
+      document.body.classList.toggle('dark', next === 'Night');
+      document.body.classList.toggle('day', next === 'Day');
+      if (!persist) {
+        return;
+      }
+      try {
+        localStorage.setItem("foxforge_theme", next);
+      } catch (_err) {}
+    },
+
+    cycleTheme() {
+      this.chatMenuOpen = false;
+      const index = this.themeOptions.indexOf(this.theme);
+      const next = this.themeOptions[(index + 1) % this.themeOptions.length];
+      this.applyTheme(next, true);
+    },
+
+    setActiveProject(project) {
+      this.activeProject = normalizeProjectSlug(project);
+      try {
+        localStorage.setItem("foxforge_active_project", this.activeProject);
+      } catch (_err) {}
+      this.refreshProjectPipeline().catch(() => {});
+    },
+
+    projectModeTitle(mode) {
+      const key = String(mode || "").trim().toLowerCase();
+      const row = PROJECT_PIPELINE_MODES.find((x) => x.value === key);
+      return row ? row.label : "Discovery";
+    },
+
+    topicTypeLabel(type) {
+      const key = String(type || "").trim().toLowerCase();
+      const row = TOPIC_TYPES.find((x) => x.value === key);
+      return row ? row.label : "General";
+    },
+
+    projectTargetTitle(target) {
+      const key = String(target || "").trim().toLowerCase();
+      const row = MAKE_TARGETS.find((x) => x.value === key);
+      return row ? row.label : "Auto";
+    },
+
+    async refreshProjectPipeline() {
+      const project = normalizeProjectSlug(this.activeProject);
+      if (!project) {
+        return;
+      }
+      try {
+        const payload = await this.apiGet(`/api/projects/${encodeURIComponent(project)}/mode`);
+        this.projectPipeline = {
+          project,
+          mode: String(payload?.mode || "discovery").trim().toLowerCase() || "discovery",
+          target: String(payload?.target || "auto").trim().toLowerCase() || "auto",
+          topic_type: String(payload?.topic_type || "general").trim().toLowerCase() || "general",
+          updated_at: String(payload?.updated_at || "").trim(),
+        };
+      } catch (_err) {
+        this.projectPipeline = {
+          project,
+          mode: "discovery",
+          target: "auto",
+          topic_type: "general",
+          updated_at: "",
+        };
+      }
+    },
+
+    async setProjectModeDirect(mode) {
+      const project = normalizeProjectSlug(this.activeProject);
+      const nextMode = String(mode || "").trim().toLowerCase();
+      if (!project || !nextMode) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/projects/${encodeURIComponent(project)}/mode`, {
+          mode: nextMode,
+        });
+        this.projectPipeline = {
+          project,
+          mode: String(payload?.mode || "discovery").trim().toLowerCase() || "discovery",
+          target: String(payload?.target || "auto").trim().toLowerCase() || "auto",
+          topic_type: String(payload?.topic_type || "general").trim().toLowerCase() || "general",
+          updated_at: String(payload?.updated_at || "").trim(),
+        };
+        await this.refreshSystemPanel();
+      } catch (err) {
+        window.alert(`Project mode update failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async toggleProjectMode() {
+      this.chatMenuOpen = false;
+      const cycle = ["discovery", "make"];
+      const current = String(this.projectPipeline?.mode || "discovery").toLowerCase();
+      const idx = cycle.indexOf(current);
+      const next = cycle[(idx + 1) % cycle.length];
+      await this.setProjectModeDirect(next);
+    },
+
+    async setProjectBuildTarget() {
+      this.openProjectBuildTargetModal();
+    },
+
+    openProjectBuildTargetModal() {
+      this.chatMenuOpen = false;
+      this.projectTargetError = "";
+      this.projectTargetSubmitting = false;
+      this.projectTargetForm = {
+        target: String(this.projectPipeline?.target || "auto").trim().toLowerCase() || "auto",
+      };
+      this.projectTargetModalOpen = true;
+      this.updateBodyClasses();
+      this.$nextTick(() => {
+        const node = this.$refs.projectTargetSelect;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    closeProjectBuildTargetModal() {
+      this.projectTargetModalOpen = false;
+      this.projectTargetSubmitting = false;
+      this.projectTargetError = "";
+      this.updateBodyClasses();
+    },
+
+    async submitProjectBuildTargetModal() {
+      const target = String(this.projectTargetForm?.target || "")
+        .trim()
+        .toLowerCase();
+      if (!MAKE_TARGETS.some((x) => x.value === target)) {
+        this.projectTargetError = "Select a valid make target.";
+        return;
+      }
+      const project = normalizeProjectSlug(this.activeProject);
+      try {
+        this.projectTargetSubmitting = true;
+        this.projectTargetError = "";
+        const payload = await this.apiPost(`/api/projects/${encodeURIComponent(project)}/mode`, {
+          target,
+        });
+        this.projectPipeline = {
+          project,
+          mode: String(payload?.mode || "discovery").trim().toLowerCase() || "discovery",
+          target: String(payload?.target || "auto").trim().toLowerCase() || "auto",
+          topic_type: String(payload?.topic_type || "general").trim().toLowerCase() || "general",
+          updated_at: String(payload?.updated_at || "").trim(),
+        };
+        await this.refreshSystemPanel();
+        this.closeProjectBuildTargetModal();
+      } catch (err) {
+        this.projectTargetError = String(err.message || err);
+      } finally {
+        this.projectTargetSubmitting = false;
+      }
+    },
+
+    async loadTopicPickerRows() {
+      try {
+        const payload = await this.apiGet("/api/topics");
+        this.topicPickerRows = Array.isArray(payload.topics) ? payload.topics : [];
+      } catch (_err) {
+        this.topicPickerRows = [];
+      }
+    },
+
+    openTopicPickerModal(mode = "set") {
+      this.chatMenuOpen = false;
+      this.topicPickerMode = mode === "create" ? "create" : "set";
+      this.topicPickerSearch = "";
+      this.topicPickerOpen = true;
+      this.loadTopicPickerRows();
+      this.updateBodyClasses();
+    },
+
+    closeTopicPickerModal() {
+      this.topicPickerOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async confirmTopicSelection(topic) {
+      if (!topic) return;
+      if (String(topic.type || "").trim().toLowerCase() === "underground") {
+        this.undergroundWarningPendingTopic = topic;
+        this.undergroundWarningOpen = true;
+        return;
+      }
+      if (this.topicPickerMode === "create") {
+        await this.startThreadFromTopic(topic);
+      } else {
+        await this.setTopicActive(topic);
+      }
+      this.closeTopicPickerModal();
+    },
+
+    async confirmUndergroundAndProceed() {
+      this.undergroundWarningOpen = false;
+      const topic = this.undergroundWarningPendingTopic;
+      this.undergroundWarningPendingTopic = null;
+      if (!topic) return;
+      if (this.topicPickerMode === "create") {
+        await this.startThreadFromTopic(topic);
+      } else {
+        await this.setTopicActive(topic);
+      }
+      this.closeTopicPickerModal();
+    },
+
+    cancelUndergroundWarning() {
+      this.undergroundWarningOpen = false;
+      this.undergroundWarningPendingTopic = null;
+    },
+
+    goToTopicsPanel() {
+      this.closeTopicPickerModal();
+      this.openSystemPanel("topics");
+    },
+
+    async setTopicActive(topic) {
+      const slug = normalizeProjectSlug(topic.slug || topic.name || "general");
+      const topicType = String(topic.type || "general").trim().toLowerCase() || "general";
+      const topicId = normalizeTopicId(topic.id || "general");
+      try {
+        await this.setConversationTopic(topicId, slug);
+        const project = normalizeProjectSlug(this.activeProject);
+        const payload = await this.apiPost(`/api/projects/${encodeURIComponent(project)}/mode`, {
+          topic_type: topicType,
+        });
+        this.projectPipeline = {
+          project,
+          mode: String(payload?.mode || "discovery").trim().toLowerCase() || "discovery",
+          target: String(payload?.target || "auto").trim().toLowerCase() || "auto",
+          topic_type: String(payload?.topic_type || topicType).trim().toLowerCase() || "general",
+          updated_at: String(payload?.updated_at || "").trim(),
+        };
+        this.activeTopicId = topicId;
+      } catch (err) {
+        window.alert(`Set topic failed: ${String(err.message || err)}`);
+      }
+    },
+
+
+    async startThreadFromTopic(topic) {
+      if (!topic) return;
+      const slug = normalizeProjectSlug(topic.slug || topic.name || "general");
+      const topicId = normalizeTopicId(topic.id || "general");
+      await this.createConversation("thread", { project: slug, topicId, activateApp: true });
+    },
+
+    beginThreadCreation() {
+      this.openTopicPickerModal("create");
+    },
+
+    async createTopic() {
+      if (!this.topicFormValid) return;
+      try {
+        await this.apiPost("/api/topics", {
+          name: String(this.topicForm.name || "").trim(),
+          type: String(this.topicForm.type || "").trim(),
+          description: String(this.topicForm.description || "").trim(),
+          seed_question: String(this.topicForm.seed_question || "").trim(),
+          parent_id: String(this.topicForm.parent_id || "").trim(),
+        });
+        this.topicForm = { name: "", type: "", description: "", seed_question: "", parent_id: "" };
+        await this.refreshSystemPanel();
+      } catch (err) {
+        window.alert(`Create topic failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async deleteTopic(topicId) {
+      if (!window.confirm("Delete this topic and all its sub-topics?")) return;
+      try {
+        await this.apiDelete(`/api/topics/${encodeURIComponent(topicId)}`);
+        await this.refreshSystemPanel();
+      } catch (err) {
+        window.alert(`Delete topic failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async openTopicDetail(topic) {
+      if (!topic || !topic.id) return;
+      this._activePanelTopicId = String(topic.id || "").trim();
+      await this.openSystemPanel("topic_detail");
+    },
+
+    async switchToTopicProject(project) {
+      if (!project) return;
+      const slug = String(project || "general").trim().replace(/\s+/g, "_").toLowerCase() || "general";
+      try {
+        await this.setConversationProjectSlug(slug);
+      } catch (err) {
+        console.warn("switchToTopicProject failed:", err);
+      }
+    },
+
+    openResetModal() {
+      this.resetConfirmText = "";
+      this.resetLog = [];
+      this.resetRunning = false;
+      this.resetModalOpen = true;
+    },
+
+    closeResetModal() {
+      if (this.resetRunning) return;
+      this.resetModalOpen = false;
+    },
+
+    async submitReset() {
+      if (this.resetConfirmText !== "RESET" || this.resetRunning) return;
+      this.resetRunning = true;
+      this.resetLog = [];
+      try {
+        const result = await this.apiPost("/api/system/reset-environment", { confirm: "RESET" });
+        this.resetLog = Array.isArray(result.log) ? result.log.filter(Boolean) : [];
+        if (result.ok) {
+          this.resetLog.push("", "Reset complete. Reload the page to start fresh.");
+        } else {
+          this.resetLog.push(`Error: ${result.error || "unknown"}`);
+        }
+      } catch (err) {
+        this.resetLog = [`Reset failed: ${String(err.message || err)}`];
+      } finally {
+        this.resetRunning = false;
+      }
+    },
+
+    userContent(content) {
+      return stripTalkPrefix(content);
+    },
+
+    assistantContent(msg) {
+      const raw = String(msg?.content || "");
+      const mode = String(msg?.mode || "").trim().toLowerCase();
+      const isTalkLike = mode === "talk" || (!mode && !Boolean(msg?.foraging));
+      const cacheKey = `${isTalkLike ? "talk" : "std"}|${raw.length}|${raw.slice(0, 180)}|${raw.slice(-96)}`;
+      if (msg && typeof msg === "object") {
+        const cached = ASSISTANT_HTML_CACHE.get(msg);
+        if (cached && cached.key === cacheKey && typeof cached.html === "string") {
+          return cached.html;
+        }
+      }
+      const displayRaw = raw
+        .replace(/\n?\[FORAGE:\s*"[^"]*"\]/gi, "")
+        .replace(/\n?\[ADD_TASK:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_EVENT:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_SHOPPING:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_ROUTINE:[^\]]*\]/gi, "")
+        .trimEnd();
+      const text = isTalkLike ? normalizeTalkDisplayMarkdown(displayRaw) : displayRaw;
+      const html = markdownToHtml(decorateAssistantMarkdown(text));
+      if (msg && typeof msg === "object") {
+        ASSISTANT_HTML_CACHE.set(msg, { key: cacheKey, html });
+      }
+      return html;
+    },
+
+    assistantSourceStack(msg) {
+      const raw = String(msg?.content || "");
+      const metaSources = Array.isArray(msg?.meta?.web_sources) ? msg.meta.web_sources : [];
+      const metaSignature = metaSources
+        .slice(0, 6)
+        .map((row) => String(row?.source_domain || row?.domain || row?.source_url || row?.url || "").trim().toLowerCase())
+        .join("|");
+      const cacheKey = `${raw.length}|${raw.slice(0, 180)}|${raw.slice(-96)}|meta:${metaSignature}`;
+      if (msg && typeof msg === "object") {
+        const cached = ASSISTANT_SOURCE_STACK_CACHE.get(msg);
+        if (cached && cached.key === cacheKey && cached.value) {
+          return cached.value;
+        }
+      }
+      const sources = collectSourceEntries(raw, metaSources);
+      const visible = sources.slice(0, 4);
+      const result = {
+        visible,
+        overflow: Math.max(0, sources.length - visible.length),
+        total: sources.length,
+      };
+      if (msg && typeof msg === "object") {
+        ASSISTANT_SOURCE_STACK_CACHE.set(msg, { key: cacheKey, value: result });
+      }
+      return result;
+    },
+
+    assistantSourceStackTitle(msg) {
+      const stack = this.assistantSourceStack(msg);
+      if (!stack.total) {
+        return "";
+      }
+      return stack.visible.map((row) => row.domain).join(", ");
+    },
+
+    sourceBubbleStyle(source, index) {
+      const domain = String(source?.domain || "").trim().toLowerCase();
+      let hash = 0;
+      for (let i = 0; i < domain.length; i += 1) {
+        hash = ((hash << 5) - hash + domain.charCodeAt(i)) | 0;
+      }
+      const hue = ((hash % 360) + 360) % 360;
+      return {
+        zIndex: 20 - Math.max(0, Number(index || 0)),
+        "--src-ring": `hsl(${hue}, 74%, 62%)`,
+        "--src-bg": `hsl(${hue}, 45%, 15%)`,
+        "--src-glow": `hsla(${hue}, 84%, 58%, 0.32)`,
+      };
+    },
+
+    sourceBubbleAriaLabel(source) {
+      const domain = String(source?.domain || "").trim();
+      if (!domain) {
+        return "Source site";
+      }
+      return `Open source: ${domain}`;
+    },
+
+    onSourceBubbleIconError(event) {
+      const target = event?.target;
+      if (!(target instanceof HTMLImageElement)) {
+        return;
+      }
+      const triedFallback = target.getAttribute("data-fallback") === "1";
+      if (!triedFallback) {
+        const domain = String(target.getAttribute("data-domain") || "").trim();
+        if (domain) {
+          target.setAttribute("data-fallback", "1");
+          target.src = `https://icons.duckduckgo.com/ip3/${encodeURIComponent(domain)}.ico`;
+          return;
+        }
+      }
+      target.style.display = "none";
+    },
+
+    messageImageAttachments(msg) {
+      const rows = Array.isArray(msg?.attachments) ? msg.attachments : [];
+      return rows
+        .map((item) => ({
+          id: String(item?.id || "").trim(),
+          type: String(item?.type || "").trim().toLowerCase(),
+          url: String(item?.url || "").trim(),
+          name: String(item?.name || "").trim(),
+        }))
+        .filter((item) => item.type === "image" && item.url);
+    },
+
+    msgWebStack(msg) {
+      const rid = String(msg?.request_id || "").trim();
+      if (!rid) return null;
+      const ws = this.jobWebStack[rid];
+      if (!ws || typeof ws !== "object") return null;
+      if (!ws.mode && !ws.source_count) return null;
+      return ws;
+    },
+
+    toggleSourceExpand(msg) {
+      const key = String(msg?.id || msg?.ts || "");
+      if (!key) return;
+      this.sourceExpandedMsgs = { ...this.sourceExpandedMsgs, [key]: !this.sourceExpandedMsgs[key] };
+    },
+
+    isSourceExpanded(msg) {
+      const key = String(msg?.id || msg?.ts || "");
+      return !!this.sourceExpandedMsgs[key];
+    },
+
+    openImagePicker() {
+      const node = this.$refs.imageInput;
+      if (node && typeof node.click === "function") {
+        node.click();
+      }
+    },
+
+    onComposerImagesPicked(event) {
+      const input = event?.target || null;
+      const files = Array.from(input?.files || []);
+      if (!files.length) {
+        return;
+      }
+      const DOC_EXTS = new Set([".pdf", ".doc", ".docx", ".txt", ".md", ".csv"]);
+      const DOC_ICONS = { ".pdf": "📄", ".doc": "📝", ".docx": "📝", ".txt": "📃", ".md": "📃", ".csv": "📊" };
+      const current = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      const seen = new Set(current.map((x) => `${x.name}|${x.size}|${x.lastModified}`));
+      for (const file of files) {
+        if (!file) continue;
+        if (current.length >= 4) break;
+        const mime = String(file.type || "").toLowerCase();
+        const extMatch = String(file.name || "").match(/\.[^.]+$/);
+        const ext = extMatch ? extMatch[0].toLowerCase() : "";
+        const isImage = mime.startsWith("image/");
+        const isDoc = DOC_EXTS.has(ext) || ["application/pdf", "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "text/plain", "text/markdown", "text/csv"].includes(mime);
+        if (!isImage && !isDoc) continue;
+        const key = `${String(file.name || "")}|${Number(file.size || 0)}|${Number(file.lastModified || 0)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        current.push({
+          id: `att_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+          file,
+          name: String(file.name || (isDoc ? "document" : "image")).trim(),
+          size: Number(file.size || 0),
+          lastModified: Number(file.lastModified || 0),
+          type: mime,
+          isDoc,
+          docIcon: isDoc ? (DOC_ICONS[ext] || "📄") : "",
+          previewUrl: isImage ? URL.createObjectURL(file) : "",
+        });
+      }
+      this.composerImages = current;
+      if (input) {
+        input.value = "";
+      }
+    },
+
+    removeComposerImage(imageId) {
+      const current = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      const next = [];
+      for (const row of current) {
+        if (String(row?.id || "") === String(imageId || "")) {
+          if (row?.previewUrl) {
+            URL.revokeObjectURL(row.previewUrl);
+          }
+          continue;
+        }
+        next.push(row);
+      }
+      this.composerImages = next;
+    },
+
+    clearComposerImages() {
+      const current = Array.isArray(this.composerImages) ? this.composerImages : [];
+      for (const row of current) {
+        if (row?.previewUrl) {
+          URL.revokeObjectURL(row.previewUrl);
+        }
+      }
+      this.composerImages = [];
+      const input = this.$refs.imageInput;
+      if (input) {
+        input.value = "";
+      }
+    },
+
+    initVoice() {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) return;
+      this.voiceSupported = true;
+      try {
+        const rec = new SR();
+        rec.lang = "en-US";
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.onresult = (e) => {
+          let final = "";
+          let interim = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            const t = e.results[i][0].transcript;
+            if (e.results[i].isFinal) { final += t; } else { interim += t; }
+          }
+          if (final) {
+            this.draft = (this.draft ? this.draft + " " : "") + final.trim();
+            this.$nextTick(() => this.resizeComposer());
+          }
+        };
+        rec.onend = () => { this.voiceActive = false; };
+        rec.onerror = () => { this.voiceActive = false; };
+        this._voiceRecognition = rec;
+      } catch (_e) {
+        this.voiceSupported = false;
+      }
+    },
+
+    toggleVoice() {
+      const rec = this._voiceRecognition;
+      if (!rec) return;
+      if (this.voiceActive) {
+        rec.stop();
+        this.voiceActive = false;
+      } else {
+        try {
+          rec.start();
+          this.voiceActive = true;
+        } catch (_e) {
+          this.voiceActive = false;
+        }
+      }
+    },
+
+    speakText(text) {
+      if (!this.ttsEnabled || !window.speechSynthesis) return;
+      const plain = String(text || "")
+        .replace(/```[\s\S]*?```/g, "code block")
+        .replace(/`[^`]+`/g, "")
+        .replace(/[*_#>~\[\]]/g, "")
+        .replace(/https?:\/\/\S+/g, "link")
+        .trim();
+      if (!plain) return;
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(plain.slice(0, 2000));
+      utt.rate = 1.0;
+      window.speechSynthesis.speak(utt);
+    },
+
+    assistantMessageActions(msg) {
+      const raw = String(msg?.content || "").trim();
+      if (!raw) {
+        return [];
+      }
+      const targets = extractAssistantActionTargets(raw);
+      const actions = [];
+
+      for (const id of targets.reflectionIds) {
+        actions.push({
+          kind: "reflection_answer",
+          id,
+          label: `✓ Answer ${id.slice(0, 8)}`,
+          style: "accent",
+        });
+      }
+
+      for (const id of targets.pendingIds) {
+        actions.push({ kind: "pending_answer", id, label: "Answer", icon: "check", style: "ok" });
+        actions.push({ kind: "pending_ignore", id, label: "Ignore", icon: "x", style: "subtle" });
+      }
+
+      const isTalkMsg = String(msg?.mode || "") === "talk" || (!msg?.mode && !msg?.foraging);
+      if (isTalkMsg) {
+        for (const seed of (targets.forageSeeds || [])) {
+          actions.push({ kind: "forage_hint", id: seed, label: "Dig Deeper", icon: "search", style: "accent" });
+        }
+        // Waypoint lane is retired in this build; assistant messages no longer expose add-* actions.
+      }
+
+      if (Boolean(msg?.foraging)) {
+        const cardId = String(msg?.request_id || msg?.id || "").trim();
+        if (cardId) {
+          actions.push({ kind: "save_forage_card", id: cardId, label: "Save Research", icon: "pin", style: "accent" });
+        }
+      }
+
+      actions.push({ kind: "reply_text", id: "", label: "Reply", icon: "reply", style: "subtle" });
+      return actions;
+    },
+
+    messageActionKey(msg, action) {
+      const msgKey = String(msg?.id || msg?.ts || "msg");
+      const kind = String(action?.kind || "action");
+      const id = String(action?.id || "");
+      return `${msgKey}:${kind}:${id}`;
+    },
+
+    isMessageActionBusy(msg, action) {
+      const key = this.messageActionKey(msg, action);
+      return Boolean(this.quickActionBusy?.[key]);
+    },
+
+    setMessageActionBusy(msg, action, busy) {
+      const key = this.messageActionKey(msg, action);
+      const next = Object.assign({}, this.quickActionBusy || {});
+      if (busy) {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      this.quickActionBusy = next;
+    },
+
+    seedReplyFromMessage(msg) {
+      const raw = String(msg?.content || "").replace(/\s+/g, " ").trim();
+      const excerpt = raw.length > 200 ? `${raw.slice(0, 197)}…` : raw;
+      this.replyTargetMsg = {
+        id: msg?.id || msg?.ts || "",
+        role: msg?.role || "assistant",
+        excerpt,
+      };
+      this.$nextTick(() => {
+        this.resizeComposer();
+        const node = this.$refs.composerInput;
+        if (node) node.focus();
+      });
+    },
+
+    cancelReply() {
+      this.replyTargetMsg = null;
+    },
+
+    async runAssistantAction(msg, action) {
+      if (!action || this.activeConversationSending) {
+        return;
+      }
+
+      if (action.kind === "reply_text") {
+        this.seedReplyFromMessage(msg);
+        return;
+      }
+
+      if (action.kind === "forage_hint") {
+        this.setComposerMode("forage");
+        this.draft = action.id;
+        this.$nextTick(() => {
+          this.resizeComposer();
+          const node = this.$refs.composerInput;
+          if (node) {
+            node.focus();
+            const pos = String(this.draft || "").length;
+            node.setSelectionRange(pos, pos);
+          }
+        });
+        return;
+      }
+
+      if (action.kind === "save_forage_card") {
+        const cardId = String(action.id || "").trim();
+        if (cardId) {
+          await this.apiPost(`/api/forage-cards/${encodeURIComponent(cardId)}/pin`, {});
+          await this.refreshPanelBadges();
+        }
+        return;
+      }
+
+      if (action.kind === "add_task" || action.kind === "add_event" || action.kind === "add_shopping" || action.kind === "add_routine") {
+        throw new Error("Waypoint lane is not available in this Foxforge build.");
+      }
+
+      if (this.isMessageActionBusy(msg, action)) {
+        return;
+      }
+
+      this.setMessageActionBusy(msg, action, true);
+      try {
+        if (action.kind === "reflection_answer") {
+          const answer = String(
+            window.prompt(`Answer reflection ${action.id}:`, "") || ""
+          ).trim();
+          if (!answer) {
+            return;
+          }
+          const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(action.id)}/answer`, {
+            answer,
+          });
+          if (this.actionsOverlayOpen) {
+            await this.refreshPendingActions();
+          }
+          await this.refreshPanelBadges();
+          window.alert(payload.message || "Reflection answered.");
+          return;
+        }
+
+        if (action.kind === "pending_answer") {
+          const answer = String(window.prompt("Answer this pending action:", "") || "").trim();
+          if (!answer) {
+            return;
+          }
+          const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(action.id)}/answer`, {
+            answer,
+          });
+          if (this.actionsOverlayOpen) {
+            await this.refreshPendingActions();
+          }
+          await this.refreshPanelBadges();
+          window.alert(payload.message || "Action answered.");
+          return;
+        }
+
+        if (action.kind === "pending_ignore") {
+          const reason = String(window.prompt("Reason for ignore? (optional)", "") || "").trim();
+          const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(action.id)}/ignore`, {
+            reason,
+          });
+          if (this.actionsOverlayOpen) {
+            await this.refreshPendingActions();
+          }
+          await this.refreshPanelBadges();
+          window.alert(payload.message || "Action ignored.");
+        }
+      } catch (err) {
+        window.alert(`Quick action failed: ${String(err.message || err)}`);
+      } finally {
+        this.setMessageActionBusy(msg, action, false);
+      }
+    },
+
+    normalizeProjectSlug,
+
+    formatDate(ts) {
+      if (!ts) {
+        return "";
+      }
+      const date = new Date(ts);
+      if (Number.isNaN(date.getTime())) {
+        return String(ts);
+      }
+      return date.toLocaleString();
+    },
+
+    formatFileSize(bytes) {
+      const value = Number(bytes || 0);
+      if (!Number.isFinite(value) || value <= 0) {
+        return "0 B";
+      }
+      const units = ["B", "KB", "MB", "GB"];
+      let size = value;
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {
+        size /= 1024;
+        idx += 1;
+      }
+      return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+    },
+
+    defaultContentExpansion(nodes, maxDepth = 1) {
+      const expanded = {};
+      const walk = (items, depth) => {
+        const rows = Array.isArray(items) ? items : [];
+        for (const row of rows) {
+          if (!row || row.type !== "dir") {
+            continue;
+          }
+          const path = String(row.path || "").trim();
+          if (!path) {
+            continue;
+          }
+          const isOpen = depth <= maxDepth;
+          expanded[path] = isOpen;
+          if (isOpen && Array.isArray(row.children)) {
+            walk(row.children, depth + 1);
+          }
+        }
+      };
+      walk(nodes, 0);
+      return expanded;
+    },
+
+    contentPanelRows(project) {
+      const rows = [
+        {
+          kind: "content_summary",
+          project: String(project || this.activeProject || "general"),
+          root: String(this.contentTreeRoot || ""),
+          node_count: Number(this.contentTreeNodeCount || 0),
+          truncated: Boolean(this.contentTreeTruncated),
+        },
+      ];
+      const walk = (nodes, depth) => {
+        const items = Array.isArray(nodes) ? nodes : [];
+        for (const item of items) {
+          const type = String(item?.type || "").trim().toLowerCase();
+          const path = String(item?.path || "").trim();
+          if (!path) {
+            continue;
+          }
+          if (type === "dir") {
+            const expanded = this.contentTreeExpanded[path] !== false;
+            rows.push({
+              kind: "content_dir",
+              depth,
+              name: String(item?.name || "").trim() || path,
+              path,
+              rel_path: String(item?.rel_path || "").trim(),
+              child_count: Number(item?.child_count || 0),
+              expanded,
+            });
+            if (expanded && Array.isArray(item.children)) {
+              walk(item.children, depth + 1);
+            }
+            continue;
+          }
+          if (type === "file") {
+            rows.push({
+              kind: "content_file",
+              depth,
+              name: String(item?.name || "").trim() || path,
+              path,
+              rel_path: String(item?.rel_path || "").trim(),
+              ext: String(item?.ext || "").trim(),
+              size: Number(item?.size || 0),
+            });
+          }
+        }
+      };
+      walk(this.contentTreeNodes, 0);
+      return rows;
+    },
+
+    toggleContentTreeDir(row) {
+      const path = String(row?.path || "").trim();
+      if (!path) {
+        return;
+      }
+      const next = Object.assign({}, this.contentTreeExpanded || {});
+      next[path] = !Boolean(next[path] !== false);
+      this.contentTreeExpanded = next;
+      this.panelData = this.contentPanelRows(normalizeProjectSlug(this.activeProject));
+    },
+
+    openContentFile(row) {
+      const path = String(row?.path || "").trim();
+      if (!path) {
+        return;
+      }
+      this.loadFileOverlay(path);
+    },
+
+    formatMsgTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    },
+
+    async copyMsgToClipboard(msg) {
+      let text = String(msg?.content || "").trim();
+      if (String(msg?.role || "").trim().toLowerCase() === "assistant") {
+        const mode = String(msg?.mode || "").trim().toLowerCase();
+        const isTalkLike = mode === "talk" || (!mode && !Boolean(msg?.foraging));
+        if (isTalkLike) {
+          text = normalizeTalkDisplayMarkdown(text);
+        }
+      }
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_err) {
+        // Fallback for older browsers / non-HTTPS
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        Object.assign(ta.style, { position: "fixed", opacity: "0", pointerEvents: "none" });
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+      const key = String(msg?.id || msg?.ts || "");
+      if (key) {
+        this.msgCopiedId = key;
+        setTimeout(() => { if (this.msgCopiedId === key) this.msgCopiedId = ""; }, 1800);
+      }
+    },
+
+    withDayDividers(messages) {
+      const result = [];
+      let lastDay = null;
+      for (const msg of messages) {
+        const day = msg.ts ? toDateKey(new Date(msg.ts)) : null;
+        if (day && day !== lastDay) {
+          result.push({ _isDayMarker: true, day });
+          lastDay = day;
+        }
+        result.push(msg);
+      }
+      return result;
+    },
+
+    sanitizeHomeCompanionName(raw) {
+      return String(raw || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 24);
+    },
+
+    async fetchHomeCompanionImages() {
+      const total = Array.isArray(this.homeCompanionSketches) ? this.homeCompanionSketches.length : 0;
+      if (total > 0) {
+        try {
+          const saved = parseInt(localStorage.getItem("foxforge_companion_idx") || "0", 10);
+          this.homeCompanionIndex = Number.isFinite(saved) && saved >= 0 ? saved % total : 0;
+        } catch (_) {
+          this.homeCompanionIndex = 0;
+        }
+      } else {
+        this.homeCompanionIndex = 0;
+      }
+      try {
+        const savedName = this.sanitizeHomeCompanionName(localStorage.getItem("foxforge_companion_name") || "");
+        this.homeCompanionName = savedName || HOME_COMPANION_DEFAULT_NAME;
+      } catch (_) {
+        this.homeCompanionName = HOME_COMPANION_DEFAULT_NAME;
+      }
+      this.homeCompanionNameDraft = this.homeCompanionName;
+    },
+
+    cycleHomeCompanionImage() {
+      const total = Array.isArray(this.homeCompanionSketches) ? this.homeCompanionSketches.length : 0;
+      if (!total) return;
+      this.homeCompanionIndex = (this.homeCompanionIndex + 1) % total;
+      try {
+        localStorage.setItem("foxforge_companion_idx", String(this.homeCompanionIndex));
+      } catch (_) {}
+    },
+
+    startHomeCompanionRename() {
+      this.homeCompanionRenaming = true;
+      this.homeCompanionNameDraft = this.homeCompanionDisplayName;
+      this.$nextTick(() => {
+        const node = this.$refs.homeCompanionNameInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+          if (typeof node.select === "function") {
+            node.select();
+          }
+        }
+      });
+    },
+
+    saveHomeCompanionName() {
+      const clean = this.sanitizeHomeCompanionName(this.homeCompanionNameDraft);
+      this.homeCompanionName = clean || HOME_COMPANION_DEFAULT_NAME;
+      this.homeCompanionNameDraft = this.homeCompanionName;
+      this.homeCompanionRenaming = false;
+      try {
+        localStorage.setItem("foxforge_companion_name", this.homeCompanionName);
+      } catch (_) {}
+    },
+
+    cancelHomeCompanionRename() {
+      this.homeCompanionRenaming = false;
+      this.homeCompanionNameDraft = this.homeCompanionDisplayName;
+    },
+
+    sanitizeHomeWeatherLocation(raw) {
+      return String(raw || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 96);
+    },
+
+    parseHomeWeatherCoordinate(raw, min, max) {
+      const text = String(raw ?? "").trim();
+      if (!text) {
+        return null;
+      }
+      const value = Number(text);
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+      if (value < min || value > max) {
+        return null;
+      }
+      return value;
+    },
+
+    blurActiveElement() {
+      try {
+        const active = document?.activeElement;
+        if (active && typeof active.blur === "function") {
+          active.blur();
+        }
+      } catch (_err) {}
+    },
+
+    loadHomeWeatherState() {
+      try {
+        const savedQuery = this.sanitizeHomeWeatherLocation(localStorage.getItem("foxforge_home_weather_query") || "");
+        const savedLabel = this.sanitizeHomeWeatherLocation(localStorage.getItem("foxforge_home_weather_label") || "");
+        const savedTimezone = String(localStorage.getItem("foxforge_home_weather_timezone") || "").trim() || "auto";
+        const savedLat = this.parseHomeWeatherCoordinate(localStorage.getItem("foxforge_home_weather_lat"), -90, 90);
+        const savedLon = this.parseHomeWeatherCoordinate(localStorage.getItem("foxforge_home_weather_lon"), -180, 180);
+        this.homeWeather.locationQuery = savedQuery;
+        this.homeWeather.locationLabel = savedLabel;
+        this.homeWeather.timezone = savedTimezone || "auto";
+        this.homeWeather.latitude = savedLat;
+        this.homeWeather.longitude = savedLon;
+        this.homeWeatherLocationDraft = savedQuery || savedLabel || "";
+      } catch (_err) {
+        this.homeWeatherLocationDraft = "";
+      }
+    },
+
+    persistHomeWeatherState() {
+      try {
+        localStorage.setItem("foxforge_home_weather_query", String(this.homeWeather.locationQuery || ""));
+        localStorage.setItem("foxforge_home_weather_label", String(this.homeWeather.locationLabel || ""));
+        localStorage.setItem("foxforge_home_weather_timezone", String(this.homeWeather.timezone || "auto"));
+        if (Number.isFinite(Number(this.homeWeather.latitude)) && Number.isFinite(Number(this.homeWeather.longitude))) {
+          localStorage.setItem("foxforge_home_weather_lat", String(this.homeWeather.latitude));
+          localStorage.setItem("foxforge_home_weather_lon", String(this.homeWeather.longitude));
+        } else {
+          localStorage.removeItem("foxforge_home_weather_lat");
+          localStorage.removeItem("foxforge_home_weather_lon");
+        }
+      } catch (_err) {}
+    },
+
+    async geocodeHomeWeatherLocation(query) {
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`;
+      const response = await fetch(url, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Location lookup failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const rows = Array.isArray(payload?.results) ? payload.results : [];
+      if (!rows.length) {
+        throw new Error("Location not found.");
+      }
+      const top = rows[0] || {};
+      const latitude = this.parseHomeWeatherCoordinate(top.latitude, -90, 90);
+      const longitude = this.parseHomeWeatherCoordinate(top.longitude, -180, 180);
+      if (latitude === null || longitude === null) {
+        throw new Error("Location coordinates unavailable.");
+      }
+      const name = String(top.name || "").trim();
+      const admin1 = String(top.admin1 || "").trim();
+      const country = String(top.country || "").trim();
+      const locationLabel = [name, admin1, country].filter(Boolean).join(", ");
+      return {
+        latitude,
+        longitude,
+        timezone: String(top.timezone || "auto").trim() || "auto",
+        label: locationLabel || query,
+      };
+    },
+
+    async reverseGeocodeHomeWeather(latitude, longitude) {
+      const url =
+        `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${encodeURIComponent(latitude)}` +
+        `&longitude=${encodeURIComponent(longitude)}&language=en&format=json`;
+      const response = await fetch(url, { method: "GET" });
+      if (!response.ok) {
+        return "";
+      }
+      const payload = await response.json();
+      const rows = Array.isArray(payload?.results) ? payload.results : [];
+      if (!rows.length) {
+        return "";
+      }
+      const top = rows[0] || {};
+      const name = String(top.name || "").trim();
+      const admin1 = String(top.admin1 || "").trim();
+      const country = String(top.country || "").trim();
+      return [name, admin1, country].filter(Boolean).join(", ");
+    },
+
+    async fetchHomeWeatherByCoordinates({ latitude, longitude, timezone = "auto" } = {}) {
+      const lat = this.parseHomeWeatherCoordinate(latitude, -90, 90);
+      const lon = this.parseHomeWeatherCoordinate(longitude, -180, 180);
+      if (lat === null || lon === null) {
+        throw new Error("Missing weather coordinates.");
+      }
+      const tz = String(timezone || "auto").trim() || "auto";
+      const query =
+        `latitude=${encodeURIComponent(lat)}` +
+        `&longitude=${encodeURIComponent(lon)}` +
+        "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+        "&temperature_unit=fahrenheit" +
+        "&wind_speed_unit=mph" +
+        `&timezone=${encodeURIComponent(tz)}` +
+        "&forecast_days=1";
+      const response = await fetch(`https://api.open-meteo.com/v1/forecast?${query}`, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Weather fetch failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const current = payload?.current || {};
+      const daily = payload?.daily || {};
+      const dailyHigh = Array.isArray(daily.temperature_2m_max) ? Number(daily.temperature_2m_max[0]) : null;
+      const dailyLow = Array.isArray(daily.temperature_2m_min) ? Number(daily.temperature_2m_min[0]) : null;
+      const dailyPrecip = Array.isArray(daily.precipitation_probability_max) ? Number(daily.precipitation_probability_max[0]) : null;
+      this.homeWeather.temperatureF = Number.isFinite(Number(current.temperature_2m)) ? Number(current.temperature_2m) : null;
+      this.homeWeather.apparentF = Number.isFinite(Number(current.apparent_temperature)) ? Number(current.apparent_temperature) : null;
+      this.homeWeather.weatherCode = Number.isFinite(Number(current.weather_code)) ? Number(current.weather_code) : null;
+      this.homeWeather.windMph = Number.isFinite(Number(current.wind_speed_10m)) ? Number(current.wind_speed_10m) : null;
+      this.homeWeather.isDay = Number.isFinite(Number(current.is_day)) ? Number(current.is_day) : null;
+      this.homeWeather.highF = Number.isFinite(dailyHigh) ? dailyHigh : null;
+      this.homeWeather.lowF = Number.isFinite(dailyLow) ? dailyLow : null;
+      this.homeWeather.precipitationChance = Number.isFinite(dailyPrecip) ? dailyPrecip : null;
+      this.homeWeather.timezone = String(payload?.timezone || tz || "auto").trim() || "auto";
+      this.homeWeather.updatedAt = String(current.time || new Date().toISOString());
+      this.homeWeather.error = "";
+      this.homeWeather.latitude = lat;
+      this.homeWeather.longitude = lon;
+      this.persistHomeWeatherState();
+    },
+
+    async refreshHomeWeather(options = {}) {
+      const silent = Boolean(options?.silent);
+      if (silent && this.homeWeather.loading) {
+        return;
+      }
+      if (!silent) {
+        this.homeWeather.loading = true;
+      }
+      this.homeWeather.error = "";
+      try {
+        await this.fetchHomeWeatherByCoordinates({
+          latitude: this.homeWeather.latitude,
+          longitude: this.homeWeather.longitude,
+          timezone: this.homeWeather.timezone || "auto",
+        });
+      } catch (err) {
+        this.homeWeather.error = String(err?.message || err || "Unable to load weather.");
+      } finally {
+        this.homeWeather.loading = false;
+      }
+    },
+
+    async saveHomeWeatherLocation() {
+      const query = this.sanitizeHomeWeatherLocation(this.homeWeatherLocationDraft);
+      if (!query) {
+        this.homeWeather.error = "Enter a city or area name.";
+        return;
+      }
+      this.homeWeather.loading = true;
+      this.homeWeather.error = "";
+      try {
+        const row = await this.geocodeHomeWeatherLocation(query);
+        this.homeWeather.locationQuery = query;
+        this.homeWeather.locationLabel = row.label;
+        this.homeWeather.latitude = row.latitude;
+        this.homeWeather.longitude = row.longitude;
+        this.homeWeather.timezone = row.timezone || "auto";
+        this.homeWeatherLocationDraft = query;
+        this.persistHomeWeatherState();
+        await this.fetchHomeWeatherByCoordinates({
+          latitude: row.latitude,
+          longitude: row.longitude,
+          timezone: row.timezone || "auto",
+        });
+        this.blurActiveElement();
+        this.closeHomeWeatherPanel();
+      } catch (err) {
+        this.homeWeather.error = String(err?.message || err || "Unable to set weather location.");
+      } finally {
+        this.homeWeather.loading = false;
+      }
+    },
+
+    async useCurrentLocationForWeather() {
+      if (!navigator.geolocation) {
+        this.homeWeather.error = "Device location is not supported in this browser.";
+        return;
+      }
+      this.homeWeather.loading = true;
+      this.homeWeather.error = "";
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: false,
+            timeout: 12000,
+            maximumAge: 300000,
+          });
+        });
+        const latitude = this.parseHomeWeatherCoordinate(position?.coords?.latitude, -90, 90);
+        const longitude = this.parseHomeWeatherCoordinate(position?.coords?.longitude, -180, 180);
+        if (latitude === null || longitude === null) {
+          throw new Error("Could not read device coordinates.");
+        }
+        const label = (await this.reverseGeocodeHomeWeather(latitude, longitude)) || "Current location";
+        this.homeWeather.locationQuery = label;
+        this.homeWeather.locationLabel = label;
+        this.homeWeather.latitude = latitude;
+        this.homeWeather.longitude = longitude;
+        this.homeWeather.timezone = "auto";
+        this.homeWeatherLocationDraft = label;
+        this.persistHomeWeatherState();
+        await this.fetchHomeWeatherByCoordinates({
+          latitude,
+          longitude,
+          timezone: "auto",
+        });
+      } catch (err) {
+        const message = String(err?.message || err || "").toLowerCase();
+        if (message.includes("denied") || message.includes("permission")) {
+          this.homeWeather.error = "Location permission was denied.";
+        } else {
+          this.homeWeather.error = String(err?.message || err || "Unable to get device location.");
+        }
+      } finally {
+        this.homeWeather.loading = false;
+      }
+    },
+
+    async initializeHomeWeather() {
+      this.loadHomeWeatherState();
+      if (
+        Number.isFinite(Number(this.homeWeather.latitude)) &&
+        Number.isFinite(Number(this.homeWeather.longitude))
+      ) {
+        await this.refreshHomeWeather({ silent: true });
+      }
+    },
+
+    toggleHomeWeatherExpanded() {
+      this.homeWeatherExpanded = !this.homeWeatherExpanded;
+    },
+
+    closeHomeWeatherPanel() {
+      this.homeWeatherExpanded = false;
+    },
+
+    refreshHomePhrase() {
+      const pool = [
+        "Small, steady steps beat perfect plans.",
+        "A clear day starts with one clear next action.",
+        "Good systems feel quiet when they are working.",
+        "Progress compounds when follow-through is easy.",
+        "Stay practical. Keep moving. Adjust as needed.",
+        "Consistency is stronger than intensity over time.",
+        "Done today is better than ideal next week.",
+        "Momentum starts where friction gets removed.",
+        "A useful plan is one you can start in five minutes.",
+        "Simple routines survive busy days.",
+        "Clarity comes from action, not overthinking.",
+        "Build less, finish more, repeat.",
+        "Reliable beats flashy when the goal is progress.",
+        "Focus on what moves the needle before noon.",
+        "Good defaults save energy for real decisions.",
+        "Every system gets better when the next step is obvious.",
+        "Keep the bar realistic and the streak alive.",
+        "Tiny upgrades beat occasional reinventions.",
+        "One intentional hour can reset a whole day.",
+        "Direction matters more than speed at the start.",
+        "The best workflow is the one you actually use.",
+        "Start small enough that starting feels easy.",
+        "Stability first, optimization second.",
+        "Your calendar should protect your priorities.",
+        "Less context switching, better outcomes.",
+        "Today's wins are often yesterday's prep.",
+        "A clean backlog is a calm mind.",
+        "If it repeats, give it a home.",
+        "Good tools reduce decisions, not just clicks.",
+        "Measure what you can improve this week.",
+        "Small buffers prevent big stress.",
+        "Strong habits are quiet safeguards.",
+        "A lighter process leaves more room for thinking.",
+        "Pick one key outcome and support it.",
+        "Your future self likes clear notes.",
+        "Most breakthroughs start as boring consistency.",
+        "Define success before you begin.",
+        "Protect deep work like it is a meeting.",
+        "Make the first action impossible to miss.",
+        "Short feedback loops create steady gains.",
+        "Remove one blocker and momentum returns.",
+        "Order beats urgency when everything feels important.",
+        "Document once, reuse often.",
+        "The right checklist makes hard days manageable.",
+        "Less noise, sharper judgment.",
+        "Systems scale better than willpower.",
+        "A good reset is part of the workflow.",
+        "Get the basics right before adding complexity.",
+        "Clear ownership turns ideas into outcomes.",
+        "Your best process is understandable at a glance.",
+        "A trusted routine reduces decision fatigue.",
+        "Consistency turns effort into compounding value.",
+        "Ship the useful version, then refine.",
+        "Steady cadence beats occasional sprints.",
+        "Prepare once, benefit daily.",
+        "Progress is easier when priorities are visible.",
+        "Reduce drag and motivation lasts longer.",
+        "Useful constraints make better decisions.",
+        "When in doubt, simplify the next step.",
+        "Operational calm is a competitive advantage.",
+        "Good planning creates room for focus.",
+        "Capture ideas fast, sort them later.",
+        "Move from intention to schedule.",
+        "Build habits around your real day, not ideal days.",
+        "A clear workspace supports clear thinking.",
+        "Protect your mornings for meaningful work.",
+        "Short notes now save long searches later.",
+        "Default to progress you can sustain.",
+        "Reliable follow-up is a superpower.",
+        "Use reminders to protect attention, not steal it.",
+        "A focused day starts with a focused first hour.",
+        "Priorities become real when they get time blocks.",
+        "Better boundaries create better output.",
+        "Choose the smallest next milestone and finish it.",
+        "Keep your process kind to low-energy days.",
+        "Refine the path, not just the destination.",
+        "A working system is one you trust on busy weeks.",
+        "Leave fewer loose ends than you found.",
+        "Intentional pacing prevents reactive work.",
+      ];
+      const name = String(this.auth?.profile?.display_name || this.auth?.profile?.username || "owner").trim();
+      const now = new Date();
+      const windowKey = homePhraseWindowKey(now);
+      const seedText = `${name}:${toDateKey(now)}:${windowKey}`;
+      let seed = 0;
+      for (let i = 0; i < seedText.length; i += 1) {
+        seed = (seed * 31 + seedText.charCodeAt(i)) >>> 0;
+      }
+      const idx = seed % pool.length;
+      this.homePhrase = pool[idx];
+    },
+
+    sanitizeHexColor(value, fallback = "#4285f4") {
+      const text = String(value || "").trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(text)) {
+        return text.toLowerCase();
+      }
+      return fallback;
+    },
+
+    isFourDigitPin(value) {
+      const text = String(value || "").trim();
+      return /^\d{4}$/.test(text);
+    },
+
+    canHardDelete(value) {
+      const text = String(value || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toUpperCase();
+      return text === "YES I AM SURE";
+    },
+
+    isLikelySavedAddress(value) {
+      const text = String(value || "").trim();
+      if (text.length < 8) {
+        return false;
+      }
+      if (!/\d/.test(text)) {
+        return false;
+      }
+      return (text.match(/[A-Za-z]/g) || []).length >= 4;
+    },
+
+    waypointContactDetailsPayload(form) {
+      const row = form && typeof form === "object" ? form : {};
+      const birthday = String(row.birthday || "").trim();
+      const age = birthday ? "" : String(row.age || "").trim();
+      return {
+        notes: String(row.notes || "").trim(),
+        nickname: String(row.nickname || "").trim(),
+        birthday,
+        age,
+        age_is_estimate: !birthday && Boolean(row.age_is_estimate) && Boolean(age),
+        gender: String(row.gender || "").trim(),
+        school_or_work: String(row.school_or_work || "").trim(),
+        likes: String(row.likes || "").trim(),
+        dislikes: String(row.dislikes || "").trim(),
+        important_dates: String(row.important_dates || "").trim(),
+        medical_notes: String(row.medical_notes || "").trim(),
+        email: String(row.email || "").trim(),
+        phone: String(row.phone || "").trim(),
+      };
+    },
+
+    waypointHasExtendedContactDetails(form) {
+      const row = form && typeof form === "object" ? form : {};
+      for (const key of PLANNER_CONTACT_DETAIL_KEYS) {
+        if (key === "age_is_estimate") {
+          continue;
+        }
+        if (String(row[key] || "").trim()) {
+          return true;
+        }
+      }
+      return false;
+    },
+
+    onWaypointContactBirthdayChanged() {
+      if (!String(this.waypointContactForm?.birthday || "").trim()) {
+        return;
+      }
+      this.waypointContactForm.age = "";
+      this.waypointContactForm.age_is_estimate = false;
+    },
+
+    onWaypointMemberBirthdayChanged() {
+      if (!String(this.waypointMemberForm?.birthday || "").trim()) {
+        return;
+      }
+      this.waypointMemberForm.age = "";
+      this.waypointMemberForm.age_is_estimate = false;
+    },
+
+    onWaypointMemberEditorBirthdayChanged() {
+      if (!String(this.waypointMemberEditorForm?.birthday || "").trim()) {
+        return;
+      }
+      this.waypointMemberEditorForm.age = "";
+      this.waypointMemberEditorForm.age_is_estimate = false;
+    },
+
+    parseWaypointBuilderItems(raw) {
+      const text = String(raw || "").trim();
+      if (!text) {
+        return [];
+      }
+      const rows = text
+        .split(/\r?\n|,|;/)
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+        .slice(0, 30);
+      const dedup = [];
+      const seen = new Set();
+      for (const row of rows) {
+        const key = row.toLowerCase();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        dedup.push(row);
+      }
+      return dedup;
+    },
+
+    async parseError(response, fallback) {
+      let detail = "";
+      try {
+        const payload = await response.json();
+        detail = payload.error || payload.description || payload.message || "";
+      } catch (_err) {
+        try {
+          detail = (await response.text()).trim().slice(0, 200);
+        } catch (_err2) {
+          detail = "";
+        }
+      }
+      return detail || fallback;
+    },
+
+    async apiRequest(method, path, data = null) {
+      const options = { method };
+      if (data !== null) {
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify(data || {});
+      }
+      const response = await fetch(path, options);
+      if (response.status === 401) {
+        this.auth.authenticated = false;
+        this.auth.profile = null;
+        throw new Error("Authentication required.");
+      }
+      if (!response.ok) {
+        throw new Error(await this.parseError(response, `${method} ${path} failed (${response.status})`));
+      }
+      return response.json();
+    },
+
+    isLikelyNetworkDropError(err) {
+      const msg = String(err && (err.message || err)).trim().toLowerCase();
+      if (!msg) {
+        return false;
+      }
+      return (
+        msg.includes("load failed") ||
+        msg.includes("failed to fetch") ||
+        msg.includes("networkerror") ||
+        msg.includes("network request failed") ||
+        msg.includes("the internet connection appears to be offline")
+      );
+    },
+
+    waitMs(ms) {
+      const delay = Math.max(0, Number(ms || 0));
+      return new Promise((resolve) => {
+        window.setTimeout(resolve, delay);
+      });
+    },
+
+    async recoverMessageRequest(conversationId, requestId, isForaging) {
+      const convoId = String(conversationId || "").trim();
+      const rid = String(requestId || "").trim();
+      if (!convoId || !rid) {
+        return false;
+      }
+      const maxWaitMs = isForaging ? 30 * 60 * 1000 : 20 * 60 * 1000;
+      const pollMs = 2500;
+      const deadline = Date.now() + maxWaitMs;
+      while (Date.now() < deadline) {
+        try {
+          const jobPayload = await this.apiGet(`/api/jobs/${encodeURIComponent(rid)}`);
+          if (jobPayload && jobPayload.job && String(jobPayload.job.conversation_id || "").trim() !== convoId) {
+            return false;
+          }
+          if (jobPayload && jobPayload.job) {
+            const job = jobPayload.job;
+            if (job.web_stack && Object.keys(job.web_stack).length > 0) {
+              this.jobWebStack[rid] = job.web_stack;
+            }
+            const nextStage = Object.assign({}, this.sendingJobStage);
+            nextStage[convoId] = { stage: job.stage || "", label: this._humanizeJobStage(job) };
+            this.sendingJobStage = nextStage;
+          }
+        } catch (_jobErr) {
+          // If job lookup fails, continue; request might still have completed and been persisted.
+        }
+        try {
+          const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(convoId)}`);
+          const convo = payload && payload.conversation ? payload.conversation : null;
+          if (convo && Array.isArray(convo.messages)) {
+            const hasAssistantReply = convo.messages.some(
+              (row) => String(row?.role || "").trim().toLowerCase() === "assistant" && String(row?.request_id || "").trim() === rid
+            );
+            if (hasAssistantReply) {
+              if (String(this.activeConversationId || "").trim() === convoId) {
+                this.activeConversation = convo;
+                this.activeConversationId = convo.id;
+                this.setActiveProject(convo.project || this.activeProject);
+              }
+              try {
+                await this.refreshConversations();
+              } catch (_refreshErr) {}
+              try {
+                await this.refreshPanelBadges();
+              } catch (_refreshErr) {}
+              return true;
+            }
+          }
+        } catch (_convoErr) {
+          // Keep polling until timeout.
+        }
+        await this.waitMs(pollMs);
+      }
+      return false;
+    },
+
+    _humanizeJobStage(job) {
+      const stage = String(job?.stage || "").trim().toLowerCase();
+      const tracker = job?.agent_tracker;
+      if (!stage || stage === "queued") return "Queued…";
+      if (stage === "foraging_run" || stage === "research_pool_started") return "Starting research…";
+      if (stage === "research_agent_started") {
+        const active = Array.isArray(tracker?.active) ? tracker.active : [];
+        if (active.length) {
+          const name = active.map(a => typeof a === "object" ? String(a.persona || "agent").replace(/_/g, " ") : String(a)).join(", ");
+          return `Researching: ${name}`;
+        }
+        return "Agents working…";
+      }
+      if (stage === "research_agent_completed") {
+        const done = Array.isArray(tracker?.done) ? tracker.done.length : 0;
+        const total = Number(tracker?.total || 0);
+        return total ? `${done} / ${total} agents complete` : "Agents completing…";
+      }
+      if (stage === "synthesizing" || stage === "synthesis") return "Synthesizing findings…";
+      if (stage === "tool_pool_started") return "Building tool…";
+      if (stage === "tool_agent_started") return "Running tool agent…";
+      if (stage === "cancel_requested") return "Cancelling…";
+      if (stage === "completed") return "Finishing up…";
+      return stage.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) + "…";
+    },
+
+    apiGet(path) {
+      return this.apiRequest("GET", path);
+    },
+
+    apiPost(path, data) {
+      return this.apiRequest("POST", path, data);
+    },
+
+    async apiPostForm(path, formData) {
+      const response = await fetch(path, { method: "POST", body: formData });
+      if (response.status === 401) {
+        this.auth.authenticated = false;
+        this.auth.profile = null;
+        throw new Error("Authentication required.");
+      }
+      if (!response.ok) {
+        throw new Error(await this.parseError(response, `POST ${path} failed (${response.status})`));
+      }
+      return response.json();
+    },
+
+    apiPatch(path, data) {
+      return this.apiRequest("PATCH", path, data);
+    },
+
+    apiPut(path, data) {
+      return this.apiRequest("PUT", path, data);
+    },
+
+    apiDelete(path) {
+      return this.apiRequest("DELETE", path);
+    },
+
+    async refreshPanelBadges() {
+      try {
+        const payload = await this.apiGet("/api/panel/status");
+        this.panelStatus = {
+          pending_actions: Number(payload.pending_actions || 0),
+          open_reflections: Number(payload.open_reflections || 0),
+          learned_lessons: Number(payload.learned_lessons || 0),
+          handoff_waiting_output: Number(payload.handoff_waiting_output || payload.pending_handoffs || 0),
+          handoff_ready_for_ingest: Number(payload.handoff_ready_for_ingest || 0),
+          pending_handoffs: Number(payload.pending_handoffs || 0),
+          active_projects: Number(payload.active_projects || 0),
+          web_mode: String(payload.web_mode || "auto"),
+          cloud_mode: String(payload.cloud_mode || "off"),
+          external_tools_mode: String(payload.external_tools_mode || "off"),
+          open_external_requests: Number(payload.open_external_requests || 0),
+          foraging_paused: Boolean(payload.foraging_paused),
+          foraging_active_jobs: Number(payload.foraging_active_jobs || 0),
+          foraging_yielding: Boolean(payload.foraging_yielding),
+          gemini_critique_enabled: Boolean(this.panelStatus.gemini_critique_enabled),
+          gemini_critique_keys: Number(this.panelStatus.gemini_critique_keys || 0),
+          briefings_unread: Number(payload.briefings_unread || 0),
+          watchtower_active: Number(payload.watchtower_active || 0),
+          topics_with_research: Number(payload.topics_with_research || 0),
+          forage_cards_pinned: Number(payload.forage_cards_pinned || 0),
+        };
+        try {
+          const cs = await this.apiGet("/api/settings/gemini-critique");
+          this.panelStatus.gemini_critique_enabled = Boolean(cs.enabled);
+          this.panelStatus.gemini_critique_keys = Number(cs.api_keys_count || 0);
+        } catch (_) {}
+        await this.refreshLessonsUnreadCount();
+        await this.refreshReflectionsUnreadCount();
+        if (Number.isFinite(Number(payload.waypoint_open_tasks))) {
+          this.waypoint.open_tasks_count = Number(payload.waypoint_open_tasks || 0);
+        }
+      } catch (_err) {
+        this.panelStatus = {
+          pending_actions: 0,
+          open_reflections: 0,
+          learned_lessons: 0,
+          handoff_waiting_output: 0,
+          handoff_ready_for_ingest: 0,
+          pending_handoffs: 0,
+          active_projects: 0,
+          web_mode: "auto",
+          cloud_mode: "off",
+          external_tools_mode: "off",
+          open_external_requests: 0,
+          foraging_paused: false,
+          foraging_active_jobs: 0,
+          foraging_yielding: false,
+          gemini_critique_enabled: false,
+          gemini_critique_keys: 0,
+          briefings_unread: 0,
+            watchtower_active: 0,
+          topics_with_research: 0,
+        };
+        this.lessonsUnreadCount = 0;
+        this.reflectionsUnreadCount = 0;
+      }
+    },
+
+    formatModeLabel(mode) {
+      const key = String(mode || "").trim().toLowerCase();
+      if (key === "off") {
+        return "Off";
+      }
+      if (key === "auto") {
+        return "Auto";
+      }
+      return "Ask";
+    },
+
+    async cycleWebMode() {
+      this.chatMenuOpen = false;
+      const order = ["off", "ask", "auto"];
+      const current = String(this.panelStatus.web_mode || "auto").trim().toLowerCase();
+      const idx = order.indexOf(current);
+      const next = order[(idx + 1 + order.length) % order.length];
+      try {
+        const payload = await this.apiPost("/api/settings/web-mode", { mode: next });
+        this.panelStatus.web_mode = String(payload.mode || next);
+        await this.refreshPanelBadges();
+        window.alert(
+          `Live web research mode: ${this.formatModeLabel(this.panelStatus.web_mode)}\n` +
+            "Off = never run web research. Ask = queue pending actions for your decision. Auto = run automatically and never ask permission."
+        );
+      } catch (err) {
+        window.alert(`Could not change web mode: ${String(err.message || err)}`);
+      }
+    },
+
+    async toggleGeminiCritique() {
+      this.chatMenuOpen = false;
+      const next = !Boolean(this.panelStatus.gemini_critique_enabled);
+      try {
+        const payload = await this.apiPost("/api/settings/gemini-critique", { enabled: next });
+        this.panelStatus.gemini_critique_enabled = Boolean(payload.enabled);
+        this.panelStatus.gemini_critique_keys = Number(payload.api_keys_count || 0);
+        const keyNote = payload.api_keys_count
+          ? ` (${payload.api_keys_count} key(s) ready)`
+          : " — add keys to Runtime/cloud/settings.json gemini_api_keys[]";
+        window.alert(
+          `Gemini critique: ${payload.enabled ? "ON" : "OFF"}${keyNote}\n` +
+          "When ON, Gemini reviews each completed foraging summary. Lessons saved automatically."
+        );
+      } catch (err) {
+        window.alert(`Gemini critique toggle failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async toggleForagingPause() {
+      this.chatMenuOpen = false;
+      try {
+        const nextPaused = !Boolean(this.panelStatus.foraging_paused);
+        const payload = await this.apiPost("/api/settings/foraging", { paused: nextPaused });
+        this.panelStatus.foraging_paused = Boolean(payload.paused);
+        this.panelStatus.foraging_active_jobs = Number(payload.active_jobs || this.panelStatus.foraging_active_jobs || 0);
+        this.panelStatus.foraging_yielding = Boolean(payload.yielding);
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Could not update Foraging state: ${String(err.message || err)}`);
+      }
+    },
+
+    closeActionsOverlay() {
+      this.actionsOverlayOpen = false;
+      this.updateBodyClasses();
+    },
+
+    closeSystemPanel() {
+      this.panelOverlayOpen = false;
+      this.panelLoading = false;
+      this.panelKey = "";
+      this.panelData = [];
+      this.projectDetail = null;
+      this.updateBodyClasses();
+    },
+
+    closeAllOverlays() {
+      this.chatMenuOpen = false;
+      this.homeWeatherExpanded = false;
+      this.waypointBuilderOpen = false;
+      this.waypointCalendarMemberFilterOpen = false;
+      this.swipeOpen = {};
+      if (this.isMobileLayout()) {
+        this.waypointChatExpanded = false;
+      }
+      this.closeActionsOverlay();
+      this.closeSystemPanel();
+      this.closeMarkdownOverlay();
+      this.closeTaskReminderDialog();
+      this.closeFamilyProfileModal();
+      this.closeWebPushSettingsModal();
+      this.closeEmailSettingsModal();
+      this.closeProjectPickerModal();
+      this.closeProjectBuildTargetModal();
+      this.closeWaypointMemberEditor();
+      this.closeTopicPickerModal();
+      this.closeResetModal();
+      this.closeWaypointEntryModals();
+    },
+
+    isWorkspacePatchProposal(prop) {
+      const actionType = String((prop && prop.action_type) || "").trim().toLowerCase();
+      return actionType === "apply_patch" || actionType === "apply_patch_batch";
+    },
+
+    workspacePatchProposals() {
+      return (Array.isArray(this.actionProposals) ? this.actionProposals : []).filter((prop) => this.isWorkspacePatchProposal(prop));
+    },
+
+    otherActionProposals() {
+      return (Array.isArray(this.actionProposals) ? this.actionProposals : []).filter((prop) => !this.isWorkspacePatchProposal(prop));
+    },
+
+    patchProposalFiles(prop) {
+      const payload = (prop && prop.action_payload) || {};
+      if (Array.isArray(payload.files)) {
+        return payload.files.filter((item) => item && typeof item === "object");
+      }
+      if (payload && payload.path) {
+        return [payload];
+      }
+      return [];
+    },
+
+    patchProposalFileCount(prop) {
+      return this.patchProposalFiles(prop).length;
+    },
+
+    patchProposalPreview(prop) {
+      const files = this.patchProposalFiles(prop);
+      if (!files.length) return "";
+      const first = files[0] || {};
+      const diffText = String(first.diff_text || "").trim();
+      if (diffText) {
+        return diffText.split("\n").slice(0, 14).join("\n");
+      }
+      const names = files.slice(0, 4).map((item) => String(item.path || item.rel_path || "").trim()).filter(Boolean);
+      return names.join("\n");
+    },
+
+    patchProposalSummary(prop) {
+      const payload = (prop && prop.action_payload) || {};
+      return String(payload.summary || prop.text || prop.title || "").trim();
+    },
+
+    patchProposalKindLabel(prop) {
+      const count = this.patchProposalFileCount(prop);
+      return count > 1 ? `batch patch (${count})` : "patch";
+    },
+
+    async refreshPendingActions() {
+      this.pendingActionsLoading = true;
+      try {
+        const payload = await this.apiGet("/api/pending-actions?limit=50");
+        this.pendingActions = Array.isArray(payload.pending_actions) ? payload.pending_actions : [];
+        const apPayload = await this.apiGet("/api/action-proposals");
+        this.actionProposals = Array.isArray(apPayload.proposals) ? apPayload.proposals : [];
+      } finally {
+        this.pendingActionsLoading = false;
+      }
+    },
+
+    pendingActionMode(item) {
+      return "general";
+    },
+
+    pendingActionSystemHint(item) {
+      return "";
+    },
+
+    actionTypeBadge(item) {
+      const labels = {
+        reflection: "Reflect",
+        web_research: "Research",
+        topic_review: "Memory",
+        external_request: "External",
+      };
+      const kind = String(item?.type || "").trim().toLowerCase();
+      return labels[kind] || kind || "Action";
+    },
+
+    pendingActionTitle(item) {
+      const kind = String(item?.type || "").trim().toLowerCase();
+      if (kind === "web_research") {
+        return "Foraging Web Follow-up";
+      }
+      if (kind === "topic_review") {
+        return "Memory Fact Review";
+      }
+      if (kind === "external_request") {
+        const provider = String(item?.provider || "").trim();
+        const intent = String(item?.intent || "").trim();
+        if (provider && intent) {
+          return `${provider} - ${intent}`;
+        }
+        if (provider) {
+          return `${provider} request`;
+        }
+        return "External Request";
+      }
+      return String(item?.question || "Pending action");
+    },
+
+    watchScheduleLabel(row) {
+      const schedule = String(row?.schedule || "manual").trim().toLowerCase();
+      if (schedule === "daily") {
+        const hour = Number(row?.schedule_hour);
+        const safeHour = Number.isFinite(hour) ? Math.max(0, Math.min(23, Math.trunc(hour))) : 7;
+        return `Daily at ${String(safeHour).padStart(2, "0")}:00 UTC`;
+      }
+      if (schedule === "hourly") {
+        return "Hourly";
+      }
+      return "Manual";
+    },
+
+    relativeTimeLabel(ts) {
+      const raw = String(ts || "").trim();
+      if (!raw) return "never";
+      const when = new Date(raw);
+      if (Number.isNaN(when.getTime())) return this.formatDate(raw) || "unknown";
+      const deltaSec = Math.floor((Date.now() - when.getTime()) / 1000);
+      if (!Number.isFinite(deltaSec)) return this.formatDate(raw) || "unknown";
+      if (deltaSec < 60) return "just now";
+      if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
+      if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}h ago`;
+      if (deltaSec < 86400 * 14) return `${Math.floor(deltaSec / 86400)}d ago`;
+      return this.formatDate(raw) || "unknown";
+    },
+
+    briefingConfidenceLabel(row) {
+      const label = String(row?.confidence_label || "").trim().toLowerCase();
+      if (label === "high") return "High confidence";
+      if (label === "medium") return "Medium confidence";
+      if (label === "low") return "Low confidence";
+      return "Confidence unknown";
+    },
+
+    async toggleBriefingDetails(row) {
+      if (!row || !row.id) return;
+      if (row._detailsLoaded) {
+        row._expanded = !row._expanded;
+        return;
+      }
+      row._loadingDetails = true;
+      try {
+        const payload = await this.apiGet(`/api/briefings/${encodeURIComponent(String(row.id))}`);
+        const detail = payload?.briefing || {};
+        row.headline = String(detail.headline || row.headline || row.topic || "").trim();
+        row.summary = String(detail.summary || row.summary || row.preview || "").trim();
+        row.key_points = Array.isArray(detail.key_points) ? detail.key_points : [];
+        row.risks = Array.isArray(detail.risks) ? detail.risks : [];
+        row.next_steps = Array.isArray(detail.next_steps) ? detail.next_steps : [];
+        row.confidence_label = String(detail.confidence_label || row.confidence_label || "").trim();
+        row.confidence_raw = String(detail.confidence_raw || row.confidence_raw || "").trim();
+        row.source_count = Number(detail.source_count || row.source_count || 0);
+        row.signal_score = Number(detail.signal_score || row.signal_score || 0);
+        row.quality_flags = Array.isArray(detail.quality_flags) ? detail.quality_flags : [];
+        row.content_markdown = String(detail.content_markdown || "").trim();
+        row._detailsLoaded = true;
+        row._expanded = true;
+      } catch (err) {
+        window.alert(`Could not load briefing detail: ${String(err.message || err)}`);
+      } finally {
+        row._loadingDetails = false;
+      }
+    },
+
+    async addWatch(topic, profile, schedule, scheduleHour) {
+      const t = String(topic || "").trim();
+      if (!t) {
+        window.alert("Topic is required.");
+        return;
+      }
+      await this.apiPost("/api/watchtower/watches", {
+        topic: t,
+        profile: String(profile || "general"),
+        schedule: String(schedule || "daily"),
+        schedule_hour: Number(scheduleHour || 7),
+      });
+      this.watchtowerForm = { topic: "", profile: "general", schedule: "daily", schedule_hour: 7 };
+      await this.refreshSystemPanel();
+    },
+
+    async deleteWatch(watchId) {
+      if (!window.confirm("Remove this watch?")) return;
+      await this.apiDelete(`/api/watchtower/watches/${encodeURIComponent(watchId)}`);
+      await this.refreshSystemPanel();
+    },
+
+    async triggerWatch(watchId) {
+      await this.apiPost(`/api/watchtower/watches/${encodeURIComponent(watchId)}/trigger`, {});
+      window.alert("Watch queued. The briefing card will update when the run completes.");
+      await this.refreshPanelBadges();
+      if (this.panelKey === "watchtower") {
+        await this.refreshSystemPanel();
+      }
+    },
+
+    async toggleWatch(watchId, enabled) {
+      await this.apiPut(`/api/watchtower/watches/${encodeURIComponent(watchId)}`, { enabled });
+      await this.refreshSystemPanel();
+    },
+
+    async markBriefingRead(briefingId) {
+      await this.apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/read`, {});
+      await this.refreshSystemPanel();
+      await this.refreshPanelBadges();
+    },
+
+    async markBriefingUnread(briefingId) {
+      await this.apiPost(`/api/briefings/${encodeURIComponent(briefingId)}/unread`, {});
+      await this.refreshSystemPanel();
+      await this.refreshPanelBadges();
+    },
+
+    async markAllBriefingsRead() {
+      const unread = (this.briefingRows || []).filter(r => !r.read);
+      for (const row of unread) {
+        if (row.id) {
+          await this.apiPost(`/api/briefings/${encodeURIComponent(row.id)}/read`, {});
+        }
+      }
+      await this.refreshSystemPanel();
+      await this.refreshPanelBadges();
+    },
+
+    async approveActionProposal(id) {
+      await this.apiPost(`/api/action-proposals/${encodeURIComponent(id)}/approve`, {});
+      await this.refreshPendingActions();
+      await this.refreshPanelBadges();
+    },
+
+    async rejectActionProposal(id) {
+      await this.apiPost(`/api/action-proposals/${encodeURIComponent(id)}/reject`, {});
+      await this.refreshPendingActions();
+      await this.refreshPanelBadges();
+    },
+
+    // ------------------------------------------------------------------
+    // Life Admin methods
+    // ------------------------------------------------------------------
+    lifeAdminDetailFieldDefs(section) {
+      if (section === "profile") return LIFE_ADMIN_PROFILE_DETAIL_FIELDS;
+      if (section === "family") return LIFE_ADMIN_FAMILY_DETAIL_FIELDS;
+      if (section === "pet") return LIFE_ADMIN_PET_DETAIL_FIELDS;
+      if (section === "reminder") return LIFE_ADMIN_REMINDER_DETAIL_FIELDS;
+      return [];
+    },
+    lifeAdminDetailItems(section, row) {
+      const out = [];
+      const source = row || {};
+      for (const [key, label] of this.lifeAdminDetailFieldDefs(section)) {
+        const value = String(source[key] || "").trim();
+        if (value) {
+          out.push(`${label}: ${value}`);
+        }
+      }
+      return out;
+    },
+    lifeAdminHasDetails(section, row) {
+      return this.lifeAdminDetailItems(section, row).length > 0;
+    },
+    toggleLifeAdminDetails(section) {
+      const key = `${section}DetailsOpen`;
+      if (!(key in this.lifeAdminState)) {
+        return;
+      }
+      this.lifeAdminState[key] = !this.lifeAdminState[key];
+    },
+    resetLifeAdminProfileForm() {
+      this.lifeAdminForms.profile = blankLifeAdminProfileForm();
+      this.lifeAdminState.profileDetailsOpen = false;
+    },
+    resetFamilyMemberForm() {
+      this.lifeAdminForms.family = blankLifeAdminFamilyForm();
+      this.lifeAdminState.familyEditingKey = "";
+      this.lifeAdminState.familyDetailsOpen = false;
+    },
+    resetPetForm() {
+      this.lifeAdminForms.pet = blankLifeAdminPetForm();
+      this.lifeAdminState.petEditingKey = "";
+      this.lifeAdminState.petDetailsOpen = false;
+    },
+    resetReminderForm() {
+      this.lifeAdminForms.reminder = blankLifeAdminReminderForm();
+      this.lifeAdminState.reminderEditingKey = "";
+      this.lifeAdminState.reminderDetailsOpen = false;
+    },
+    startEditFamilyMember(row) {
+      this.lifeAdminForms.family = cloneLifeAdminRecord(row, blankLifeAdminFamilyForm);
+      this.lifeAdminState.familyEditingKey = String(row?.name || "").trim();
+      this.lifeAdminState.familyDetailsOpen = this.lifeAdminHasDetails("family", row);
+    },
+    startEditPet(row) {
+      this.lifeAdminForms.pet = cloneLifeAdminRecord(row, blankLifeAdminPetForm);
+      this.lifeAdminState.petEditingKey = String(row?.name || "").trim();
+      this.lifeAdminState.petDetailsOpen = this.lifeAdminHasDetails("pet", row);
+    },
+    startEditReminder(row) {
+      this.lifeAdminForms.reminder = cloneLifeAdminRecord(row, blankLifeAdminReminderForm);
+      this.lifeAdminState.reminderEditingKey = String(row?.label || "").trim();
+      this.lifeAdminState.reminderDetailsOpen = this.lifeAdminHasDetails("reminder", row);
+    },
+    async saveUserProfile() {
+      const payload = cloneLifeAdminRecord(this.lifeAdminForms.profile, blankLifeAdminProfileForm);
+      if (!String(payload.preferred_name || payload.full_name || "").trim()) {
+        window.alert("Enter at least a preferred name or full name.");
+        return;
+      }
+      await this.apiPatch("/api/personal-memory/profile", payload);
+      await this.refreshSystemPanel();
+    },
+    async saveHouseholdNotes() {
+      await this.apiPatch("/api/personal-memory/notes", { notes: this.lifeAdminForms.notes });
+      await this.refreshSystemPanel();
+    },
+    async saveFamilyMember() {
+      const f = cloneLifeAdminRecord(this.lifeAdminForms.family, blankLifeAdminFamilyForm);
+      if (!String(f.name || "").trim()) return;
+      if (this.lifeAdminState.familyEditingKey) {
+        await this.apiPatch(`/api/personal-memory/family/${encodeURIComponent(this.lifeAdminState.familyEditingKey)}`, f);
+      } else {
+        await this.apiPost("/api/personal-memory/family", f);
+      }
+      this.resetFamilyMemberForm();
+      await this.refreshSystemPanel();
+    },
+    async removeFamilyMember(name) {
+      await this.apiDelete(`/api/personal-memory/family/${encodeURIComponent(name)}`);
+      if (String(this.lifeAdminState.familyEditingKey || "").trim().toLowerCase() === String(name || "").trim().toLowerCase()) {
+        this.resetFamilyMemberForm();
+      }
+      await this.refreshSystemPanel();
+    },
+    async savePet() {
+      const f = cloneLifeAdminRecord(this.lifeAdminForms.pet, blankLifeAdminPetForm);
+      if (!String(f.name || "").trim()) return;
+      if (this.lifeAdminState.petEditingKey) {
+        await this.apiPatch(`/api/personal-memory/pets/${encodeURIComponent(this.lifeAdminState.petEditingKey)}`, f);
+      } else {
+        await this.apiPost("/api/personal-memory/pets", f);
+      }
+      this.resetPetForm();
+      await this.refreshSystemPanel();
+    },
+    async removePet(name) {
+      await this.apiDelete(`/api/personal-memory/pets/${encodeURIComponent(name)}`);
+      if (String(this.lifeAdminState.petEditingKey || "").trim().toLowerCase() === String(name || "").trim().toLowerCase()) {
+        this.resetPetForm();
+      }
+      await this.refreshSystemPanel();
+    },
+    async saveRecurringReminder() {
+      const f = cloneLifeAdminRecord(this.lifeAdminForms.reminder, blankLifeAdminReminderForm);
+      if (!String(f.label || "").trim()) return;
+      if (this.lifeAdminState.reminderEditingKey) {
+        await this.apiPatch(`/api/personal-memory/reminders/${encodeURIComponent(this.lifeAdminState.reminderEditingKey)}`, f);
+      } else {
+        await this.apiPost("/api/personal-memory/reminders", f);
+      }
+      this.resetReminderForm();
+      await this.refreshSystemPanel();
+    },
+    async removeRecurringReminder(label) {
+      await this.apiDelete(`/api/personal-memory/reminders/${encodeURIComponent(label)}`);
+      if (String(this.lifeAdminState.reminderEditingKey || "").trim().toLowerCase() === String(label || "").trim().toLowerCase()) {
+        this.resetReminderForm();
+      }
+      await this.refreshSystemPanel();
+    },
+    lifeAdminMemoryStatusLabel(record) {
+      return String(record?.status || "captured")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (m) => m.toUpperCase());
+    },
+    lifeAdminMemoryBadgeClass(record) {
+      const status = String(record?.status || "captured").toLowerCase();
+      return `is-${status || "captured"}`;
+    },
+    lifeAdminMemorySummary(record) {
+      const parts = [];
+      const source = String(record?.source_label || record?.source_type || "").trim();
+      if (source) parts.push(source);
+      const field = String(record?.field || "").trim().replace(/_/g, " ");
+      if (field) parts.push(field);
+      const updated = String(record?.updated_at || "").trim();
+      if (updated) parts.push(updated.slice(0, 10));
+      return parts.join(" | ");
+    },
+    secondBrainRecordMeta(record) {
+      const parts = [];
+      const source = String(record?.source_label || record?.source_type || "").trim();
+      if (source) parts.push(source);
+      const confidence = Number(record?.confidence || 0);
+      if (Number.isFinite(confidence) && confidence > 0) parts.push(`confidence ${confidence.toFixed(2)}`);
+      const updated = String(record?.updated_at || "").trim();
+      if (updated) parts.push(`updated ${updated.slice(0, 10)}`);
+      const lastUsed = String(record?.last_used_at || "").trim();
+      if (lastUsed) parts.push(`used ${lastUsed.slice(0, 10)}`);
+      return parts.join(" | ");
+    },
+    secondBrainTimelineSummary(row) {
+      const parts = [];
+      const source = String(row?.source_label || row?.source_type || "").trim();
+      if (source) parts.push(source);
+      const updated = String(row?.updated_at || "").trim();
+      if (updated) parts.push(updated.slice(0, 10));
+      const age = Number(row?.age_days);
+      if (Number.isFinite(age)) parts.push(`${age}d old`);
+      return parts.join(" | ");
+    },
+    setLifeAdminMemoryFilter(filter) {
+      this.lifeAdminState.memoryFilter = String(filter || "all").trim() || "all";
+    },
+    async confirmLifeAdminMemory(recordId) {
+      await this.apiPatch(`/api/personal-memory/records/${encodeURIComponent(recordId)}/confirm`, {});
+      await this.refreshSystemPanel();
+    },
+    async pinLifeAdminMemory(recordId) {
+      await this.apiPatch(`/api/personal-memory/records/${encodeURIComponent(recordId)}/pin`, {});
+      await this.refreshSystemPanel();
+    },
+    async forgetLifeAdminMemory(recordId) {
+      const ok = window.confirm("Mark this memory as forgotten?");
+      if (!ok) return;
+      await this.apiPatch(`/api/personal-memory/records/${encodeURIComponent(recordId)}/forget`, {});
+      await this.refreshSystemPanel();
+    },
+    async explainLifeAdminMemory(recordId) {
+      const payload = await this.apiPost("/api/personal-memory/records/explain", { id: recordId });
+      const row = payload?.record || {};
+      const lines = [
+        `Subject: ${String(row.subject || "")}`,
+        `Field: ${String(row.field || "").replace(/_/g, " ")}`,
+        `Value: ${String(row.value || "")}`,
+        `Status: ${String(row.status || "")}`,
+        `Confidence: ${Number(row.confidence || 0).toFixed(2)}`,
+        `Source: ${String(row.source_label || row.source_type || "")}`,
+      ];
+      if (row.updated_at) lines.push(`Updated: ${String(row.updated_at)}`);
+      if (row.last_used_at) lines.push(`Last used: ${String(row.last_used_at)}`);
+      if (row.evidence) lines.push(`Evidence: ${String(row.evidence)}`);
+      window.alert(lines.join("\n"));
+    },
+    async editLifeAdminMemory(record) {
+      const current = String(record?.value || "");
+      const nextValue = window.prompt("Edit memory value", current);
+      if (nextValue === null) return;
+      const trimmed = String(nextValue || "").trim();
+      if (!trimmed) {
+        window.alert("Memory value cannot be empty.");
+        return;
+      }
+      await this.apiPatch(`/api/personal-memory/records/${encodeURIComponent(String(record?.id || ""))}`, {
+        value: trimmed,
+        status: "confirmed",
+        confidence: 1.0,
+      });
+      await this.refreshSystemPanel();
+    },
+
+    async openPendingActions() {
+      this.chatMenuOpen = false;
+      this.panelOverlayOpen = false;
+      this.setActiveApp("chat");
+      if (this.isMobileLayout()) {
+        this.closeSidebar();
+      }
+      this.actionsOverlayOpen = true;
+      this.updateBodyClasses();
+      try {
+        await this.refreshPendingActions();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Postbag load failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async handlePendingAction(actionId, actionType, presetAnswer = "") {
+      if (!actionId || !actionType) {
+        return;
+      }
+
+      if (actionType === "ignore") {
+        const reason = window.prompt("Reason for ignoring this pending action? (optional)", "") || "";
+        const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(actionId)}/ignore`, { reason });
+        await this.refreshPendingActions();
+        await this.refreshPanelBadges();
+        window.alert(payload.message || "Action ignored.");
+        return;
+      }
+
+      if (actionType === "codex") {
+        const note = window.prompt("Optional note to include for Codex:", "") || "";
+        const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(actionId)}/codex`, { note });
+        await this.refreshPendingActions();
+        await this.refreshPanelBadges();
+        window.alert(payload.message || "Sent to Codex inbox.");
+        return;
+      }
+
+      if (actionType === "topic_yes" || actionType === "topic_no") {
+        const accepted = actionType === "topic_yes";
+        try {
+          await this.apiPost(`/api/memory/reviews/${encodeURIComponent(actionId)}/answer`, { accepted });
+          await this.refreshPendingActions();
+          await this.refreshPanelBadges();
+        } catch (err) {
+          window.alert(`Memory update failed: ${err.message || err}`);
+        }
+        return;
+      }
+
+      if (actionType === "answer") {
+        let answer = String(presetAnswer || "").trim();
+        if (!answer) {
+          answer = window.prompt("Answer this action directly:", "") || "";
+        }
+        if (!answer.trim()) {
+          return;
+        }
+        const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(actionId)}/answer`, {
+          answer: answer,
+        });
+        await this.refreshPendingActions();
+        await this.refreshPanelBadges();
+        window.alert(payload.message || "Action answered.");
+      }
+    },
+
+    async refreshSystemPanel() {
+      if (!this.panelKey) {
+        return;
+      }
+      this.panelLoading = true;
+      try {
+        if (this.panelKey === "reflections") {
+          const payload = await this.apiGet("/api/panel/reflections-history?limit=120");
+          this.panelData = Array.isArray(payload.reflections) ? payload.reflections : [];
+          this.markReflectionsAsRead(this.panelData);
+          return;
+        }
+        if (this.panelKey === "lessons") {
+          const payload = await this.apiGet("/api/panel/lessons?limit=80&sort=newest");
+          this.panelData = Array.isArray(payload.lessons) ? payload.lessons : [];
+          this.markLessonsAsRead(this.panelData);
+          return;
+        }
+        if (this.panelKey === "handoffs") {
+          const payload = await this.apiGet("/api/panel/handoffs?limit=40");
+          this.panelData = Array.isArray(payload.handoffs) ? payload.handoffs : [];
+          return;
+        }
+        if (this.panelKey === "projects") {
+          const payload = await this.apiGet("/api/panel/projects?limit=80");
+          this.panelData = Array.isArray(payload.projects) ? payload.projects : [];
+          return;
+        }
+        if (this.panelKey === "foraging") {
+          const payload = await this.apiGet("/api/panel/foraging?limit=80");
+          const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+          this.panelData = jobs;
+          if (payload.foraging && typeof payload.foraging === "object") {
+            this.panelStatus.foraging_paused = Boolean(payload.foraging.paused);
+            this.panelStatus.foraging_active_jobs = Number(payload.foraging.active_jobs || jobs.length || 0);
+            this.panelStatus.foraging_yielding = Boolean(payload.foraging.yielding);
+          }
+          return;
+        }
+        if (this.panelKey === "project_detail") {
+          const project = normalizeProjectSlug(this.activeProject);
+          const payload = await this.apiGet(
+            `/api/projects/${encodeURIComponent(project)}/details?events=80&artifacts=40`
+          );
+          const summary = payload.summary || {};
+          const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+          const events = Array.isArray(payload.events) ? payload.events : [];
+          const handoffs = Array.isArray(payload.handoffs) ? payload.handoffs : [];
+          this.projectDetail = payload;
+          this.panelData = [
+            { kind: "summary", ...summary, project },
+            ...artifacts.map((path) => ({ kind: "artifact", path })),
+            ...events
+              .slice(-20)
+              .reverse()
+              .map((item) => ({
+                kind: "event",
+                ts: item.ts,
+                actor: item.actor,
+                event: item.event,
+                detail: JSON.stringify(item.details || {}),
+              })),
+            ...handoffs.slice(0, 12).map((item) => ({ kind: "handoff", ...item })),
+          ];
+          return;
+        }
+        if (this.panelKey === "content") {
+          const project = normalizeProjectSlug(this.activeProject);
+          const payload = await this.apiGet(
+            `/api/projects/${encodeURIComponent(project)}/content-tree?depth=6&nodes=1800`
+          );
+          this.contentTreeRoot = String(payload.root || "");
+          this.contentTreeNodes = Array.isArray(payload.tree) ? payload.tree : [];
+          this.contentTreeNodeCount = Number(payload.node_count || 0);
+          this.contentTreeTruncated = Boolean(payload.truncated);
+          if (this._contentTreeProject !== project) {
+            this.contentTreeExpanded = this.defaultContentExpansion(this.contentTreeNodes, 1);
+          } else if (!Object.keys(this.contentTreeExpanded || {}).length) {
+            this.contentTreeExpanded = this.defaultContentExpansion(this.contentTreeNodes, 1);
+          }
+          this._contentTreeProject = project;
+          this.panelData = this.contentPanelRows(project);
+          return;
+        }
+        if (this.panelKey === "outbox") {
+          const payload = await this.apiGet("/api/panel/outbox?limit=80");
+          this.panelData = Array.isArray(payload.outbox) ? payload.outbox : [];
+          return;
+        }
+        if (this.panelKey === "watchtower") {
+          const payload = await this.apiGet("/api/watchtower/watches");
+          this.panelData = Array.isArray(payload.watches) ? payload.watches : [];
+          return;
+        }
+        if (this.panelKey === "briefings") {
+          const payload = await this.apiGet("/api/panel/briefings?limit=50");
+          this.panelData = Array.isArray(payload.briefings)
+            ? payload.briefings.map((row) => ({
+              ...row,
+              _expanded: false,
+              _detailsLoaded: false,
+              _loadingDetails: false,
+            }))
+            : [];
+          return;
+        }
+        if (this.panelKey === "forage-cards") {
+          const payload = await this.apiGet("/api/forage-cards?limit=50");
+          this.panelData = Array.isArray(payload.cards) ? payload.cards : [];
+          return;
+        }
+        if (this.panelKey === "life-admin") {
+          const payload = await this.apiGet("/api/personal-memory");
+          const ctx = payload.context || {};
+          ctx.records = Array.isArray(payload.records) ? payload.records : [];
+          this.panelData = [ctx];
+          this.lifeAdminForms.profile = cloneLifeAdminRecord(ctx.user_profile || {}, blankLifeAdminProfileForm);
+          this.lifeAdminForms.notes = String(ctx.household_notes || "");
+          return;
+        }
+        if (this.panelKey === "second-brain") {
+          const payload = await this.apiGet("/api/second-brain");
+          this.panelData = [payload || {}];
+          return;
+        }
+        if (this.panelKey === "topics") {
+          const payload = await this.apiGet("/api/topics");
+          this.panelData = { topics: Array.isArray(payload.topics) ? payload.topics : [] };
+          return;
+        }
+        if (this.panelKey === "topic_detail") {
+          const topicId = String(this._activePanelTopicId || "").trim();
+          if (!topicId) { this.topicDetailData = null; return; }
+          const payload = await this.apiGet(`/api/topics/${encodeURIComponent(topicId)}/detail`);
+          this.topicDetailData = payload && !payload.error ? payload : null;
+          this.panelData = {};
+          return;
+        }
+        if (this.panelKey === "system") {
+          await this.applyFontConfig();
+          this.panelData = {};
+          return;
+        }
+        this.panelData = [];
+      } finally {
+        this.panelLoading = false;
+      }
+    },
+
+    async openSystemPanel(panelKey) {
+      const key = String(panelKey || "").trim().toLowerCase();
+      if (!["foraging", "reflections", "lessons", "handoffs", "outbox", "projects", "project_detail", "content", "watchtower", "briefings", "forage-cards", "life-admin", "second-brain", "topics", "topic_detail", "system"].includes(key)) {
+        return;
+      }
+      this.chatMenuOpen = false;
+      this.actionsOverlayOpen = false;
+      this.setActiveApp("chat");
+      this.panelKey = key;
+      this.panelData = [];
+      this.panelOverlayOpen = true;
+      this.updateBodyClasses();
+      if (this.isMobileLayout()) {
+        this.closeSidebar();
+      }
+      try {
+        await this.refreshSystemPanel();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        this.panelData = [];
+        window.alert(`Panel load failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async openForageCardSummary(row) {
+      const path = String(row?.summary_path || "").trim();
+      if (!path) {
+        window.alert("No summary file available for this research card.");
+        return;
+      }
+      if (row._expanded) {
+        row._expanded = false;
+        return;
+      }
+      try {
+        if (!row._content_markdown) {
+          const payload = await this.apiGet(`/api/markdown?path=${encodeURIComponent(path)}`);
+          row._content_markdown = markdownToHtml(String(payload.content || "").trim());
+        }
+        row._expanded = true;
+      } catch (err) {
+        window.alert("Could not load summary: " + String(err.message || err));
+      }
+    },
+
+    async toggleForageCardPin(row) {
+      const cardId = String(row?.id || "").trim();
+      if (!cardId) return;
+      try {
+        const result = await this.apiPost(`/api/forage-cards/${encodeURIComponent(cardId)}/pin`, {});
+        if (result?.card) {
+          const idx = (this.panelData || []).findIndex((r) => r.id === cardId);
+          if (idx >= 0) this.panelData[idx] = { ...result.card };
+        } else {
+          await this.refreshSystemPanel();
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert("Pin failed: " + String(err.message || err));
+      }
+    },
+
+    async deleteForageCard(row) {
+      const cardId = String(row?.id || "").trim();
+      if (!cardId) return;
+      if (!window.confirm("Delete this research card?")) return;
+      try {
+        await this.apiDelete(`/api/forage-cards/${encodeURIComponent(cardId)}`);
+        this.panelData = (this.panelData || []).filter((r) => r.id !== cardId);
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert("Delete failed: " + String(err.message || err));
+      }
+    },
+
+    async cancelForagingJob(row) {
+      const requestId = String(row?.id || "").trim();
+      const conversationId = String(row?.conversation_id || "").trim();
+      if (!requestId || !conversationId) {
+        return;
+      }
+      const confirmed = window.confirm(`Cancel Foraging job ${requestId}?`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/jobs/${encodeURIComponent(requestId)}/cancel`, {
+          conversation_id: conversationId,
+        });
+        window.alert(payload.message || "Cancel requested.");
+      } catch (err) {
+        window.alert(`Cancel failed: ${String(err.message || err)}`);
+      } finally {
+        try {
+          await this.refreshSystemPanel();
+          await this.refreshPanelBadges();
+        } catch (_err) {}
+      }
+    },
+
+    async ingestOutbox(row) {
+      const threadId = String(row?.id || "").trim();
+      const target = String(row?.target || "").trim();
+      if (!threadId || !target) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/outbox/${encodeURIComponent(target)}/${encodeURIComponent(threadId)}/ingest`, {
+          lane: "project",
+        });
+        window.alert(payload.message || "Codex outbox item ingested.");
+      } catch (err) {
+        window.alert(`Codex outbox ingest failed: ${String(err.message || err)}`);
+      } finally {
+        try {
+          await this.refreshSystemPanel();
+          await this.refreshPanelBadges();
+        } catch (_err) {}
+      }
+    },
+    async fetchAuthStatus() {
+      const response = await fetch("/api/auth/status", { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Auth status failed (${response.status})`);
+      }
+      const payload = await response.json();
+      this.auth.enabled = Boolean(payload.enabled);
+      this.auth.authenticated = Boolean(payload.authenticated);
+      this.auth.profile = payload.profile && typeof payload.profile === "object" ? payload.profile : null;
+      if (this.auth.authenticated && this.auth.profile) {
+        this.loginUsername = String(this.auth.profile.username || this.loginUsername || "").trim();
+        this.authShowForm = false;
+        this.loadLessonReadState();
+        this.loadReflectionReadState();
+        this.refreshHomePhrase();
+      }
+      if (!this.auth.authenticated && !this.loginUsername) {
+        this.loginUsername = "owner";
+      }
+      if (!this.auth.authenticated) {
+        this.authShowForm = false;
+        this.lessonsReadIds = {};
+        this.lessonsUnreadCount = 0;
+        this.reflectionsReadIds = {};
+        this.reflectionsUnreadCount = 0;
+        this.refreshHomePhrase();
+      }
+      await this.refreshWebPushSettings();
+    },
+
+    beginCheckIn() {
+      this.authError = "";
+      this.authShowForm = true;
+      this.$nextTick(() => {
+        const field = this.$refs.loginUsernameInput;
+        if (field && typeof field.focus === "function") {
+          field.focus();
+        }
+      });
+    },
+
+    cancelCheckIn() {
+      this.authError = "";
+      this.loginPassword = "";
+      this.authShowForm = false;
+    },
+
+    async submitLogin() {
+      this.authError = "";
+      const username = String(this.loginUsername || "").trim();
+      if (!username) {
+        this.authError = "Username is required.";
+        this.authShowForm = true;
+        return;
+      }
+      try {
+        const payload = await this.apiPost("/api/auth/login", {
+          username,
+          password: this.loginPassword,
+        });
+        this.auth.enabled = Boolean(payload.enabled);
+        this.auth.authenticated = Boolean(payload.authenticated);
+        this.auth.profile = payload.profile && typeof payload.profile === "object" ? payload.profile : null;
+        if (!this.auth.profile) {
+          this.authError = "No profile returned from server.";
+          this.authShowForm = true;
+          return;
+        }
+        this.loginUsername = String(this.auth.profile.username || this.loginUsername || "").trim();
+        this.loadLessonReadState();
+        this.loadReflectionReadState();
+        await this.refreshWebPushSettings();
+        try {
+          localStorage.setItem("foxforge_login_username", this.loginUsername);
+        } catch (_err) {}
+        this.loginPassword = "";
+        this.authShowForm = false;
+        this.waypointDayPanelExpanded = true;
+        this.refreshHomePhrase();
+        await this.bootstrapConversations({ activateApp: false });
+        try {
+          await this.refreshWaypointState();
+        } catch (_err) {}
+        await this.refreshPanelBadges();
+        this.setActiveApp("home");
+      } catch (err) {
+        this.authError = String(err.message || err);
+        this.authShowForm = true;
+      }
+    },
+
+    async refreshConversations() {
+      const payload = await this.apiGet("/api/conversations");
+      this.conversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+    },
+
+    async openConversation(id, options = {}) {
+      if (!id) {
+        return;
+      }
+      const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+      const convo = payload.conversation || null;
+      if (!convo) {
+        return;
+      }
+      this.activeConversationId = convo.id;
+      this.activeConversation = convo;
+      this.setActiveProject(convo.project || this.activeProject);
+      this.activeTopicId = normalizeTopicId(convo.topic_id || (String(convo.project || "").trim() === "general" ? "general" : this.activeTopicId));
+      this.chatMenuOpen = false;
+      this.actionsOverlayOpen = false;
+      this.panelOverlayOpen = false;
+      const activateApp = options?.activateApp !== false;
+      if (activateApp) {
+        this.setActiveApp("chat");
+      }
+      if (activateApp && this.isMobileLayout()) {
+        this.closeSidebar();
+      }
+      location.hash = `#${convo.id}`;
+      this.$nextTick(() => {
+        if (activateApp) {
+          this.scrollMessages();
+        }
+      });
+      this.markConversationRead(convo.id, { refreshList: true });
+    },
+
+    async createConversation(kind = "", options = {}) {
+      if (this.auth.enabled && !this.auth.authenticated) {
+        return;
+      }
+      const request = { kind: kind || "" };
+      if (Object.prototype.hasOwnProperty.call(options || {}, "topicId")) {
+        request.topic_id = normalizeTopicId(options.topicId);
+      }
+      if (Object.prototype.hasOwnProperty.call(options || {}, "project")) {
+        request.project = normalizeProjectSlug(options.project);
+      } else if (String(kind || "").trim().toLowerCase() === "general") {
+        request.project = "general";
+        request.topic_id = "general";
+      } else if (options && options.useActiveProject === true) {
+        request.project = normalizeProjectSlug(this.activeProject);
+      }
+      const payload = await this.apiPost("/api/conversations", request);
+      const convo = payload.conversation || null;
+      if (!convo) {
+        return;
+      }
+      await this.refreshConversations();
+      await this.openConversation(convo.id, options);
+    },
+
+    async deleteConversation(id) {
+      if (!id) {
+        return;
+      }
+      const confirmed = window.confirm("Delete this conversation thread?");
+      if (!confirmed) {
+        return;
+      }
+      await this.apiDelete(`/api/conversations/${encodeURIComponent(id)}`);
+      if (this.activeConversationId === id) {
+        this.activeConversationId = null;
+        this.activeConversation = null;
+      }
+      await this.refreshConversations();
+      if (!this.activeConversationId && this.conversations.length > 0) {
+        await this.openConversation(this.conversations[0].id);
+      }
+    },
+
+    async renameConversation() {
+      this.chatMenuOpen = false;
+      if (!this.activeConversationId) {
+        return;
+      }
+      const currentTitle = String(this.activeConversation?.title || "New Chat");
+      const value = window.prompt("Rename this conversation:", currentTitle);
+      if (!value || !value.trim()) {
+        return;
+      }
+      const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(this.activeConversationId)}`, {
+        title: value.trim(),
+      });
+      if (payload.conversation) {
+        this.activeConversation = payload.conversation;
+      }
+      await this.refreshConversations();
+    },
+
+    async fetchProjectNames() {
+      const payload = await this.apiGet("/api/projects?limit=200");
+      const names = Array.isArray(payload.projects) ? payload.projects : [];
+      const cleaned = names.map((x) => normalizeProjectSlug(x)).filter((x) => Boolean(x));
+      if (!cleaned.includes("general")) {
+        cleaned.unshift("general");
+      }
+      return Array.from(new Set(cleaned));
+    },
+
+    async refreshProjectPickerRows() {
+      this.projectPickerLoading = true;
+      this.projectPickerError = "";
+      try {
+        const payload = await this.apiGet("/api/panel/projects?limit=200");
+        const rows = Array.isArray(payload.projects) ? payload.projects : [];
+        this.projectPickerRows = rows
+          .map((row) => ({
+            project: normalizeProjectSlug(row?.project || ""),
+            description: String(row?.description || "").trim(),
+            updated_at: String(row?.updated_at || "").trim(),
+            source: String(row?.source || "").trim(),
+          }))
+          .filter((row) => Boolean(row.project));
+      } catch (err) {
+        this.projectPickerRows = [];
+        this.projectPickerError = String(err.message || err);
+      } finally {
+        this.projectPickerLoading = false;
+      }
+    },
+
+    openProjectPickerModal() {
+      this.chatMenuOpen = false;
+      this.projectPickerSearch = "";
+      this.projectPickerError = "";
+      this.projectPickerSubmitting = false;
+      this.projectPickerForm = {
+        project: normalizeProjectSlug(this.activeProject || "general"),
+        description: "",
+      };
+      const current = (this.projectPickerRows || []).find(
+        (row) => String(row?.project || "").trim() === this.projectPickerForm.project
+      );
+      if (current) {
+        this.projectPickerForm.description = String(current.description || "").trim();
+      }
+      this.projectPickerOpen = true;
+      this.updateBodyClasses();
+      this.refreshProjectPickerRows().then(() => {
+        const latest = (this.projectPickerRows || []).find(
+          (row) => String(row?.project || "").trim() === this.projectPickerForm.project
+        );
+        if (latest) {
+          this.projectPickerForm.description = String(latest.description || "").trim();
+        }
+      });
+      this.$nextTick(() => {
+        const node = this.$refs.projectPickerNameInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    closeProjectPickerModal() {
+      this.projectPickerOpen = false;
+      this.projectPickerLoading = false;
+      this.projectPickerSubmitting = false;
+      this.projectPickerError = "";
+      this.updateBodyClasses();
+    },
+
+    selectProjectPickerRow(row) {
+      const slug = normalizeProjectSlug(row?.project || "");
+      if (!slug) {
+        return;
+      }
+      this.projectPickerForm.project = slug;
+      this.projectPickerForm.description = String(row?.description || "").trim();
+    },
+
+    normalizeProjectPickerProject() {
+      this.projectPickerForm.project = normalizeProjectSlug(this.projectPickerForm.project || "general");
+    },
+
+    async saveProjectPickerCatalog() {
+      const slug = normalizeProjectSlug(this.projectPickerForm.project || "");
+      if (!slug) {
+        window.alert("Project name is required.");
+        return null;
+      }
+      const payload = await this.apiPost("/api/projects/catalog", {
+        project: slug,
+        description: String(this.projectPickerForm.description || "").trim(),
+      });
+      await this.refreshProjectPickerRows();
+      const latest = (this.projectPickerRows || []).find((row) => String(row?.project || "").trim() === slug);
+      if (latest) {
+        this.projectPickerForm.description = String(latest.description || "").trim();
+      }
+      return payload;
+    },
+
+    async submitProjectPickerCreate() {
+      try {
+        this.projectPickerSubmitting = true;
+        this.normalizeProjectPickerProject();
+        await this.saveProjectPickerCatalog();
+        await this.setConversationProjectSlug(this.projectPickerForm.project);
+        this.closeProjectPickerModal();
+      } catch (err) {
+        this.projectPickerError = String(err.message || err);
+      } finally {
+        this.projectPickerSubmitting = false;
+      }
+    },
+
+    async submitProjectPickerUse() {
+      try {
+        this.projectPickerSubmitting = true;
+        this.normalizeProjectPickerProject();
+        if (!String(this.projectPickerForm.project || "").trim()) {
+          window.alert("Choose or enter a project.");
+          return;
+        }
+        await this.setConversationProjectSlug(this.projectPickerForm.project);
+        this.closeProjectPickerModal();
+      } catch (err) {
+        this.projectPickerError = String(err.message || err);
+      } finally {
+        this.projectPickerSubmitting = false;
+      }
+    },
+
+    async setConversationProjectSlug(project) {
+      const slug = normalizeProjectSlug(project);
+      if (!this.activeConversationId) {
+        this.setActiveProject(slug);
+        return slug;
+      }
+      const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(this.activeConversationId)}`, {
+        project: slug,
+      });
+      if (payload.conversation) {
+        this.activeConversation = payload.conversation;
+        this.activeConversationId = payload.conversation.id || this.activeConversationId;
+        this.activeTopicId = normalizeTopicId(payload.conversation.topic_id || this.activeTopicId);
+      }
+      this.setActiveProject(slug);
+      await this.refreshConversations();
+      await this.refreshPanelBadges();
+      return slug;
+    },
+
+    async setConversationTopic(topicId, projectSlug = "") {
+      const normalizedTopicId = normalizeTopicId(topicId);
+      const slug = normalizeProjectSlug(projectSlug || this.activeProject || "general");
+      if (!this.activeConversationId) {
+        this.activeTopicId = normalizedTopicId;
+        this.setActiveProject(slug);
+        return normalizedTopicId;
+      }
+      const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(this.activeConversationId)}`, {
+        project: slug,
+        topic_id: normalizedTopicId,
+      });
+      if (payload.conversation) {
+        this.activeConversation = payload.conversation;
+        this.activeConversationId = payload.conversation.id || this.activeConversationId;
+      }
+      this.activeTopicId = normalizedTopicId;
+      this.setActiveProject(slug);
+      await this.refreshConversations();
+      await this.refreshPanelBadges();
+      return normalizedTopicId;
+    },
+
+    async setProject() {
+      this.openProjectPickerModal();
+    },
+
+    async usePanelProject(project) {
+      if (!project) {
+        return;
+      }
+      try {
+        await this.setConversationProjectSlug(project);
+        await this.openSystemPanel("project_detail");
+      } catch (err) {
+        window.alert(`Project switch failed: ${String(err.message || err)}`);
+      }
+    },
+
+    openFamilyProfileModal() {
+      this.chatMenuOpen = false;
+      if (!this.auth.profile || !this.auth.profile.is_owner) {
+        window.alert("Only the owner profile can add family members.");
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.familyProfileForm = {
+        username: "",
+        display_name: "",
+        role: "adult",
+        color: this.sanitizeHexColor(this.auth?.profile?.color || "#4285f4", "#4285f4"),
+        pin: "",
+        pin_confirm: "",
+      };
+      this.familyProfileSubmitting = false;
+      this.familyProfileModalOpen = true;
+      this.updateBodyClasses();
+      this.$nextTick(() => {
+        const node = document.querySelector(".family-profile-modal input");
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    closeFamilyProfileModal() {
+      this.familyProfileModalOpen = false;
+      this.familyProfileSubmitting = false;
+      this.updateBodyClasses();
+    },
+
+    async openEmailSettingsModal() {
+      this.chatMenuOpen = false;
+      this.emailSettingsSubmitting = false;
+      this.emailSettingsForm = { notification_email: "", smtp_user: "", smtp_password: "", dnd_enabled: false, dnd_start: "22:00", dnd_end: "08:00" };
+      try {
+        const payload = await this.apiGet("/api/owner/email-settings");
+        if (payload && payload.settings) {
+          this.emailSettingsForm.notification_email = payload.settings.notification_email || "";
+          this.emailSettingsForm.smtp_user = payload.settings.smtp_user || "";
+          this.emailSettingsForm.dnd_enabled = Boolean(payload.settings.dnd_enabled);
+          this.emailSettingsForm.dnd_start = payload.settings.dnd_start || "22:00";
+          this.emailSettingsForm.dnd_end = payload.settings.dnd_end || "08:00";
+        }
+      } catch (_) {}
+      this.emailSettingsModalOpen = true;
+      this.updateBodyClasses();
+    },
+
+    closeEmailSettingsModal() {
+      this.emailSettingsModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async openMorningDigestModal() {
+      try {
+        const data = await this.apiGet("/api/settings/morning-digest");
+        this.digestSettings.enabled = Boolean(data.morning_digest_enabled);
+        this.digestSettings.hour = Number(data.morning_digest_hour ?? 7);
+        this.digestSettings.locationLabel = String(data.digest_location_label || "");
+        this.digestSettings.locationLat = data.digest_location_lat ?? null;
+        this.digestSettings.locationLon = data.digest_location_lon ?? null;
+      } catch (_e) {}
+      this.morningDigestModalOpen = true;
+      this.updateBodyClasses();
+    },
+
+    closeMorningDigestModal() {
+      this.morningDigestModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async openBotSettingsModal() {
+      this.botSettingsSubmitting = false;
+      this.botConfig = { telegram: { enabled: false, bot_token: "" }, discord: { enabled: false, bot_token: "" } };
+      this.botMappings = [];
+      this.botPending = [];
+      this.botUserForm = { platform: "telegram", platform_user_id: "", platform_username: "", foxforge_user_id: "" };
+      try {
+        const [cfgData, usersData, pendingData, profilesData] = await Promise.all([
+          this.apiGet("/api/owner/bot-config"),
+          this.apiGet("/api/owner/bot-users"),
+          this.apiGet("/api/owner/bot-users/pending"),
+          this.apiGet("/api/family/profiles"),
+        ]);
+        if (cfgData && cfgData.config) {
+          if (cfgData.config.telegram) this.botConfig.telegram.enabled = Boolean(cfgData.config.telegram.enabled);
+          if (cfgData.config.discord) this.botConfig.discord.enabled = Boolean(cfgData.config.discord.enabled);
+        }
+        if (usersData && Array.isArray(usersData.mappings)) this.botMappings = usersData.mappings;
+        if (pendingData && Array.isArray(pendingData.pending)) this.botPending = pendingData.pending;
+        if (profilesData && Array.isArray(profilesData.profiles)) this.botProfiles = profilesData.profiles;
+      } catch (_) {}
+      this.botSettingsModalOpen = true;
+      this.updateBodyClasses();
+    },
+
+    closeBotSettingsModal() {
+      this.botSettingsModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async saveBotSettings() {
+      this.botSettingsSubmitting = true;
+      try {
+        const payload = {
+          telegram: { enabled: this.botConfig.telegram.enabled },
+          discord: { enabled: this.botConfig.discord.enabled },
+        };
+        if (this.botConfig.telegram.bot_token) payload.telegram.bot_token = this.botConfig.telegram.bot_token;
+        if (this.botConfig.discord.bot_token) payload.discord.bot_token = this.botConfig.discord.bot_token;
+        await this.apiPost("/api/owner/bot-config", payload);
+      } catch (_) {}
+      this.botSettingsSubmitting = false;
+      this.closeBotSettingsModal();
+    },
+
+    async addBotUser() {
+      if (!this.botUserForm.platform_user_id || !this.botUserForm.foxforge_user_id) return;
+      this.botSettingsSubmitting = true;
+      try {
+        const data = await this.apiPost("/api/owner/bot-users", {
+          platform: this.botUserForm.platform,
+          platform_user_id: this.botUserForm.platform_user_id.trim(),
+          platform_username: this.botUserForm.platform_username.trim() || this.botUserForm.platform_user_id.trim(),
+          foxforge_user_id: this.botUserForm.foxforge_user_id,
+        });
+        if (data && data.mapping) this.botMappings.push(data.mapping);
+        this.botUserForm = { platform: "telegram", platform_user_id: "", platform_username: "", foxforge_user_id: "" };
+      } catch (_) {}
+      this.botSettingsSubmitting = false;
+    },
+
+    async deleteBotUser(mappingId) {
+      try {
+        await this.apiDelete(`/api/owner/bot-users/${mappingId}`);
+        this.botMappings = this.botMappings.filter((m) => m.id !== mappingId);
+      } catch (_) {}
+    },
+
+    prefillBotUser(pending) {
+      this.botUserForm.platform = pending.platform;
+      this.botUserForm.platform_user_id = pending.platform_user_id;
+      this.botUserForm.platform_username = pending.platform_username || "";
+    },
+
+    async saveDigestSettings() {
+      try {
+        await this.apiPost("/api/settings/morning-digest", {
+          morning_digest_enabled: Boolean(this.digestSettings.enabled),
+          morning_digest_hour: Number(this.digestSettings.hour),
+        });
+      } catch (_e) {}
+    },
+
+    async saveDigestLocation() {
+      const query = String(this.digestLocationDraft || "").trim();
+      if (!query) return;
+      try {
+        const geo = await this.geocodeHomeWeatherLocation(query);
+        await this.apiPost("/api/settings/morning-digest", {
+          digest_location_lat: geo.latitude,
+          digest_location_lon: geo.longitude,
+          digest_location_label: geo.label,
+        });
+        this.digestSettings.locationLabel = geo.label;
+        this.digestSettings.locationLat = geo.latitude;
+        this.digestSettings.locationLon = geo.longitude;
+        this.digestLocationDraft = "";
+      } catch (err) {
+        window.alert("Location lookup failed: " + String(err.message || err));
+      }
+    },
+
+    async submitEmailSettings() {
+      this.emailSettingsSubmitting = true;
+      try {
+        await this.apiPost("/api/owner/email-settings", {
+          notification_email: this.emailSettingsForm.notification_email.trim(),
+          smtp_user: this.emailSettingsForm.smtp_user.trim(),
+          smtp_password: this.emailSettingsForm.smtp_password,
+          dnd_enabled: Boolean(this.emailSettingsForm.dnd_enabled),
+          dnd_start: this.emailSettingsForm.dnd_start || "22:00",
+          dnd_end: this.emailSettingsForm.dnd_end || "08:00",
+        });
+        this.closeEmailSettingsModal();
+        window.alert("Email notification settings saved.");
+      } catch (err) {
+        window.alert("Could not save: " + String(err.message || err));
+      } finally {
+        this.emailSettingsSubmitting = false;
+      }
+    },
+
+    async testEmailSettings() {
+      this.emailSettingsSubmitting = true;
+      try {
+        await this.apiPost("/api/owner/email-settings", {
+          notification_email: this.emailSettingsForm.notification_email.trim(),
+          smtp_user: this.emailSettingsForm.smtp_user.trim(),
+          smtp_password: this.emailSettingsForm.smtp_password,
+          dnd_enabled: Boolean(this.emailSettingsForm.dnd_enabled),
+          dnd_start: this.emailSettingsForm.dnd_start || "22:00",
+          dnd_end: this.emailSettingsForm.dnd_end || "08:00",
+        });
+        await this.apiPost("/api/owner/email-settings/test", {});
+        window.alert("Test email sent! Check your inbox.");
+      } catch (err) {
+        window.alert("Test failed: " + String(err.message || err));
+      } finally {
+        this.emailSettingsSubmitting = false;
+      }
+    },
+
+    async submitFamilyProfileModal() {
+      if (!this.auth.profile || !this.auth.profile.is_owner) {
+        window.alert("Only the owner profile can add family members.");
+        return;
+      }
+      const username = String(this.familyProfileForm.username || "").trim();
+      const displayName = String(this.familyProfileForm.display_name || "").trim() || username;
+      const roleRaw = String(this.familyProfileForm.role || "adult").trim().toLowerCase();
+      const role = roleRaw === "child" ? "child" : "adult";
+      const color = this.sanitizeHexColor(this.familyProfileForm.color, "#4285f4");
+      const pin = String(this.familyProfileForm.pin || "").trim();
+      const pinConfirm = String(this.familyProfileForm.pin_confirm || "").trim();
+      if (!username) {
+        window.alert("Username is required.");
+        return;
+      }
+      if (!this.isFourDigitPin(pin)) {
+        window.alert("PIN must be exactly 4 digits.");
+        return;
+      }
+      if (pin !== pinConfirm) {
+        window.alert("PIN and confirmation do not match.");
+        return;
+      }
+      this.familyProfileSubmitting = true;
+      try {
+        const payload = await this.apiPost("/api/family/profiles", {
+          username,
+          display_name: displayName,
+          role,
+          color,
+          pin,
+        });
+        const created = payload?.profile || {};
+        this.closeFamilyProfileModal();
+        window.alert(
+          `Created profile: ${String(created.display_name || created.username || username)}\n` +
+            `Username: ${String(created.username || username)}\n` +
+            "Share the username and PIN with that family member."
+        );
+      } catch (err) {
+        window.alert(`Could not create profile: ${String(err.message || err)}`);
+      } finally {
+        this.familyProfileSubmitting = false;
+      }
+    },
+
+    async lockSession() {
+      this.chatMenuOpen = false;
+      if (!this.auth.enabled) {
+        window.alert("Session lock is disabled.");
+        return;
+      }
+      await this.apiPost("/api/auth/logout", {});
+      window.location.reload();
+    },
+
+    markConversationCancelRequested(conversationId, value = true) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const meta = this.conversationSendingMeta(id);
+      if (!meta) {
+        return;
+      }
+      this.setConversationSending(id, Object.assign({}, meta, { cancelRequested: Boolean(value) }));
+    },
+
+    async cancelActiveThinking() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      const meta = this.conversationSendingMeta(conversationId);
+      if (!meta || !meta.requestId || Boolean(meta.cancelRequested)) {
+        return;
+      }
+      this.markConversationCancelRequested(conversationId, true);
+      try {
+        const payload = await this.apiPost(`/api/jobs/${encodeURIComponent(meta.requestId)}/cancel`, {
+          conversation_id: conversationId,
+        });
+        const summary = String(payload?.summary || "").trim();
+        if (String(this.activeConversationId || "").trim() === conversationId) {
+          const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
+          existing.push({
+            id: `cancel_${Date.now()}`,
+            role: "assistant",
+            content: summary ? `Stopped.\n\n${summary}` : "Stopped.",
+            ts: new Date().toISOString(),
+            canceled: true,
+          });
+          this.activeConversation = Object.assign({}, this.activeConversation || {}, { messages: existing });
+          this.$nextTick(() => this.scrollMessages());
+        }
+      } catch (err) {
+        this.markConversationCancelRequested(conversationId, false);
+        window.alert(`Cancel failed: ${String(err.message || err)}`);
+      }
+    },
+
+    deleteMessageFromChat(msgId) {
+      const id = String(msgId || "").trim();
+      if (!id || !Array.isArray(this.activeConversation?.messages)) return;
+      const filtered = this.activeConversation.messages.filter((m) => String(m?.id || "") !== id);
+      this.activeConversation = Object.assign({}, this.activeConversation, { messages: filtered });
+    },
+
+    async sendMessage() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId || this.isConversationSending(conversationId)) {
+        return;
+      }
+      const typedContent = String(this.draft || "").trim();
+      const imageRows = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      if (!typedContent && imageRows.length === 0) {
+        return;
+      }
+
+      const talkModeRequest = this.inputMode === "talk" && !typedContent.startsWith("/");
+      const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "command" : "talk");
+      const likelyForagingRequest = sendMode === "forage";
+      let requestId = "";
+      try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          requestId = String(window.crypto.randomUUID());
+        }
+      } catch (_err) {}
+      if (!requestId) {
+        requestId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      }
+      this.setConversationSending(conversationId, {
+        requestId,
+        startedAt: Date.now(),
+        cancelRequested: false,
+        foraging: likelyForagingRequest,
+      });
+      this.chatMenuOpen = false;
+      this.draft = "";
+      this.composerImages = [];
+      const replyTarget = this.replyTargetMsg || null;
+      this.replyTargetMsg = null;
+      if (this.$refs.imageInput) {
+        this.$refs.imageInput.value = "";
+      }
+      this.resizeComposer();
+      let sentSuccessfully = false;
+      try {
+        const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
+        const localMsg = {
+          id: `local_user_${Date.now()}`,
+          role: "user",
+          content: typedContent || `Uploaded ${imageRows.length} file(s).`,
+          mode: sendMode,
+          foraging: likelyForagingRequest,
+          attachments: imageRows.map((row) => ({
+            id: row.id,
+            type: row.isDoc ? "document" : "image",
+            name: row.name,
+            url: row.previewUrl,
+            mime: row.type,
+            size: row.size,
+            local_only: true,
+          })),
+          ts: new Date().toISOString(),
+          local_only: true,
+        };
+        if (replyTarget) localMsg.reply_to = replyTarget;
+        existing.push(localMsg);
+        this.activeConversation = Object.assign({}, this.activeConversation || {}, { messages: existing });
+      } catch (_err) {}
+      this.$nextTick(() => this.scrollMessages());
+
+      try {
+        let payload = null;
+        if (imageRows.length > 0) {
+          const formData = new FormData();
+          formData.append("content", typedContent);
+          formData.append("mode", sendMode);
+          formData.append("request_id", requestId);
+          for (const row of imageRows) {
+            if (row?.file) {
+              formData.append("images", row.file, row.name || "image");
+            }
+          }
+          payload = await this.apiPostForm(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, formData);
+        } else {
+          const jsonBody = { content: typedContent, mode: sendMode, request_id: requestId };
+          if (replyTarget) jsonBody.reply_to = replyTarget;
+          payload = await this.apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, jsonBody);
+        }
+        const convo = payload.conversation || null;
+        if (convo) {
+          if (String(this.activeConversationId || "").trim() === conversationId) {
+            this.activeConversation = convo;
+            this.activeConversationId = convo.id;
+            this.setActiveProject(convo.project || this.activeProject);
+            this.activeTopicId = normalizeTopicId(convo.topic_id || this.activeTopicId);
+            // TTS: speak the last assistant reply
+            try {
+              const msgs = Array.isArray(convo.messages) ? convo.messages : [];
+              const lastAssistant = [...msgs].reverse().find((m) => m?.role === "assistant");
+              if (lastAssistant?.content) this.speakText(lastAssistant.content);
+            } catch (_e) {}
+          }
+        }
+        sentSuccessfully = true;
+        this.resetComposerMode();
+        await this.markConversationRead(conversationId, { refreshList: false });
+        try {
+          await this.refreshConversations();
+        } catch (refreshErr) {
+          console.warn("Post-send conversation refresh failed:", refreshErr);
+        }
+        try {
+          await this.refreshPanelBadges();
+        } catch (refreshErr) {
+          console.warn("Post-send panel refresh failed:", refreshErr);
+        }
+      } catch (err) {
+        let recovered = false;
+        if (this.isLikelyNetworkDropError(err)) {
+          recovered = await this.recoverMessageRequest(conversationId, requestId, likelyForagingRequest);
+        }
+        if (recovered) {
+          sentSuccessfully = true;
+        this.resetComposerMode();
+        } else {
+          if (imageRows.length > 0) {
+            this.composerImages = imageRows;
+          }
+          if (!sentSuccessfully && String(this.activeConversationId || "").trim() === conversationId) {
+            const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
+            existing.push({
+              id: `err_${Date.now()}`,
+              role: "assistant",
+              content: `Error: ${String(err.message || err)}`,
+              ts: new Date().toISOString(),
+            });
+            this.activeConversation = Object.assign({}, this.activeConversation || {}, { messages: existing });
+          } else {
+            console.warn("Message sent, but a post-send operation failed:", err);
+          }
+        }
+      } finally {
+        if (sentSuccessfully) {
+          for (const row of imageRows) {
+            if (row?.previewUrl) {
+              URL.revokeObjectURL(row.previewUrl);
+            }
+          }
+        }
+        this.setConversationSending(conversationId, false);
+        if (String(this.activeConversationId || "").trim() === conversationId) {
+          this.$nextTick(() => this.scrollMessages());
+        }
+      }
+    },
+
+    waypointEventTimeLabel(row) {
+      const start = normalizeTimeText(row?.start_time || "");
+      const end = normalizeTimeText(row?.end_time || "");
+      if (start && end) {
+        return `${start}-${end}`;
+      }
+      if (start) {
+        return start;
+      }
+      if (end) {
+        return `until ${end}`;
+      }
+      return "All day";
+    },
+
+    normalizeWaypointMemberIds(raw) {
+      const values = Array.isArray(raw) ? raw : [];
+      const result = [];
+      const seen = new Set();
+      for (const item of values) {
+        const id = String(item || "").trim();
+        if (!id || seen.has(id)) {
+          continue;
+        }
+        seen.add(id);
+        result.push(id);
+      }
+      return result;
+    },
+
+    waypointMemberNamesFromIds(raw) {
+      const ids = this.normalizeWaypointMemberIds(raw);
+      if (!ids.length) {
+        return [];
+      }
+      const members = Array.isArray(this.waypoint?.members) ? this.waypoint.members : [];
+      const byId = new Map();
+      for (const row of members) {
+        const id = String(row?.id || "").trim();
+        if (!id) {
+          continue;
+        }
+        byId.set(id, String(row?.name || row?.username || id).trim());
+      }
+      const names = [];
+      for (const id of ids) {
+        const name = String(byId.get(id) || "").trim();
+        if (name) {
+          names.push(name);
+        }
+      }
+      return names;
+    },
+
+    waypointRowMatchesMemberFilter(row) {
+      const selectedIds = this.normalizeWaypointMemberIds(this.waypointCalendarFilteredMemberIds || []);
+      if (!selectedIds.length) {
+        return true;
+      }
+      const rowIds = this.normalizeWaypointMemberIds(row?.member_ids || []);
+      if (!rowIds.length) {
+        return false;
+      }
+      const selected = new Set(selectedIds);
+      return rowIds.some((id) => selected.has(id));
+    },
+
+    toggleWaypointCalendarMemberFilter() {
+      const nowOpen = !this.waypointCalendarMemberFilterOpen;
+      this.waypointCalendarMemberFilterOpen = nowOpen;
+      if (nowOpen) {
+        this.$nextTick(() => {
+          const btn = document.querySelector(".waypoint-member-filter-btn");
+          if (!btn) return;
+          const rect = btn.getBoundingClientRect();
+          const popW = Math.min(320, window.innerWidth * 0.88);
+          // Right-align to button's right edge; clamp left edge to 8px margin
+          let rightEdge = window.innerWidth - rect.right;
+          if (rect.right - popW < 8) rightEdge = window.innerWidth - popW - 8;
+          this.waypointMemberFilterPopStyle = {
+            position: "fixed",
+            top: (rect.bottom + 6) + "px",
+            right: Math.max(0, rightEdge) + "px",
+            left: "auto",
+            transform: "none",
+            width: popW + "px",
+            zIndex: "300",
+          };
+        });
+      } else {
+        this.waypointMemberFilterPopStyle = {};
+      }
+    },
+
+    closeWaypointCalendarMemberFilter() {
+      this.waypointCalendarMemberFilterOpen = false;
+    },
+
+    waypointCalendarFilterToggleMember(memberId) {
+      const id = String(memberId || "").trim();
+      if (!id) {
+        return;
+      }
+      const selected = new Set(this.normalizeWaypointMemberIds(this.waypointCalendarFilteredMemberIds || []));
+      if (selected.has(id)) {
+        selected.delete(id);
+      } else {
+        selected.add(id);
+      }
+      this.waypointCalendarFilteredMemberIds = Array.from(selected);
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    waypointCalendarFilterSelectAll() {
+      this.waypointCalendarFilteredMemberIds = [];
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    waypointCalendarFilterOnly(memberId) {
+      const id = String(memberId || "").trim();
+      if (!id) {
+        return;
+      }
+      this.waypointCalendarFilteredMemberIds = [id];
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    toggleWaypointMonthPreview() {
+      if (!this.waypointCanShowMonthPreview) {
+        this.waypointMonthPreviewOpen = false;
+        return;
+      }
+      this.waypointMonthPreviewOpen = !this.waypointMonthPreviewOpen;
+    },
+
+    buildWaypointMonthPreviewReport() {
+      const empty = {
+        title: "No events scheduled for this month.",
+        highlights: [],
+        recurring: [],
+        conflicts: [],
+        patterns: [],
+      };
+      if (!this.waypointCanShowMonthPreview) {
+        return empty;
+      }
+
+      const anchor = startOfLocalDay(this.waypointCalendarDate || new Date());
+      const year = anchor.getFullYear();
+      const month = anchor.getMonth();
+      const monthRows = this.waypointCalendarEntries()
+        .filter((row) => {
+          const d = parseDateKey(String(row?.date || "").trim());
+          return d && d.getFullYear() === year && d.getMonth() === month;
+        })
+        .slice()
+        .sort((a, b) => {
+          const ad = String(a?.date || "");
+          const bd = String(b?.date || "");
+          if (ad !== bd) {
+            return ad.localeCompare(bd);
+          }
+          const at = timeTextToMinutes(a?.start_time);
+          const bt = timeTextToMinutes(b?.start_time);
+          if (at !== bt) {
+            return at - bt;
+          }
+          return String(a?.title || "").localeCompare(String(b?.title || ""));
+        });
+      if (!monthRows.length) {
+        return empty;
+      }
+
+      const title = `${anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })} preview`;
+      const highlights = monthRows.slice(0, 5).map((row) => {
+        const d = parseDateKey(String(row?.date || "").trim());
+        const dayLabel = d
+          ? d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+          : String(row?.date || "");
+        const timeLabel = this.waypointEventTimeLabel(row) || "Anytime";
+        return `${dayLabel} • ${timeLabel} • ${String(row?.title || "Event")}`;
+      });
+
+      const recurring = [];
+      const recurringMap = new Map();
+      for (const row of monthRows) {
+        const key = `${String(row?.source || "event")}::${String(row?.title || "").trim().toLowerCase()}`;
+        if (!String(row?.title || "").trim()) {
+          continue;
+        }
+        if (!recurringMap.has(key)) {
+          recurringMap.set(key, []);
+        }
+        recurringMap.get(key).push(String(row?.date || "").trim());
+      }
+      for (const [key, dates] of recurringMap.entries()) {
+        const uniqDates = Array.from(new Set(dates)).filter(isIsoDate).sort();
+        if (uniqDates.length < 2) {
+          continue;
+        }
+        const titleText = key.split("::")[1] || "Recurring";
+        const dayDiffs = [];
+        for (let i = 1; i < uniqDates.length; i += 1) {
+          const prev = parseDateKey(uniqDates[i - 1]);
+          const next = parseDateKey(uniqDates[i]);
+          if (!prev || !next) {
+            continue;
+          }
+          dayDiffs.push(Math.round((next.getTime() - prev.getTime()) / 86400000));
+        }
+        let cadence = `${uniqDates.length}x this month`;
+        if (dayDiffs.length && dayDiffs.every((x) => Math.abs(x - 7) <= 1)) {
+          cadence = "weekly";
+        } else if (dayDiffs.length && dayDiffs.every((x) => Math.abs(x - 14) <= 1)) {
+          cadence = "biweekly";
+        }
+        recurring.push(`${titleText} (${cadence})`);
+      }
+
+      const members = Array.isArray(this.waypoint?.members) ? this.waypoint.members : [];
+      const roleById = new Map();
+      for (const member of members) {
+        const id = String(member?.id || "").trim();
+        if (!id) {
+          continue;
+        }
+        roleById.set(id, String(member?.member_role || "adult").trim().toLowerCase() || "adult");
+      }
+
+      const byDate = new Map();
+      for (const row of monthRows) {
+        const dateKey = String(row?.date || "").trim();
+        if (!isIsoDate(dateKey)) {
+          continue;
+        }
+        if (!byDate.has(dateKey)) {
+          byDate.set(dateKey, []);
+        }
+        byDate.get(dateKey).push(row);
+      }
+
+      const conflicts = [];
+      for (const [dateKey, rows] of byDate.entries()) {
+        let adultHeavy = false;
+        let childOnlyCount = 0;
+        for (const row of rows) {
+          const memberIds = this.normalizeWaypointMemberIds(row?.member_ids || []);
+          if (!memberIds.length) {
+            continue;
+          }
+          const adultCount = memberIds.filter((id) => roleById.get(id) !== "child").length;
+          const childCount = memberIds.filter((id) => roleById.get(id) === "child").length;
+          if (adultCount >= 2) {
+            adultHeavy = true;
+          }
+          if (childCount >= 1 && adultCount === 0) {
+            childOnlyCount += 1;
+          }
+        }
+        if (adultHeavy && childOnlyCount >= 1) {
+          conflicts.push(
+            `${dateKey}: parents appear booked while child events run too. Confirm coverage and assign a contact host if needed.`
+          );
+        }
+      }
+
+      const patterns = [];
+      const patternRows = Array.isArray(this.waypoint?.event_patterns) ? this.waypoint.event_patterns : [];
+      for (const row of patternRows) {
+        const titleText = String(row?.title || "").trim();
+        if (!titleText) {
+          continue;
+        }
+        const rescheduledCount = Number(row?.rescheduled_count || 0);
+        const canceledCount = Number(row?.canceled_count || 0);
+        if (rescheduledCount >= 2) {
+          patterns.push(`${titleText} has been rescheduled ${rescheduledCount} times. Consider a more realistic slot.`);
+        }
+        if (canceledCount >= 2) {
+          patterns.push(`${titleText} has been canceled ${canceledCount} times. Consider removing or reframing it.`);
+        }
+        if (patterns.length >= 3) {
+          break;
+        }
+      }
+
+      return {
+        title,
+        highlights,
+        recurring,
+        conflicts,
+        patterns,
+      };
+    },
+
+    waypointTaskAssigneeLabel(task) {
+      const names = this.waypointMemberNamesFromIds(task?.member_ids || []);
+      if (names.length) {
+        return names.join(", ");
+      }
+      const fallback = Array.isArray(task?.member_names) ? task.member_names : [];
+      return fallback
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+        .join(", ");
+    },
+
+    waypointEventAttendeeLabel(eventRow) {
+      const names = this.waypointMemberNamesFromIds(eventRow?.member_ids || []);
+      if (names.length) {
+        return names.join(", ");
+      }
+      const fallback = Array.isArray(eventRow?.member_names) ? eventRow.member_names : [];
+      return fallback
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+        .join(", ");
+    },
+
+    waypointReminderTimeLabel(task) {
+      const notes = String(task?.notes || "");
+      const match = notes.match(/remind_at\s*=\s*([0-2]\d:[0-5]\d)/i);
+      if (!match) {
+        return "";
+      }
+      return String(match[1] || "");
+    },
+
+    extractReminderTimeFromNotes(notesText) {
+      const notes = String(notesText || "");
+      const match = notes.match(/remind_at\s*=\s*([0-2]\d:[0-5]\d)/i);
+      if (!match) {
+        return "";
+      }
+      return String(match[1] || "");
+    },
+
+    waypointDefaultRecurrenceWeekdayForDate(dateKey) {
+      const parsed = parseDateKey(String(dateKey || "").trim());
+      return parsed ? jsDayToMonday0(parsed.getDay()) : jsDayToMonday0(startOfLocalDay(new Date()).getDay());
+    },
+
+    waypointDefaultRecurrenceNthForDate(dateKey) {
+      const parsed = parseDateKey(String(dateKey || "").trim());
+      const day = parsed ? parsed.getDate() : startOfLocalDay(new Date()).getDate();
+      return Math.max(1, Math.min(5, Math.floor((day - 1) / 7) + 1));
+    },
+
+    normalizeWaypointEventRecurrence(row) {
+      const baseDate = parseDateKey(String(row?.date || "").trim()) || startOfLocalDay(new Date());
+      const type = normalizeRecurrenceType(row?.recurrence_type);
+      const enabledRaw = row?.recurrence_enabled;
+      let enabled = Boolean(enabledRaw);
+      if (typeof enabledRaw === "string") {
+        enabled = ["1", "true", "yes", "y", "on"].includes(enabledRaw.trim().toLowerCase());
+      }
+      if (type === "none") {
+        enabled = false;
+      }
+      const interval = Math.max(1, Math.min(12, Number.parseInt(row?.recurrence_interval, 10) || 1));
+      const weekdayRaw = Number.parseInt(row?.recurrence_weekday, 10);
+      const weekday = Number.isFinite(weekdayRaw)
+        ? Math.max(0, Math.min(6, weekdayRaw))
+        : jsDayToMonday0(baseDate.getDay());
+      const day = Math.max(1, Math.min(31, Number.parseInt(row?.recurrence_day, 10) || baseDate.getDate()));
+      const nth = Math.max(1, Math.min(5, Number.parseInt(row?.recurrence_nth, 10) || this.waypointDefaultRecurrenceNthForDate(toDateKey(baseDate))));
+      const until = isIsoDate(String(row?.recurrence_until || "").trim()) ? String(row.recurrence_until).trim() : "";
+      return {
+        recurrence_enabled: enabled,
+        recurrence_type: type,
+        recurrence_interval: interval,
+        recurrence_weekday: Number.isFinite(weekday) ? weekday : baseDate.getDay(),
+        recurrence_day: day,
+        recurrence_nth: nth,
+        recurrence_until: until,
+      };
+    },
+
+    expandWaypointRecurringEvents(eventRows) {
+      const rows = Array.isArray(eventRows) ? eventRows : [];
+      const anchor = startOfLocalDay(this.waypointCalendarDate || new Date());
+      let windowStart = addDays(anchor, -7);
+      let windowEnd = addMonths(anchor, 14);
+      if (this.waypointCalendarView === "day") {
+        windowStart = addDays(anchor, -3);
+        windowEnd = addDays(anchor, 30);
+      } else if (this.waypointCalendarView === "three_day") {
+        windowStart = addDays(anchor, -3);
+        windowEnd = addDays(anchor, 90);
+      } else if (this.waypointCalendarView === "agenda") {
+        windowStart = addDays(anchor, -3);
+        windowEnd = addDays(anchor, 90);
+      }
+      const out = [];
+      for (const row of rows) {
+        const baseDate = parseDateKey(String(row?.date || "").trim());
+        if (!baseDate) {
+          continue;
+        }
+        const rec = this.normalizeWaypointEventRecurrence(row);
+        if (!rec.recurrence_enabled || rec.recurrence_type === "none") {
+          out.push(row);
+          continue;
+        }
+        const untilDate = rec.recurrence_until ? parseDateKey(rec.recurrence_until) : null;
+        const seen = new Set();
+        let guard = 0;
+        if (rec.recurrence_type === "weekly_day") {
+          let current = startOfLocalDay(baseDate);
+          const weekdayJs = monday0ToJsDay(rec.recurrence_weekday);
+          const offset = (weekdayJs - current.getDay() + 7) % 7;
+          if (offset) {
+            current = addDays(current, offset);
+          }
+          while (current < windowStart && guard < 800) {
+            current = addDays(current, rec.recurrence_interval * 7);
+            guard += 1;
+          }
+          while (current <= windowEnd && guard < 800) {
+            if (current >= baseDate && (!untilDate || current <= untilDate)) {
+              const key = toDateKey(current);
+              if (!seen.has(key)) {
+                seen.add(key);
+                out.push(
+                  Object.assign({}, row, {
+                    id: `${String(row?.id || "")}__${key}`,
+                    source_id: String(row?.id || "").trim(),
+                    recurrence_instance_date: key,
+                    date: key,
+                  })
+                );
+              }
+            }
+            current = addDays(current, rec.recurrence_interval * 7);
+            guard += 1;
+          }
+          continue;
+        }
+        if (rec.recurrence_type === "monthly_day_of_month") {
+          let current = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+          while (current < new Date(windowStart.getFullYear(), windowStart.getMonth(), 1) && guard < 800) {
+            current = addMonths(current, rec.recurrence_interval);
+            guard += 1;
+          }
+          while (current <= windowEnd && guard < 800) {
+            const maxDay = daysInMonth(current.getFullYear(), current.getMonth());
+            const day = Math.min(rec.recurrence_day, maxDay);
+            const candidate = new Date(current.getFullYear(), current.getMonth(), day);
+            if (candidate >= baseDate && candidate >= windowStart && candidate <= windowEnd && (!untilDate || candidate <= untilDate)) {
+              const key = toDateKey(candidate);
+              if (!seen.has(key)) {
+                seen.add(key);
+                out.push(
+                  Object.assign({}, row, {
+                    id: `${String(row?.id || "")}__${key}`,
+                    source_id: String(row?.id || "").trim(),
+                    recurrence_instance_date: key,
+                    date: key,
+                  })
+                );
+              }
+            }
+            current = addMonths(current, rec.recurrence_interval);
+            guard += 1;
+          }
+          continue;
+        }
+        if (rec.recurrence_type === "monthly_nth_weekday") {
+          let current = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+          while (current < new Date(windowStart.getFullYear(), windowStart.getMonth(), 1) && guard < 800) {
+            current = addMonths(current, rec.recurrence_interval);
+            guard += 1;
+          }
+          while (current <= windowEnd && guard < 800) {
+            const weekdayJs = monday0ToJsDay(rec.recurrence_weekday);
+            const candidate = nthWeekdayInMonth(current.getFullYear(), current.getMonth(), weekdayJs, rec.recurrence_nth);
+            if (
+              candidate &&
+              candidate >= baseDate &&
+              candidate >= windowStart &&
+              candidate <= windowEnd &&
+              (!untilDate || candidate <= untilDate)
+            ) {
+              const key = toDateKey(candidate);
+              if (!seen.has(key)) {
+                seen.add(key);
+                out.push(
+                  Object.assign({}, row, {
+                    id: `${String(row?.id || "")}__${key}`,
+                    source_id: String(row?.id || "").trim(),
+                    recurrence_instance_date: key,
+                    date: key,
+                  })
+                );
+              }
+            }
+            current = addMonths(current, rec.recurrence_interval);
+            guard += 1;
+          }
+          continue;
+        }
+        out.push(row);
+      }
+      return out;
+    },
+
+    waypointCalendarEvents() {
+      const events = Array.isArray(this.waypoint?.events) ? this.waypoint.events.slice() : [];
+      return events.filter((row) => {
+        if (String(row?.status || "open").trim().toLowerCase() === "done") {
+          return false;
+        }
+        const notes = String(row?.notes || "").trim();
+        if (/(?:^|\s)reminder_(?:task_id|title)\s*=.+(?:\s|$)/i.test(notes)) {
+          return false;
+        }
+        if (!this.waypointRowMatchesMemberFilter(row)) {
+          return false;
+        }
+        return true;
+      });
+    },
+
+    waypointCalendarEntries() {
+      const rawEvents = this.waypointCalendarTypeFilter === "tasks"
+        ? []
+        : this.waypointCalendarEvents().map((row) =>
+            Object.assign({}, row, { source: "event", source_id: String(row?.id || "").trim() })
+          );
+      const eventRows = this.expandWaypointRecurringEvents(rawEvents);
+      const taskRows = this.waypointCalendarTypeFilter === "events"
+        ? []
+        : (Array.isArray(this.waypoint?.tasks) ? this.waypoint.tasks : [])
+            .filter((task) => String(task?.status || "open").trim().toLowerCase() !== "done")
+            .filter((task) => isIsoDate(String(task?.due_date || "").trim()))
+            .filter((task) => this.waypointRowMatchesMemberFilter(task))
+            .map((task) => {
+              const timeText = this.waypointReminderTimeLabel(task);
+              return {
+                id: `task_${String(task?.id || "").trim()}`,
+                source: "task",
+                source_id: String(task?.id || "").trim(),
+                title: String(task?.title || "").trim() || "Task",
+                date: String(task?.due_date || "").trim(),
+                start_time: timeText,
+                end_time: "",
+                location: "",
+                notes: String(task?.notes || "").trim(),
+                reminder_count: Number(task?.reminder_count || 0),
+                snooze_until: String(task?.snooze_until || "").trim(),
+                color: "#f4b400",
+                member_ids: Array.isArray(task?.member_ids) ? task.member_ids : [],
+                rolled_from_date: String(task?.rolled_from_date || "").trim(),
+              };
+            });
+      return [...eventRows, ...taskRows];
+    },
+
+    waypointEventColor(row) {
+      return this.waypointEntryColorInfo(row).borderColor;
+    },
+
+    waypointEntryColorInfo(row) {
+      const isTask = String(row?.source || "").trim().toLowerCase() === "task";
+      const profileFallback = this.sanitizeHexColor(
+        this.waypoint?.profile_color || this.auth?.profile?.color || "#4285f4",
+        "#4285f4"
+      );
+      const fallback = isTask ? "#f4b400" : profileFallback;
+      const colorMap = this.waypointMemberColorMap;
+      const memberIds = Array.isArray(row?.member_ids) ? row.member_ids : [];
+      const memberColors = memberIds
+        .map((id) => colorMap[String(id || "")])
+        .filter((c) => c && /^#[0-9a-fA-F]{3,6}$/.test(c));
+      const colors = memberColors.length
+        ? memberColors
+        : [this.sanitizeHexColor(String(row?.color || ""), fallback)];
+      const borderColor = colors[0];
+      const n = colors.length;
+      const bg = n > 1
+        ? `linear-gradient(90deg, ${colors.flatMap((c, i) => [`${c} ${Math.round(i * 100 / n)}%`, `${c} ${Math.round((i + 1) * 100 / n)}%`]).join(", ")})`
+        : colors[0];
+      return { borderColor, bg, multi: n > 1, colors };
+    },
+
+    // Builds a left-grey / right-color split gradient for panel item cards.
+    // The transparent portion lets the element's navy background show through.
+    waypointEntrySplitBg(ci) {
+      if (ci.multi) {
+        const n = ci.colors.length;
+        const coloredWidth = 70;
+        const startPct = 30;
+        const stops = ci.colors.flatMap((c, i) => {
+          const lo = Math.round(startPct + (i * coloredWidth / n));
+          const hi = Math.round(startPct + ((i + 1) * coloredWidth / n));
+          return [`${c} ${lo}%`, `${c} ${hi}%`];
+        });
+        return `linear-gradient(90deg, transparent 30%, ${stops.join(", ")}), var(--palette-navy)`;
+      }
+      return `linear-gradient(90deg, transparent 45%, ${ci.borderColor} 100%), var(--palette-navy)`;
+    },
+
+    waypointEntryStyle(row) {
+      const ci = this.waypointEntryColorInfo(row);
+      return {
+        "--event-color": ci.borderColor,
+        "--entry-color": ci.borderColor,
+        background: this.waypointEntrySplitBg(ci),
+      };
+    },
+
+    waypointEntryKindIcon(row) {
+      const source = String(row?.source || "").trim().toLowerCase();
+      if (source === "task") return "🔧";
+      return "🗓";
+    },
+
+    waypointEntryKindLabel(row) {
+      const source = String(row?.source || "").trim().toLowerCase();
+      return source === "task" ? "Task" : "Event";
+    },
+
+    waypointEntryReminderText(row) {
+      const source = String(row?.source || "").trim().toLowerCase();
+      if (source === "task") {
+        const snoozeUntil = String(row?.snooze_until || "").trim();
+        if (snoozeUntil) {
+          return `Snoozed until ${snoozeUntil}`;
+        }
+        const reminderTime = this.waypointReminderTimeLabel(row);
+        if (reminderTime) {
+          return `Reminder at ${reminderTime}`;
+        }
+        const count = Number(row?.reminder_count || 0);
+        if (count > 0) {
+          return `Nudges sent: ${count}`;
+        }
+        return "";
+      }
+      const notes = String(row?.notes || "");
+      const match = notes.match(/remind_at\s*=\s*([0-2]\d:[0-5]\d)/i);
+      const offsets = Array.isArray(row?.auto_reminder_offsets)
+        ? row.auto_reminder_offsets
+            .map((x) => Number(x))
+            .filter((x) => Number.isFinite(x) && x > 0)
+            .sort((a, b) => b - a)
+        : [];
+      const cadence = offsets.length
+        ? `Auto ${offsets
+            .map((mins) => {
+              if (mins % 60 === 0) {
+                const hours = mins / 60;
+                return `${hours}h`;
+              }
+              return `${mins}m`;
+            })
+            .join(", ")}`
+        : "";
+      if (match && match[1] && cadence) {
+        return `${cadence} • custom ${String(match[1])}`;
+      }
+      if (match && match[1]) {
+        return `Reminder at ${String(match[1])}`;
+      }
+      if (cadence) {
+        return cadence;
+      }
+      return "";
+    },
+
+    buildWaypointEventIndex(events) {
+      const map = {};
+      for (const row of events || []) {
+        const key = String(row?.date || "").trim();
+        if (!isIsoDate(key)) {
+          continue;
+        }
+        if (!Array.isArray(map[key])) {
+          map[key] = [];
+        }
+        map[key].push(row);
+      }
+      for (const key of Object.keys(map)) {
+        map[key].sort((a, b) => {
+          const aStart = normalizeTimeText(a?.start_time || "") || "99:99";
+          const bStart = normalizeTimeText(b?.start_time || "") || "99:99";
+          if (aStart !== bStart) {
+            return aStart.localeCompare(bStart);
+          }
+          return String(a?.title || "").localeCompare(String(b?.title || ""));
+        });
+      }
+      return map;
+    },
+
+    waypointCalendarDayCellHtml(dateObj, events, options = {}) {
+      const todayKey = toDateKey(new Date());
+      const key = toDateKey(dateObj);
+      const isToday = key === todayKey;
+      const selectedKey = isIsoDate(String(this.waypointSelectedDateKey || "").trim())
+        ? String(this.waypointSelectedDateKey || "").trim()
+        : toDateKey(this.waypointCalendarDate);
+      const isSelected = key === selectedKey;
+      const compact = Boolean(options.compact);
+      const outside = Boolean(options.outside);
+      const limit = compact ? 3 : 8;
+      const visible = (events || []).slice(0, limit);
+      const extra = (events || []).length - visible.length;
+
+      const classes = ["waypoint-cal-cell"];
+      if (isToday) {
+        classes.push("is-today");
+      }
+      if (isSelected) {
+        // Keep `is-cursor` for backward-compatible selectors and add explicit selected state.
+        classes.push("is-cursor", "is-selected");
+      }
+      if (outside) {
+        classes.push("is-outside");
+      }
+
+      const chips = visible
+        .map((row) => {
+          const ci = this.waypointEntryColorInfo(row);
+          const time = this.waypointEventTimeLabel(row);
+          const title = escapeHtml(String(row?.title || "Untitled event"));
+          const entryId = escapeHtml(String(row?.source_id || row?.id || "").trim());
+          const entrySource = escapeHtml(String(row?.source || "event").trim());
+          const dotsHtml = ci.colors
+            .slice(0, 4)
+            .map((c) => `<span class="waypoint-cal-dot" style="--dot-color:${c}"></span>`)
+            .join("");
+          const dotStack = `<span class="waypoint-cal-dot-stack">${dotsHtml}</span>`;
+          if (compact) {
+            return `<div class="waypoint-cal-chip is-compact" data-entry-id="${entryId}" data-entry-source="${entrySource}" style="--event-color:${ci.borderColor}">${dotStack}<span class="waypoint-cal-chip-title">${title}</span></div>`;
+          }
+          const timeHtml = time ? `<span class="waypoint-cal-chip-time">${escapeHtml(time)}</span>` : "";
+          return `<div class="waypoint-cal-chip" data-entry-id="${entryId}" data-entry-source="${entrySource}" style="--event-color:${ci.borderColor}">${timeHtml}<span class="waypoint-cal-chip-title">${title}</span>${dotStack}</div>`;
+        })
+        .join("");
+
+      const extraHtml = extra > 0 ? `<div class="waypoint-cal-more">+${escapeHtml(String(extra))} more</div>` : "";
+      return `
+        <article class="${classes.join(" ")}" data-cal-date="${key}">
+          <header class="waypoint-cal-cell-head">
+            <span class="waypoint-cal-daynum">${escapeHtml(String(dateObj.getDate()))}</span>
+          </header>
+          <div class="waypoint-cal-events">${chips || '<div class="waypoint-cal-empty">No events</div>'}${extraHtml}</div>
+        </article>
+      `;
+    },
+
+    renderWaypointMonthCalendar(anchorDate, eventIndex) {
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const dowHtml = dayNames.map((n) => `<div class="waypoint-cal-dow">${n}</div>`).join("");
+      const parts = [];
+      for (let offset = PLANNER_MONTH_VIEW_PAST_OFFSET; offset <= PLANNER_MONTH_VIEW_FUTURE_OFFSET; offset++) {
+        const monthDate = addMonths(anchorDate, offset);
+        const firstOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+        const gridStart = startOfWeek(firstOfMonth);
+        const monthKey = toDateKey(firstOfMonth).slice(0, 7);
+        const monthLabel = escapeHtml(
+          monthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+        );
+        let weeksHtml = "";
+        for (let week = 0; week < 6; week++) {
+          let cells = "";
+          for (let d = 0; d < 7; d++) {
+            const day = addDays(gridStart, week * 7 + d);
+            const key = toDateKey(day);
+            cells += this.waypointCalendarDayCellHtml(day, eventIndex[key] || [], {
+              compact: true,
+              outside: day.getMonth() !== firstOfMonth.getMonth(),
+            });
+          }
+          weeksHtml += `<div class="waypoint-cal-week-row">${cells}</div>`;
+        }
+        parts.push(
+          `<div class="waypoint-cal-month-block" data-month="${monthKey}">` +
+            `<div class="waypoint-cal-month-label">${monthLabel}</div>` +
+            `<div class="waypoint-cal-dow-row">${dowHtml}</div>` +
+            weeksHtml +
+          `</div>`
+        );
+      }
+      return parts.join("");
+    },
+
+    renderWaypointThreeDayCalendar(anchorDate, eventIndex) {
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const parts = [];
+      for (let i = 0; i < 3; i += 1) {
+        const day = addDays(anchorDate, i);
+        parts.push(`<div class="waypoint-cal-dow">${dayNames[day.getDay()]}</div>`);
+      }
+      for (let i = 0; i < 3; i += 1) {
+        const day = addDays(anchorDate, i);
+        const key = toDateKey(day);
+        parts.push(this.waypointCalendarDayCellHtml(day, eventIndex[key] || [], { compact: false, outside: false }));
+      }
+      return `<section class="waypoint-three-day-grid">${parts.join("")}</section>`;
+    },
+
+    renderWaypointDayCalendar(anchorDate, eventIndex) {
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const key = toDateKey(anchorDate);
+      const parts = [
+        `<div class="waypoint-cal-dow">${dayNames[anchorDate.getDay()]}</div>`,
+        this.waypointCalendarDayCellHtml(anchorDate, eventIndex[key] || [], {
+          compact: false,
+          outside: false,
+        }),
+      ];
+      return `<section class="waypoint-day-grid">${parts.join("")}</section>`;
+    },
+
+    renderWaypointAgendaCalendar(anchorDate, eventIndex) {
+      const rows = [];
+      for (let i = 0; i < 21; i += 1) {
+        const day = addDays(anchorDate, i);
+        const key = toDateKey(day);
+        const items = Array.isArray(eventIndex[key]) ? eventIndex[key] : [];
+        if (!items.length) {
+          continue;
+        }
+        const label = day.toLocaleDateString(undefined, {
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+        });
+        const itemHtml = items
+          .map((row) => {
+            const ci = this.waypointEntryColorInfo(row);
+            const splitBg = this.waypointEntrySplitBg(ci);
+            const agendaStyle = `--event-color:${ci.borderColor}; background:${splitBg};`;
+            const time = this.waypointEventTimeLabel(row);
+            const title = escapeHtml(String(row?.title || "Untitled"));
+            const timeHtml = time ? `<span class="waypoint-agenda-time">${escapeHtml(time)}</span>` : "";
+            return `<li class="waypoint-agenda-item" style="${agendaStyle}">${timeHtml}<span class="waypoint-agenda-title">${title}</span></li>`;
+          })
+          .join("");
+        rows.push(
+          `<article class="waypoint-agenda-day" data-cal-date="${key}">
+            <header>${escapeHtml(label)}</header>
+            <ul>${itemHtml}</ul>
+          </article>`
+        );
+      }
+      if (!rows.length) {
+        return '<section class="waypoint-agenda"><div class="waypoint-cal-empty">No upcoming items.</div></section>';
+      }
+      return `<section class="waypoint-agenda">${rows.join("")}</section>`;
+    },
+
+    renderWaypointCalendar(events) {
+      const anchor = startOfLocalDay(this.waypointCalendarDate);
+      this.waypointCalendarDate = anchor;
+      const view =
+        this.waypointCalendarView === "agenda" ||
+        this.waypointCalendarView === "day" ||
+        this.waypointCalendarView === "three_day" ||
+        this.waypointCalendarView === "month"
+          ? this.waypointCalendarView
+          : "month";
+      const eventIndex = this.buildWaypointEventIndex(events || []);
+      let html = "";
+      let label = "";
+
+      if (view === "month") {
+        html = this.renderWaypointMonthCalendar(anchor, eventIndex);
+        label = anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+      } else if (view === "day") {
+        html = this.renderWaypointDayCalendar(anchor, eventIndex);
+        label = anchor.toLocaleDateString(undefined, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        });
+      } else if (view === "three_day") {
+        html = this.renderWaypointThreeDayCalendar(anchor, eventIndex);
+        const end = addDays(anchor, 2);
+        label = `${anchor.toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        })} - ${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+      } else {
+        html = this.renderWaypointAgendaCalendar(anchor, eventIndex);
+        label = `Agenda from ${anchor.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+      }
+
+      this.waypointCalendarLabel = label;
+      this.waypointCalendarHtml = html;
+      if (view === "month") {
+        const monthKey = toDateKey(anchor).slice(0, 7);
+        this.$nextTick(() => {
+          const grid = this.$refs.waypointCalendarGrid;
+          if (!grid) return;
+          const block = grid.querySelector(`[data-month="${monthKey}"]`);
+          if (block) {
+            grid.scrollTop = block.offsetTop;
+          }
+        });
+      }
+      if (!this.waypointCanShowMonthPreview) {
+        this.waypointMonthPreviewOpen = false;
+      }
+      if (!this.waypointEventForm.date) {
+        this.waypointEventForm.date = toDateKey(anchor);
+      }
+      if (!isIsoDate(String(this.waypointSelectedDateKey || ""))) {
+        this.waypointSelectedDateKey = toDateKey(anchor);
+      }
+    },
+
+    moveWaypointCalendar(direction) {
+      this.closeWaypointCalendarMemberFilter();
+      const anchor = startOfLocalDay(this.waypointCalendarDate);
+      if (this.waypointCalendarView === "agenda") {
+        this.waypointCalendarDate = addDays(anchor, Number(direction || 0) * 7);
+      } else if (this.waypointCalendarView === "day") {
+        this.waypointCalendarDate = addDays(anchor, Number(direction || 0));
+      } else if (this.waypointCalendarView === "three_day") {
+        this.waypointCalendarDate = addDays(anchor, Number(direction || 0) * 3);
+      } else {
+        this.waypointCalendarDate = addMonths(anchor, Number(direction || 0));
+      }
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    setWaypointCalendarView(view) {
+      const nextView = String(view || "").trim().toLowerCase();
+      if (!["month", "three_day", "day", "agenda"].includes(nextView)) {
+        return;
+      }
+      this.closeWaypointCalendarMemberFilter();
+      this.waypointCalendarView = nextView;
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    setWaypointTypeFilter(type) {
+      this.waypointCalendarTypeFilter = String(type || "both").trim();
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    setWaypointCalendarToday() {
+      this.closeWaypointCalendarMemberFilter();
+      this.waypointCalendarDate = startOfLocalDay(new Date());
+      this.waypointSelectedDateKey = toDateKey(this.waypointCalendarDate);
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    onWaypointCalScroll() {
+      if (this.waypointCalendarView !== "month") return;
+      const grid = this.$refs.waypointCalendarGrid;
+      if (!grid) return;
+      const scrollTop = grid.scrollTop;
+      const blocks = grid.querySelectorAll("[data-month]");
+      let activeMonth = null;
+      for (const block of blocks) {
+        if (block.offsetTop <= scrollTop + 60) {
+          activeMonth = block.getAttribute("data-month");
+        } else {
+          break;
+        }
+      }
+      if (activeMonth && activeMonth !== this._waypointScrollMonth) {
+        this._waypointScrollMonth = activeMonth;
+        const parts = activeMonth.split("-");
+        const d = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+        this.waypointCalendarLabel = d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+        this.waypointCalendarDate = d;
+      }
+    },
+
+    onWaypointCalendarClick(event) {
+      const el = event.target instanceof Element ? event.target : null;
+      const chip = el ? el.closest("[data-entry-id]") : null;
+      // Chip OR cell: both select the day and reveal the snapshot below — no edit modal
+      const target = chip
+        ? chip.closest("[data-cal-date]")
+        : (el ? el.closest("[data-cal-date]") : null);
+      if (!target) return;
+      const dateKey = target.getAttribute("data-cal-date") || "";
+      const parsed = parseDateKey(dateKey);
+      if (!parsed) return;
+      this.waypointCalendarDate = parsed;
+      this.waypointSelectedDateKey = dateKey;
+      this.waypointEventForm.date = dateKey;
+      this.waypointDayPanelExpanded = true;
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+    },
+
+    openWaypointEntryEdit(row) {
+      const source = String(row?.source || "").trim().toLowerCase();
+      const srcId = String(row?.source_id || row?.id || "").trim();
+      if (source === "task") {
+        const task = (this.waypoint?.tasks || []).find((t) => String(t?.id || "").trim() === srcId);
+        if (task) this.openWaypointTaskEditModal(task);
+      } else {
+        const ev = (this.waypoint?.events || []).find(
+          (e) => String(e?.id || "").trim() === srcId || String(e?.id || "").trim() === String(row?.id || "").trim()
+        );
+        if (ev) this.openWaypointEventEditModal(ev);
+      }
+    },
+
+    openWaypointEntryEditById(entryId, entrySource) {
+      const id = String(entryId || "").trim();
+      const source = String(entrySource || "").trim().toLowerCase();
+      if (source === "task") {
+        const task = (this.waypoint?.tasks || []).find((t) => String(t?.id || "").trim() === id);
+        if (task) this.openWaypointTaskEditModal(task);
+      } else {
+        const ev = (this.waypoint?.events || []).find((e) => String(e?.id || "").trim() === id);
+        if (ev) this.openWaypointEventEditModal(ev);
+      }
+    },
+
+    // ── Swipe gesture system ─────────────────────────────────────────────────
+    onSwipeTouchStart(e, rowKey) {
+      if (!e.touches || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      // Skip OS-level edge zones (iOS back/forward swipe ~20px from screen edge)
+      if (touch.clientX < 22 || touch.clientX > window.innerWidth - 22) return;
+      // Close any already-open row
+      if (Object.keys(this.swipeOpen).length) {
+        this.swipeOpen = {};
+      }
+      this._swipeState = {
+        rowKey,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        isHorizontal: null,
+        el: null,
+      };
+    },
+
+    _onGlobalSwipeMove(e) {
+      this._onGlobalSidebarSwipeMove(e);
+      if (!this._swipeState) return;
+      if (!e.touches || e.touches.length !== 1) {
+        this._swipeState = null;
+        return;
+      }
+      const touch = e.touches[0];
+      const dx = touch.clientX - this._swipeState.startX;
+      const dy = touch.clientY - this._swipeState.startY;
+      if (this._swipeState.isHorizontal === null) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        this._swipeState.isHorizontal = Math.abs(dx) > Math.abs(dy);
+        if (!this._swipeState.isHorizontal) {
+          this._swipeState = null;
+          return;
+        }
+      }
+      // Prevent Safari from claiming the swipe for back/forward navigation
+      e.preventDefault();
+      this._swipeState.lastX = touch.clientX;
+      if (!this._swipeState.el) {
+        const rk = this._swipeState.rowKey;
+        const rowEl = document.querySelector(`[data-swipe-key="${rk.replace(/"/g, '\\"')}"]`);
+        this._swipeState.el = rowEl ? rowEl.querySelector(".swipe-content") : null;
+      }
+      const contentEl = this._swipeState.el;
+      if (contentEl) {
+        const maxReveal = 124;
+        const clamped = Math.max(-maxReveal, Math.min(maxReveal, dx));
+        contentEl.style.transition = "none";
+        contentEl.style.transform = `translateX(${clamped}px)`;
+      }
+    },
+
+    onSwipeTouchEnd(e, rowKey) {
+      if (!this._swipeState || this._swipeState.rowKey !== rowKey) {
+        this._swipeState = null;
+        return;
+      }
+      const state = this._swipeState;
+      this._swipeState = null;
+      if (!state.isHorizontal) return;
+      const dx = state.lastX - state.startX;
+      const contentEl = state.el;
+      if (contentEl) {
+        contentEl.style.transition = "";
+        contentEl.style.transform = "";
+      }
+      const THRESHOLD = window.innerWidth <= 720 ? 52 : 64;
+      const newOpen = {};
+      if (dx < -THRESHOLD) {
+        newOpen[rowKey] = "l"; // swiped left → left-action revealed
+      } else if (dx > THRESHOLD) {
+        newOpen[rowKey] = "r"; // swiped right → right-action revealed
+      }
+      this.swipeOpen = newOpen;
+    },
+
+    _onGlobalSidebarTouchStart(e) {
+      if (!this.isMobileLayout()) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+      if (!e.touches || e.touches.length !== 1) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+      if (
+        this.mdOverlayOpen ||
+        this.actionsOverlayOpen ||
+        this.panelOverlayOpen ||
+        this.taskReminderOpen ||
+        this.familyProfileModalOpen ||
+        this.webPushModalOpen ||
+        this.projectPickerOpen ||
+        this.projectTargetModalOpen ||
+        this.waypointMemberEditorOpen ||
+        this.waypointTaskModalOpen ||
+        this.waypointEventModalOpen ||
+        this.waypointShoppingModalOpen ||
+        this.waypointContactModalOpen ||
+        this.emailSettingsModalOpen ||
+        this.resetModalOpen
+      ) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+      if (target.closest(".swipe-row")) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+
+      const touch = e.touches[0];
+      const startX = touch.clientX;
+      const startY = touch.clientY;
+      const edgeThreshold = 28;
+      const centerStartThreshold = Math.min(Math.max(160, Math.round(window.innerWidth * 0.58)), 420);
+      let mode = "";
+
+      if (!this.sidebarOpen) {
+        const canOpenFromContent =
+          Boolean(target.closest(".messages")) ||
+          Boolean(target.closest(".chat-main")) ||
+          Boolean(target.closest(".chat-view")) ||
+          Boolean(target.closest(".home-view")) ||
+          Boolean(target.closest(".waypoint-view"));
+        const openStartThreshold = canOpenFromContent ? centerStartThreshold : edgeThreshold;
+        if (startX <= openStartThreshold) {
+          mode = "open";
+        }
+      } else {
+        const inSidebar = Boolean(target.closest(".sidebar"));
+        const inBackdrop = Boolean(target.closest(".sidebar-backdrop"));
+        if (inSidebar || inBackdrop) {
+          mode = "close";
+        }
+      }
+
+      if (!mode) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+
+      this._sidebarSwipeState = {
+        mode,
+        startX,
+        startY,
+        lastX: startX,
+        isHorizontal: null,
+      };
+    },
+
+    _onGlobalSidebarSwipeMove(e) {
+      if (!this._sidebarSwipeState) {
+        return;
+      }
+      if (!e.touches || e.touches.length !== 1) {
+        this._sidebarSwipeState = null;
+        return;
+      }
+
+      const touch = e.touches[0];
+      const state = this._sidebarSwipeState;
+      const dx = touch.clientX - state.startX;
+      const dy = touch.clientY - state.startY;
+
+      if (state.isHorizontal === null) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+          return;
+        }
+        state.isHorizontal = Math.abs(dx) > Math.abs(dy);
+        if (!state.isHorizontal) {
+          this._sidebarSwipeState = null;
+          return;
+        }
+      }
+
+      state.lastX = touch.clientX;
+      e.preventDefault();
+    },
+
+    _onGlobalSidebarTouchEnd(e) {
+      const state = this._sidebarSwipeState;
+      this._sidebarSwipeState = null;
+      if (!state || !state.isHorizontal) {
+        return;
+      }
+
+      let endX = state.lastX;
+      if (e.changedTouches && e.changedTouches.length) {
+        endX = e.changedTouches[0].clientX;
+      }
+      const dx = endX - state.startX;
+      const threshold = window.innerWidth <= 720 ? 36 : 48;
+
+      if (state.mode === "open" && dx > threshold) {
+        this.sidebarOpen = true;
+        this.updateBodyClasses();
+        return;
+      }
+      if (state.mode === "close" && dx < -threshold) {
+        this.sidebarOpen = false;
+        this.updateBodyClasses();
+      }
+    },
+
+    closeAllSwipeRows() {
+      this.swipeOpen = {};
+    },
+
+    swipeCompleteOrDeleteEntry(row) {
+      this.closeAllSwipeRows();
+      const source = String(row?.source || "").trim().toLowerCase();
+      const srcId = String(row?.source_id || row?.id || "").trim();
+      if (source === "task") {
+        this.completeWaypointTask(srcId);
+      } else {
+        // Defer past the current event loop so the confirm dialog doesn't
+        // trigger a ghost click on the underlying .home-daily-item element.
+        setTimeout(() => {
+          const label = source === "shopping" ? "shopping item" : "event";
+          if (!window.confirm(`Delete this ${label}?`)) return;
+          if (source === "shopping") {
+            this.deleteWaypointShopping(srcId);
+          } else {
+            this.deleteWaypointEvent(srcId);
+          }
+        }, 0);
+      }
+    },
+
+    swipeEditEntry(row) {
+      this.closeAllSwipeRows();
+      this.openWaypointEntryEdit(row);
+    },
+    // ── End swipe gesture system ──────────────────────────────────────────────
+
+    openWaypointAddEventFromCalendar() {
+      this.openWaypointCapturePanel("event", this.waypointSelectedDateKey);
+    },
+
+    openWaypointAddTaskFromCalendar() {
+      this.openWaypointCapturePanel("task", this.waypointSelectedDateKey);
+    },
+
+    openWaypointAddShoppingFromCalendar() {
+      this.openWaypointCapturePanel("shopping", this.waypointSelectedDateKey);
+    },
+
+    openWaypointSmartAddFromCalendar() {
+      this.waypointTopTab = "calendar";
+      this.waypointBuilderOpen = true;
+      this.$nextTick(() => {
+        const node = this.$refs.waypointInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    setWaypointState(payload) {
+      const next = payload && typeof payload === "object" ? payload : {};
+      const normalizeOpenStatus = (value) =>
+        String(value || "open").trim().toLowerCase() === "done" ? "done" : "open";
+      const normalizeMemberFlag = (value) => {
+        if (typeof value === "boolean") {
+          return value;
+        }
+        const text = String(value ?? "").trim().toLowerCase();
+        if (!text || text === "false" || text === "0" || text === "no" || text === "n") {
+          return false;
+        }
+        if (text === "true" || text === "1" || text === "yes" || text === "y") {
+          return true;
+        }
+        return Boolean(value);
+      };
+      const normalizeContactRow = (row) =>
+        Object.assign({}, row, {
+          is_member: normalizeMemberFlag(row?.is_member),
+        });
+      const profileColor = this.sanitizeHexColor(
+        next.profile_color || this.auth?.profile?.color || this.waypoint?.profile_color || "#4285f4",
+        "#4285f4"
+      );
+      const events = Array.isArray(next.events)
+        ? next.events.map((row) => {
+            const recurrence = this.normalizeWaypointEventRecurrence(row || {});
+            return Object.assign({}, row, {
+              color: this.sanitizeHexColor(row?.color || "", profileColor),
+              status: normalizeOpenStatus(row?.status),
+              member_ids: this.normalizeWaypointMemberIds(row?.member_ids || []),
+              member_names: Array.isArray(row?.member_names)
+                ? row.member_names.map((x) => String(x || "").trim()).filter(Boolean)
+                : [],
+              recurrence_enabled: Boolean(recurrence.recurrence_enabled),
+              recurrence_type: String(recurrence.recurrence_type || "none"),
+              recurrence_interval: Number(recurrence.recurrence_interval || 1),
+              recurrence_weekday: Number(recurrence.recurrence_weekday || 0),
+              recurrence_day: Number(recurrence.recurrence_day || 1),
+              recurrence_nth: Number(recurrence.recurrence_nth || 1),
+              recurrence_until: String(recurrence.recurrence_until || ""),
+            });
+          }).filter((row) => row.status !== "done")
+        : [];
+      const tasks = Array.isArray(next.tasks)
+        ? next.tasks.map((row) =>
+            Object.assign({}, row, {
+              status: normalizeOpenStatus(row?.status),
+              member_ids: this.normalizeWaypointMemberIds(row?.member_ids || []),
+              member_names: Array.isArray(row?.member_names)
+                ? row.member_names.map((x) => String(x || "").trim()).filter(Boolean)
+                : [],
+            })
+          ).filter((row) => row.status !== "done")
+        : [];
+      const reminders = Array.isArray(next.reminders)
+        ? next.reminders.map((row) =>
+            Object.assign({}, row, {
+              status: normalizeOpenStatus(row?.status),
+            })
+          ).filter((row) => row.status !== "done")
+        : [];
+      const shoppingFood = Array.isArray(next.shopping_food)
+        ? next.shopping_food.map((row) =>
+            Object.assign({}, row, {
+              status: normalizeOpenStatus(row?.status),
+            })
+          ).filter((row) => row.status !== "done")
+        : [];
+      const shoppingGeneral = Array.isArray(next.shopping_general)
+        ? next.shopping_general.map((row) =>
+            Object.assign({}, row, {
+              status: normalizeOpenStatus(row?.status),
+            })
+          ).filter((row) => row.status !== "done")
+        : [];
+      const contacts = Array.isArray(next.contacts) ? next.contacts.map((row) => normalizeContactRow(row)) : [];
+      const payloadMembers = Array.isArray(next.members) ? next.members.map((row) => normalizeContactRow(row)) : [];
+      const members = payloadMembers.length ? payloadMembers.filter((row) => row.is_member) : contacts.filter((row) => row.is_member);
+      const memberIdSet = new Set(
+        members
+          .map((row) => String(row?.id || "").trim())
+          .filter(Boolean)
+      );
+      const contactLocations = Array.isArray(next.contact_locations)
+        ? next.contact_locations.map((row) =>
+            Object.assign({}, row, {
+              is_member: normalizeMemberFlag(row?.is_member),
+            })
+          )
+        : [];
+      const eventPatterns = Array.isArray(next.event_patterns)
+        ? next.event_patterns.map((row) => Object.assign({}, row))
+        : [];
+      const normalizeInsightAction = (action) =>
+        action && typeof action === "object"
+          ? {
+              id: String(action?.id || "").trim(),
+              kind: String(action?.kind || "").trim().toLowerCase(),
+              label: String(action?.label || "").trim(),
+              title: String(action?.title || "").trim(),
+              due_date: String(action?.due_date || "").trim(),
+              notes: String(action?.notes || "").trim(),
+              priority: String(action?.priority || "medium").trim().toLowerCase() || "medium",
+              list_name: String(action?.list_name || "general").trim().toLowerCase() || "general",
+              location: String(action?.location || "").trim(),
+              related_event_id: String(action?.related_event_id || "").trim(),
+              member_ids: Array.isArray(action?.member_ids)
+                ? action.member_ids.map((x) => String(x || "").trim()).filter(Boolean)
+                : [],
+              member_names: Array.isArray(action?.member_names)
+                ? action.member_names.map((x) => String(x || "").trim()).filter(Boolean)
+                : [],
+            }
+          : null;
+      const normalizeInsightRow = (row) =>
+        Object.assign({}, row, {
+          id: String(row?.id || "").trim(),
+          severity: String(row?.severity || "info").trim().toLowerCase() || "info",
+          title: String(row?.title || "").trim(),
+          text: String(row?.text || "").trim(),
+          date: String(row?.date || "").trim(),
+          related_ids: Array.isArray(row?.related_ids)
+            ? row.related_ids.map((x) => String(x || "").trim()).filter(Boolean)
+            : [],
+          action: normalizeInsightAction(row?.action),
+        });
+      const insightPayload = next.insights && typeof next.insights === "object" ? next.insights : {};
+      const insights = {
+        summary_lines: Array.isArray(insightPayload.summary_lines)
+          ? insightPayload.summary_lines.map((x) => String(x || "").trim()).filter(Boolean)
+          : [],
+        priorities: Array.isArray(insightPayload.priorities) ? insightPayload.priorities.map(normalizeInsightRow) : [],
+        watchouts: Array.isArray(insightPayload.watchouts) ? insightPayload.watchouts.map(normalizeInsightRow) : [],
+        suggestions: Array.isArray(insightPayload.suggestions) ? insightPayload.suggestions.map(normalizeInsightRow) : [],
+        patterns: Array.isArray(insightPayload.patterns) ? insightPayload.patterns.map(normalizeInsightRow) : [],
+        conflicts: Array.isArray(insightPayload.conflicts) ? insightPayload.conflicts.map(normalizeInsightRow) : [],
+        counts: insightPayload.counts && typeof insightPayload.counts === "object" ? Object.assign({}, insightPayload.counts) : {},
+        week_window: insightPayload.week_window && typeof insightPayload.week_window === "object" ? Object.assign({}, insightPayload.week_window) : {},
+      };
+      this.waypoint = {
+        thread_id: String(next.thread_id || this.waypoint.thread_id || "waypoint_main"),
+        messages: Array.isArray(next.messages) ? next.messages : [],
+        tasks,
+        reminders,
+        events,
+        event_patterns: eventPatterns,
+        insights,
+        shopping_food: shoppingFood,
+        shopping_general: shoppingGeneral,
+        contacts,
+        members,
+        contact_locations: contactLocations,
+        open_tasks_count: Number(next.open_tasks_count || 0),
+        open_reminders_count: Number(next.open_reminders_count || 0),
+        profile_color: profileColor,
+      };
+      this.waypointCalendarFilteredMemberIds = this.normalizeWaypointMemberIds(this.waypointCalendarFilteredMemberIds || []).filter((id) =>
+        memberIdSet.has(id)
+      );
+      if (!isIsoDate(String(this.waypointSelectedDateKey || ""))) {
+        this.waypointSelectedDateKey = toDateKey(this.waypointCalendarDate);
+      }
+      this.renderWaypointCalendar(this.waypointCalendarEntries());
+      this.$nextTick(() => this.scrollWaypointMessages());
+    },
+
+    async refreshWaypointState() {
+      const payload = await this.apiGet("/api/waypoint/state");
+      this.setWaypointState(payload || {});
+      this.waypointLoaded = true;
+      await this.refreshPanelBadges();
+      this.fetchPurchaseRecos();
+    },
+
+    async fetchPurchaseRecos() {
+      try {
+        const payload = await this.apiGet("/api/waypoint/purchase-recommendations");
+        this.purchaseRecos = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+      } catch (_) {
+        this.purchaseRecos = [];
+      }
+    },
+
+    addRecommendedShoppingItem(reco) {
+      this.openWaypointShoppingModal("food");
+      this.$nextTick(() => {
+        this.waypointShoppingForm.title = String(reco.title || "").trim();
+      });
+    },
+
+    async submitWaypointTaskForm() {
+      const title = String(this.waypointTaskForm.title || "").trim();
+      if (!title) {
+        window.alert("Task title is required.");
+        return;
+      }
+      this.waypointTaskSubmitting = true;
+      try {
+        const selectedMemberIds = this.normalizeWaypointMemberIds(this.waypointTaskForm.member_ids || []);
+        const body = {
+          title,
+          due_date: String(this.waypointTaskForm.due_date || "").trim(),
+          priority: String(this.waypointTaskForm.priority || "medium").trim() || "medium",
+          list_name: String(this.waypointTaskForm.list_name || "general").trim() || "general",
+          member_ids: selectedMemberIds,
+          location: String(this.waypointTaskForm.location || "").trim(),
+          recurrence_enabled: Boolean(this.waypointTaskForm.recurrence_enabled),
+          recurrence_type: String(this.waypointTaskForm.recurrence_type || "weekly_day"),
+          recurrence_interval: Number(this.waypointTaskForm.recurrence_interval) || 1,
+          recurrence_weekday: Number(this.waypointTaskForm.recurrence_weekday) || 0,
+          recurrence_day: Number(this.waypointTaskForm.recurrence_day) || 1,
+          recurrence_nth: Number(this.waypointTaskForm.recurrence_nth) || 1,
+          recurrence_until: String(this.waypointTaskForm.recurrence_until || "").trim(),
+        };
+        const payload = this.waypointTaskEditId
+          ? await this.apiPatch(`/api/waypoint/tasks/${encodeURIComponent(this.waypointTaskEditId)}`, body)
+          : await this.apiPost("/api/waypoint/tasks", body);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Failed to save task.");
+          return;
+        }
+        this.waypointTaskForm.title = "";
+        this.waypointTaskForm.due_date = "";
+        this.waypointTaskForm.member_ids = [];
+        this.closeWaypointTaskModal();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Task save failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointTaskSubmitting = false;
+      }
+    },
+
+    async submitWaypointEventForm() {
+      const title = String(this.waypointEventForm.title || "").trim();
+      const date = String(this.waypointEventForm.date || "").trim();
+      if (!title) {
+        window.alert("Event title is required.");
+        return;
+      }
+      if (!isIsoDate(date)) {
+        window.alert("Event date is required (YYYY-MM-DD).");
+        return;
+      }
+
+      this.waypointEventSubmitting = true;
+      try {
+        const hostIds = new Set((this.waypointHostContactLocationOptions || []).map((opt) => String(opt?.value || "").trim()));
+        const selectedContactIdRaw = String(this.waypointEventForm.location_contact_id || "").trim();
+        const selectedContactId = hostIds.has(selectedContactIdRaw) ? selectedContactIdRaw : "";
+        if (!selectedContactId) {
+          window.alert("Select a host contact with a saved address.");
+          return;
+        }
+        const selectedMemberIds = this.normalizeWaypointMemberIds(this.waypointEventForm.member_ids || []);
+        const reminderTime = normalizeTimeText(this.waypointEventForm.reminder_time || "");
+        const notes = reminderTime ? `remind_at=${reminderTime}` : "";
+        const body = {
+          title,
+          date,
+          start_time: String(this.waypointEventForm.start_time || "").trim(),
+          end_time: String(this.waypointEventForm.end_time || "").trim(),
+          notes,
+          location_contact_id: selectedContactId,
+          member_ids: selectedMemberIds,
+          recurrence_enabled: Boolean(this.waypointEventForm.recurrence_enabled),
+          recurrence_type: normalizeRecurrenceType(this.waypointEventForm.recurrence_type || "none"),
+          recurrence_interval: Math.max(1, Math.min(12, Number.parseInt(this.waypointEventForm.recurrence_interval, 10) || 1)),
+          recurrence_weekday: Math.max(0, Math.min(6, Number.parseInt(this.waypointEventForm.recurrence_weekday, 10) || 0)),
+          recurrence_day: Math.max(1, Math.min(31, Number.parseInt(this.waypointEventForm.recurrence_day, 10) || 1)),
+          recurrence_nth: Math.max(1, Math.min(5, Number.parseInt(this.waypointEventForm.recurrence_nth, 10) || 1)),
+          recurrence_until: isIsoDate(String(this.waypointEventForm.recurrence_until || "").trim())
+            ? String(this.waypointEventForm.recurrence_until || "").trim()
+            : "",
+        };
+        if (!body.recurrence_enabled) {
+          body.recurrence_type = "none";
+          body.recurrence_interval = 1;
+          body.recurrence_until = "";
+        }
+        const payload = this.waypointEventEditId
+          ? await this.apiPatch(`/api/waypoint/events/${encodeURIComponent(this.waypointEventEditId)}`, body)
+          : await this.apiPost("/api/waypoint/events", body);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Failed to save event.");
+          return;
+        }
+        this.waypointCalendarDate = parseDateKey(date) || this.waypointCalendarDate;
+        this.renderWaypointCalendar(this.waypointCalendarEntries());
+        this.waypointEventForm.title = "";
+        this.waypointEventForm.start_time = "";
+        this.waypointEventForm.end_time = "";
+        this.waypointEventForm.reminder_time = "";
+        this.waypointEventForm.location_contact_id = "";
+        this.waypointEventForm.location = "";
+        this.waypointEventForm.member_ids = [];
+        this.waypointEventForm.recurrence_enabled = false;
+        this.waypointEventForm.recurrence_type = "weekly_day";
+        this.waypointEventForm.recurrence_interval = 1;
+        this.waypointEventForm.recurrence_weekday = this.waypointDefaultRecurrenceWeekdayForDate(date);
+        this.waypointEventForm.recurrence_day = (parseDateKey(date) || startOfLocalDay(new Date())).getDate();
+        this.waypointEventForm.recurrence_nth = this.waypointDefaultRecurrenceNthForDate(date);
+        this.waypointEventForm.recurrence_until = "";
+        this.closeWaypointEventModal();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Event save failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointEventSubmitting = false;
+      }
+    },
+
+    async submitWaypointShoppingForm() {
+      const title = String(this.waypointShoppingForm.title || "").trim();
+      if (!title) {
+        window.alert("Item title is required.");
+        return;
+      }
+
+      this.waypointShoppingSubmitting = true;
+      try {
+        const body = {
+          title,
+          category: String(this.waypointShoppingForm.category || "food").trim().toLowerCase() || "food",
+        };
+        const payload = this.waypointShoppingEditId
+          ? await this.apiPatch(`/api/waypoint/shopping/${encodeURIComponent(this.waypointShoppingEditId)}`, body)
+          : await this.apiPost("/api/waypoint/shopping", body);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Failed to save item.");
+          return;
+        }
+        this.waypointShoppingForm.title = "";
+        this.closeWaypointShoppingModal();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Item save failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointShoppingSubmitting = false;
+      }
+    },
+
+    onWaypointEventLocationContactChanged() {
+      const contactId = String(this.waypointEventForm.location_contact_id || "").trim();
+      if (!contactId) {
+        this.waypointEventForm.location = "";
+        return;
+      }
+      const rows = Array.isArray(this.waypoint?.contact_locations) ? this.waypoint.contact_locations : [];
+      const row = rows.find((x) => String(x?.id || "").trim() === contactId);
+      if (!row) {
+        return;
+      }
+      const location = String(row.location || "").trim();
+      if (location) {
+        this.waypointEventForm.location = location;
+      }
+    },
+
+    async submitWaypointContactForm() {
+      const name = String(this.waypointContactForm.name || "").trim();
+      if (!name) {
+        window.alert("Contact name is required.");
+        return;
+      }
+      const locationName = String(this.waypointContactForm.location_name || "").trim();
+      const locationAddress = String(this.waypointContactForm.location_address || "").trim();
+      if (!locationAddress) {
+        window.alert("A saved address is required.");
+        return;
+      }
+      if (!this.isLikelySavedAddress(locationAddress)) {
+        window.alert("Use a real street-style address (number + street/city details).");
+        return;
+      }
+      this.waypointContactSubmitting = true;
+      try {
+        const body = Object.assign({
+          name,
+          kind: String(this.waypointContactForm.kind || "person").trim().toLowerCase(),
+          relationship: String(this.waypointContactForm.relationship || "friend").trim().toLowerCase(),
+          location_name: locationName,
+          location_address: locationAddress,
+        }, this.waypointContactDetailsPayload(this.waypointContactForm));
+        const payload = this.waypointContactEditId
+          ? await this.apiPatch(`/api/waypoint/contacts/${encodeURIComponent(this.waypointContactEditId)}`, body)
+          : await this.apiPost("/api/waypoint/contacts", body);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Failed to save contact.");
+          return;
+        }
+        this.waypointContactForm = blankWaypointContactFormDefaults();
+        this.waypointContactDetailsOpen = false;
+        this.closeWaypointContactModal();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Contact save failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointContactSubmitting = false;
+      }
+    },
+
+    async submitWaypointMemberForm() {
+      const name = String(this.waypointMemberForm.name || "").trim();
+      if (!name) {
+        window.alert("Member name is required.");
+        return;
+      }
+      const locationName = String(this.waypointMemberForm.location_name || "").trim();
+      const locationAddress = String(this.waypointMemberForm.location_address || "").trim();
+      if (!locationAddress) {
+        window.alert("A saved address is required.");
+        return;
+      }
+      if (!this.isLikelySavedAddress(locationAddress)) {
+        window.alert("Use a real street-style address (number + street/city details).");
+        return;
+      }
+      const createLogin = Boolean(this.waypointMemberForm.create_login);
+      const username = String(this.waypointMemberForm.username || "").trim();
+      const pin = String(this.waypointMemberForm.pin || "").trim();
+      if (createLogin && !this.auth?.profile?.is_owner) {
+        window.alert("Only owner can create member logins.");
+        return;
+      }
+      if (createLogin && !username) {
+        window.alert("Username is required when login is enabled.");
+        return;
+      }
+      if (createLogin && !this.isFourDigitPin(pin)) {
+        window.alert("PIN must be exactly 4 digits.");
+        return;
+      }
+
+      this.waypointMemberSubmitting = true;
+      try {
+        const payload = await this.apiPost("/api/waypoint/members", Object.assign({
+          name,
+          kind: String(this.waypointMemberForm.kind || "person").trim().toLowerCase(),
+          relationship: String(this.waypointMemberForm.relationship || "friend").trim().toLowerCase(),
+          member_role: String(this.waypointMemberForm.member_role || "adult").trim().toLowerCase(),
+          create_login: createLogin,
+          username,
+          pin,
+          color: String(this.waypointMemberForm.color || "").trim(),
+          location_name: locationName,
+          location_address: locationAddress,
+        }, this.waypointContactDetailsPayload(this.waypointMemberForm)));
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Failed to add member.");
+          return;
+        }
+        if (createLogin && payload?.profile) {
+          window.alert(
+            `Member login created for ${String(payload.profile.display_name || payload.profile.username || name)}.\n` +
+              `Username: ${String(payload.profile.username || username)}`
+          );
+        }
+        this.waypointMemberForm = blankWaypointMemberFormDefaults();
+      } catch (err) {
+        window.alert(`Add member failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointMemberSubmitting = false;
+      }
+    },
+
+    openWaypointMemberEditorAdd() {
+      this.closeWaypointEntryModals();
+      this.waypointMemberEditorMode = "add";
+      this.waypointMemberDeleteConfirm = "";
+      this.waypointMemberEditorDetailsOpen = true;
+      this.waypointMemberEditorForm = blankWaypointMemberEditorForm(
+        this.sanitizeHexColor(this.auth?.profile?.color || "#4285f4", "#4285f4")
+      );
+      this.waypointMemberEditorSubmitting = false;
+      this.waypointMemberEditorOpen = true;
+      this.updateBodyClasses();
+    },
+
+    openWaypointMemberEditorEdit(person) {
+      const row = person && typeof person === "object" ? person : {};
+      this.closeWaypointEntryModals();
+      this.waypointMemberEditorMode = "edit";
+      this.waypointMemberDeleteConfirm = "";
+      const color = this.sanitizeHexColor(row.color || this.auth?.profile?.color || "#4285f4", "#4285f4");
+      this.waypointMemberEditorForm = Object.assign(blankWaypointMemberEditorForm(color), {
+        id: String(row.id || "").trim(),
+        name: String(row.name || "").trim(),
+        kind: String(row.kind || "person").trim().toLowerCase() || "person",
+        relationship: String(row.relationship || "friend").trim().toLowerCase() || "friend",
+        member_role: String(row.member_role || "adult").trim().toLowerCase() || "adult",
+        create_login: false,
+        profile_user_id: String(row.profile_user_id || "").trim(),
+        username: String(row.username || "").trim(),
+        pin: "",
+        color,
+        location_name: String(row.location_name || "").trim(),
+        location_address: String(row.location_address || "").trim(),
+        notes: String(row.notes || "").trim(),
+        nickname: String(row.nickname || "").trim(),
+        birthday: String(row.birthday || "").trim(),
+        age: String(row.age || "").trim(),
+        age_is_estimate: Boolean(row.age_is_estimate),
+        gender: String(row.gender || "").trim(),
+        school_or_work: String(row.school_or_work || "").trim(),
+        likes: String(row.likes || "").trim(),
+        dislikes: String(row.dislikes || "").trim(),
+        important_dates: String(row.important_dates || "").trim(),
+        medical_notes: String(row.medical_notes || "").trim(),
+        email: String(row.email || "").trim(),
+        phone: String(row.phone || "").trim(),
+      });
+      if (String(this.waypointMemberEditorForm.birthday || "").trim()) {
+        this.waypointMemberEditorForm.age = "";
+        this.waypointMemberEditorForm.age_is_estimate = false;
+      }
+      this.waypointMemberEditorDetailsOpen = true;
+      this.waypointMemberEditorSubmitting = false;
+      this.waypointMemberEditorOpen = true;
+      this.updateBodyClasses();
+    },
+
+    closeWaypointMemberEditor() {
+      this.waypointMemberEditorOpen = false;
+      this.waypointMemberEditorSubmitting = false;
+      this.waypointMemberDeleteConfirm = "";
+      this.waypointMemberEditorDetailsOpen = false;
+      this.updateBodyClasses();
+    },
+
+    async submitWaypointMemberEditor() {
+      const name = String(this.waypointMemberEditorForm.name || "").trim();
+      if (!name) {
+        window.alert("Member name is required.");
+        return;
+      }
+      const color = this.sanitizeHexColor(this.waypointMemberEditorForm.color || "#4285f4", "#4285f4");
+      const username = String(this.waypointMemberEditorForm.username || "").trim();
+      const pin = String(this.waypointMemberEditorForm.pin || "").trim();
+      const wantsLogin = Boolean(this.waypointMemberEditorForm.create_login);
+      const hasProfile = Boolean(String(this.waypointMemberEditorForm.profile_user_id || "").trim());
+      if (wantsLogin && !this.auth?.profile?.is_owner) {
+        window.alert("Only owner can create member logins.");
+        return;
+      }
+      if ((wantsLogin || hasProfile) && pin && !this.isFourDigitPin(pin)) {
+        window.alert("PIN must be exactly 4 digits.");
+        return;
+      }
+      if (wantsLogin && !username) {
+        window.alert("Username is required when creating login.");
+        return;
+      }
+      const locationName = String(this.waypointMemberEditorForm.location_name || "").trim();
+      const locationAddress = String(this.waypointMemberEditorForm.location_address || "").trim();
+      if (!locationAddress) {
+        window.alert("A saved address is required.");
+        return;
+      }
+      if (!this.isLikelySavedAddress(locationAddress)) {
+        window.alert("Use a real street-style address (number + street/city details).");
+        return;
+      }
+      const detailsPayload = this.waypointContactDetailsPayload(this.waypointMemberEditorForm);
+
+      this.waypointMemberEditorSubmitting = true;
+      try {
+        if (this.waypointMemberEditorMode === "add") {
+          const payload = await this.apiPost("/api/waypoint/members", Object.assign({
+            name,
+            kind: String(this.waypointMemberEditorForm.kind || "person").trim().toLowerCase(),
+            relationship: String(this.waypointMemberEditorForm.relationship || "friend").trim().toLowerCase(),
+            member_role: String(this.waypointMemberEditorForm.member_role || "adult").trim().toLowerCase(),
+            create_login: wantsLogin,
+            username,
+            pin,
+            color,
+            location_name: locationName,
+            location_address: locationAddress,
+          }, detailsPayload));
+          if (payload?.state) {
+            this.setWaypointState(payload.state);
+          }
+          if (payload?.ok === false) {
+            window.alert(payload.message || "Failed to add member.");
+            return;
+          }
+        } else {
+          const contactId = String(this.waypointMemberEditorForm.id || "").trim();
+          if (!contactId) {
+            window.alert("Missing member id.");
+            return;
+          }
+          const payload = await this.apiPatch(`/api/waypoint/contacts/${encodeURIComponent(contactId)}`, Object.assign({
+            name,
+            kind: String(this.waypointMemberEditorForm.kind || "person").trim().toLowerCase(),
+            relationship: String(this.waypointMemberEditorForm.relationship || "friend").trim().toLowerCase(),
+            member_role: String(this.waypointMemberEditorForm.member_role || "adult").trim().toLowerCase(),
+            location_name: locationName,
+            location_address: locationAddress,
+            color,
+            username,
+            profile_user_id: String(this.waypointMemberEditorForm.profile_user_id || "").trim(),
+            create_login: wantsLogin,
+            sync_profile: hasProfile || wantsLogin,
+            pin,
+          }, detailsPayload));
+          if (payload?.state) {
+            this.setWaypointState(payload.state);
+          }
+          if (payload?.ok === false) {
+            window.alert(payload.message || "Failed to update member.");
+            return;
+          }
+        }
+        this.closeWaypointMemberEditor();
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Member save failed: ${String(err.message || err)}`);
+      } finally {
+        this.waypointMemberEditorSubmitting = false;
+      }
+    },
+
+    async deleteWaypointContact(contactId, options = {}) {
+      const id = String(contactId || "").trim();
+      if (!id) {
+        return false;
+      }
+      const closeModals = options && options.closeModals !== false;
+      try {
+        const payload = await this.apiDelete(`/api/waypoint/contacts/${encodeURIComponent(id)}`);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Contact delete failed.");
+          return false;
+        }
+        if (closeModals) {
+          this.closeWaypointContactModal();
+          this.closeWaypointMemberEditor();
+        }
+        await this.refreshPanelBadges();
+        return true;
+      } catch (err) {
+        window.alert(`Contact delete failed: ${String(err.message || err)}`);
+        return false;
+      }
+    },
+
+    async deleteWaypointContactFromModal() {
+      const contactId = String(this.waypointContactEditId || "").trim();
+      if (!contactId) {
+        return;
+      }
+      if (!this.canHardDelete(this.waypointContactDeleteConfirm)) {
+        window.alert('Type "YES I AM SURE" exactly to delete this contact.');
+        return;
+      }
+      this.waypointContactSubmitting = true;
+      try {
+        await this.deleteWaypointContact(contactId);
+      } finally {
+        this.waypointContactSubmitting = false;
+      }
+    },
+
+    async deleteWaypointMemberFromModal() {
+      const contactId = String(this.waypointMemberEditorForm?.id || "").trim();
+      if (!contactId) {
+        return;
+      }
+      if (!this.canHardDelete(this.waypointMemberDeleteConfirm)) {
+        window.alert('Type "YES I AM SURE" exactly to delete this member.');
+        return;
+      }
+      this.waypointMemberEditorSubmitting = true;
+      try {
+        await this.deleteWaypointContact(contactId);
+      } finally {
+        this.waypointMemberEditorSubmitting = false;
+      }
+    },
+
+    toggleWaypointBuilder() {
+      this.waypointBuilderOpen = !this.waypointBuilderOpen;
+      if (this.waypointBuilderOpen) {
+        if (!String(this.waypointBuilder.shopping_items || "").trim() && String(this.waypointBuilder.shopping_item || "").trim()) {
+          this.waypointBuilder.shopping_items = String(this.waypointBuilder.shopping_item || "").trim();
+        }
+        this.$nextTick(() => {
+          const root = this.$refs.waypointBuilderMenu;
+          if (root && root.querySelector) {
+            const firstInput = root.querySelector("select, input, textarea");
+            if (firstInput && typeof firstInput.focus === "function") {
+              firstInput.focus();
+            }
+          }
+        });
+      }
+    },
+
+    buildWaypointCommandFromBuilder() {
+      const cmd = String(this.waypointBuilder?.command || "").trim();
+      if (!cmd) {
+        return "";
+      }
+
+      if (cmd === "shopping_add") {
+        const items = this.parseWaypointBuilderItems(
+          this.waypointBuilder.shopping_items || this.waypointBuilder.shopping_item || ""
+        );
+        const category = String(this.waypointBuilder.shopping_category || "food").trim().toLowerCase();
+        if (!items.length) {
+          return "";
+        }
+        return `add shopping ${category === "general" ? "general" : "food"} ${items.join(", ")}`;
+      }
+
+      if (cmd === "shopping_complete") {
+        const itemId = String(this.waypointBuilder.shopping_id || "").trim();
+        return itemId ? `bought ${itemId}` : "";
+      }
+
+      if (cmd === "shopping_delete") {
+        const itemId = String(this.waypointBuilder.shopping_id || "").trim();
+        return itemId ? `delete shopping ${itemId}` : "";
+      }
+
+      if (cmd === "task_add") {
+        const title = String(this.waypointBuilder.task_title || "").trim();
+        if (!title) {
+          return "";
+        }
+        let command = `add task ${title}`;
+        const dueDate = String(this.waypointBuilder.task_due_date || "").trim();
+        if (isIsoDate(dueDate)) {
+          command += ` due ${dueDate}`;
+        }
+        const priority = String(this.waypointBuilder.task_priority || "medium").trim().toLowerCase();
+        if (["high", "medium", "low"].includes(priority)) {
+          command += ` priority ${priority}`;
+        }
+        return command;
+      }
+
+      if (cmd === "task_complete") {
+        const taskId = String(this.waypointBuilder.task_id || "").trim();
+        return taskId ? `done ${taskId}` : "";
+      }
+
+      if (cmd === "task_blocked") {
+        const taskId = String(this.waypointBuilder.task_id || "").trim();
+        const reason = String(this.waypointBuilder.task_reason || "").trim();
+        if (!taskId || !reason) {
+          return "";
+        }
+        return `not done ${taskId} because ${reason}`;
+      }
+
+      if (cmd === "event_add") {
+        const title = String(this.waypointBuilder.event_title || "").trim();
+        const date = String(this.waypointBuilder.event_date || "").trim();
+        if (!title || !isIsoDate(date)) {
+          return "";
+        }
+        let command = `add event ${title} on ${date}`;
+        const start = normalizeTimeText(this.waypointBuilder.event_start || "");
+        const end = normalizeTimeText(this.waypointBuilder.event_end || "");
+        if (start) {
+          command += ` at ${start}`;
+          if (end) {
+            command += ` to ${end}`;
+          }
+        } else if (end) {
+          command += ` to ${end}`;
+        }
+        const locationContactId = String(this.waypointBuilder.event_location_contact_id || "").trim();
+        if (!locationContactId) {
+          return "";
+        }
+        command += ` location:contact:${locationContactId}`;
+        return command;
+      }
+
+      if (cmd === "event_delete") {
+        const eventId = String(this.waypointBuilder.event_id || "").trim();
+        return eventId ? `delete event ${eventId}` : "";
+      }
+
+      if (cmd === "show_tasks") {
+        return "show tasks";
+      }
+      if (cmd === "show_contacts") {
+        return "show contacts";
+      }
+      if (cmd === "show_members") {
+        return "show members";
+      }
+      if (cmd === "show_reminders") {
+        return "show reminders";
+      }
+      if (cmd === "show_shopping") {
+        return "show shopping";
+      }
+      if (cmd === "show_events") {
+        return "show events";
+      }
+      if (cmd === "summary") {
+        return "summary";
+      }
+      if (cmd === "help") {
+        return "help";
+      }
+      return "";
+    },
+
+    async applyWaypointBuilder(sendNow) {
+      const command = this.buildWaypointCommandFromBuilder();
+      if (!command) {
+        window.alert("Complete required fields first.");
+        return;
+      }
+      if (sendNow) {
+        this.waypointDraft = command;
+        this.resizeWaypointComposer();
+        this.waypointBuilderOpen = false;
+        await this.sendWaypointMessage();
+        return;
+      }
+      const current = String(this.waypointDraft || "").trim();
+      this.waypointDraft = current ? `${current}\n${command}` : command;
+      this.resizeWaypointComposer();
+      this.$nextTick(() => {
+        const node = this.$refs.waypointInput;
+        if (node) {
+          node.focus();
+        }
+      });
+    },
+
+    async sendWaypointMessage() {
+      const text = String(this.waypointDraft || "").trim();
+      if (!text || this.waypointSending) {
+        return;
+      }
+      this.waypointBuilderOpen = false;
+      this.waypointSending = true;
+      this.waypointDraft = "";
+      this.resizeWaypointComposer();
+      try {
+        const payload = await this.apiPost("/api/waypoint/messages", {
+          content: text,
+          project: this.activeProject,
+        });
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        const nextMessages = Array.isArray(this.waypoint?.messages) ? this.waypoint.messages.slice() : [];
+        nextMessages.push({
+          id: `err_${Date.now()}`,
+          role: "assistant",
+          content: `Error: ${String(err.message || err)}`,
+          ts: new Date().toISOString(),
+        });
+        this.waypoint = Object.assign({}, this.waypoint, { messages: nextMessages });
+      } finally {
+        this.waypointSending = false;
+        this.$nextTick(() => this.scrollWaypointMessages());
+      }
+    },
+
+    async applyWaypointInsightAction(actionId) {
+      const target = String(actionId || "").trim();
+      if (!target || this.waypointInsightBusy[target]) {
+        return;
+      }
+      this.waypointInsightBusy = Object.assign({}, this.waypointInsightBusy, { [target]: true });
+      try {
+        const payload = await this.apiPost("/api/waypoint/insights/apply", {
+          action_id: target,
+          project: this.activeProject,
+        });
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Insight action failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints insight action failed: ${String(err.message || err)}`);
+      } finally {
+        const nextBusy = Object.assign({}, this.waypointInsightBusy);
+        delete nextBusy[target];
+        this.waypointInsightBusy = nextBusy;
+      }
+    },
+
+    async completeWaypointTask(taskId) {
+      if (!taskId) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/waypoint/tasks/${encodeURIComponent(taskId)}/complete`, {});
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Task completion failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints task action failed: ${String(err.message || err)}`);
+      }
+    },
+
+    openTaskReminderDialog(task) {
+      const row = task && typeof task === "object" ? task : {};
+      const taskId = String(row.id || "").trim();
+      if (!taskId) {
+        return;
+      }
+      this.closeWaypointEntryModals();
+      this.taskReminderDialog.taskId = taskId;
+      this.taskReminderDialog.taskTitle = String(row.title || "").trim() || "Task";
+      this.taskReminderOpen = true;
+      this.updateBodyClasses();
+      this.setTaskReminderFromNow(15);
+    },
+
+    closeTaskReminderDialog() {
+      this.taskReminderOpen = false;
+      this.taskReminderSubmitting = false;
+      this.taskReminderDialog.taskId = "";
+      this.taskReminderDialog.taskTitle = "";
+      this.taskReminderDialog.date = "";
+      this.taskReminderDialog.time = "";
+      this.taskReminderDialog.sliderMinutes = 0;
+      this.updateBodyClasses();
+    },
+
+    setTaskReminderFromNow(minutes) {
+      const delta = Math.max(1, Number(minutes || 15));
+      const target = new Date(Date.now() + delta * 60000);
+      const dateKey = toDateKey(startOfLocalDay(target));
+      const hh = pad2(target.getHours());
+      const mm = pad2(target.getMinutes());
+      this.taskReminderDialog.date = dateKey;
+      this.taskReminderDialog.time = `${hh}:${mm}`;
+      this.taskReminderDialog.sliderMinutes = target.getHours() * 60 + target.getMinutes();
+    },
+
+    setTaskReminderCustomMinutes() {
+      const raw = window.prompt("Reminder in how many minutes from now?", "90");
+      if (raw === null) {
+        return;
+      }
+      const minutes = Number(String(raw || "").trim());
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        window.alert("Enter a valid number of minutes.");
+        return;
+      }
+      this.setTaskReminderFromNow(Math.floor(minutes));
+    },
+
+    syncTaskReminderSliderFromTime() {
+      const timeText = normalizeTimeText(this.taskReminderDialog.time || "");
+      if (!timeText) {
+        return;
+      }
+      const [hh, mm] = timeText.split(":").map((x) => Number(x));
+      const minutes = Math.max(0, Math.min(1439, (Number(hh) || 0) * 60 + (Number(mm) || 0)));
+      this.taskReminderDialog.sliderMinutes = minutes;
+    },
+
+    syncTaskReminderTimeFromSlider() {
+      const minutes = Math.max(0, Math.min(1439, Number(this.taskReminderDialog.sliderMinutes || 0)));
+      const hh = Math.floor(minutes / 60);
+      const mm = minutes % 60;
+      this.taskReminderDialog.time = `${pad2(hh)}:${pad2(mm)}`;
+    },
+
+    async applyTaskReminder() {
+      const taskId = String(this.taskReminderDialog.taskId || "").trim();
+      const dateText = String(this.taskReminderDialog.date || "").trim();
+      const timeText = normalizeTimeText(this.taskReminderDialog.time || "");
+      if (!taskId) {
+        return;
+      }
+      if (!isIsoDate(dateText) || !timeText) {
+        window.alert("Select a valid reminder date and time.");
+        return;
+      }
+      this.taskReminderSubmitting = true;
+      try {
+        const payload = await this.apiPost(`/api/waypoint/tasks/${encodeURIComponent(taskId)}/snooze`, {
+          spec: `${dateText} ${timeText}`,
+        });
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Reminder save failed.");
+          return;
+        }
+        await this.refreshPanelBadges();
+        this.closeTaskReminderDialog();
+      } catch (err) {
+        window.alert(`Reminder save failed: ${String(err.message || err)}`);
+      } finally {
+        this.taskReminderSubmitting = false;
+      }
+    },
+
+    async snoozeWaypointTask(taskId) {
+      if (!taskId) {
+        return;
+      }
+      const spec = window.prompt(
+        "Snooze until when?\nExamples: 30m, 2h, 1d, tomorrow at 9am, 2026-03-05 14:30",
+        "tomorrow at 9am"
+      );
+      if (spec === null) {
+        return;
+      }
+      const trimmed = String(spec || "").trim();
+      if (!trimmed) {
+        window.alert("Snooze value is required.");
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/waypoint/tasks/${encodeURIComponent(taskId)}/snooze`, {
+          spec: trimmed,
+        });
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Snooze failed.");
+          return;
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints snooze failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async deleteWaypointTask(taskId) {
+      if (!taskId) {
+        return;
+      }
+      if (!window.confirm("Delete this task?")) {
+        return;
+      }
+      try {
+        const payload = await this.apiDelete(`/api/waypoint/tasks/${encodeURIComponent(taskId)}`);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Task delete failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints task delete failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async deleteWaypointEvent(eventId) {
+      if (!eventId) {
+        return;
+      }
+      if (!window.confirm("Delete this event?")) {
+        return;
+      }
+      try {
+        const payload = await this.apiDelete(`/api/waypoint/events/${encodeURIComponent(eventId)}`);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Event delete failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints event delete failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async completeWaypointEvent(eventId) {
+      if (!eventId) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/waypoint/events/${encodeURIComponent(eventId)}/complete`, {});
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Event complete failed.");
+          return;
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Waypoints event action failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async completeWaypointShopping(itemId) {
+      if (!itemId) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/waypoint/shopping/${encodeURIComponent(itemId)}/complete`, {});
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Shopping completion failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Shopping action failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async deleteWaypointShopping(itemId) {
+      if (!itemId) {
+        return;
+      }
+      if (!window.confirm("Delete this shopping item?")) {
+        return;
+      }
+      try {
+        const payload = await this.apiDelete(`/api/waypoint/shopping/${encodeURIComponent(itemId)}`);
+        if (payload?.state) {
+          this.setWaypointState(payload.state);
+        }
+        if (payload?.ok === false) {
+          window.alert(payload.message || "Shopping delete failed.");
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Shopping delete failed: ${String(err.message || err)}`);
+      }
+    },
+
+    scrollMessages() {
+      const node = this.$refs.messages;
+      if (node) {
+        node.scrollTop = node.scrollHeight;
+      }
+    },
+
+    scrollWaypointMessages() {
+      const node = this.$refs.waypointMessages;
+      if (node) {
+        node.scrollTop = node.scrollHeight;
+      }
+    },
+
+    resizeComposer() {
+      const node = this.$refs.composerInput;
+      if (!node) {
+        return;
+      }
+      node.style.height = "auto";
+      node.style.height = `${Math.min(node.scrollHeight, 220)}px`;
+    },
+
+    resizeWaypointComposer() {
+      const node = this.$refs.waypointInput;
+      if (!node) {
+        return;
+      }
+      node.style.height = "auto";
+      node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
+    },
+
+    scrollToMessage(msgId) {
+      const id = String(msgId || "").trim();
+      if (!id) return;
+      const el = document.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("msg-highlight-flash");
+      setTimeout(() => el.classList.remove("msg-highlight-flash"), 1400);
+    },
+
+    onMessagesClick(event) {
+      const target = event.target instanceof Element ? event.target.closest(".file-inline-link, .md-inline-link") : null;
+      if (!target) {
+        return;
+      }
+      const encoded = target.getAttribute("data-file-path") || target.getAttribute("data-md-path") || "";
+      if (!encoded) {
+        return;
+      }
+      this.loadFileOverlay(decodeURIComponent(encoded));
+    },
+
+    async loadFileOverlay(path) {
+      this.mdTitle = "Loading file...";
+      this.mdPath = path;
+      this.mdHtml = '<p class="md-loading">Loading file preview...</p>';
+      this.mdOverlayOpen = true;
+      this.updateBodyClasses();
+      try {
+        const payload = await this.apiGet(`/api/files/read?path=${encodeURIComponent(path)}`);
+        this.mdTitle = payload.name || "File Preview";
+        this.mdPath = payload.path || path;
+        const render = String(payload.render || "").trim().toLowerCase();
+        if (render === "markdown") {
+          this.mdHtml = markdownToHtml(payload.content || "");
+        } else if (render === "binary") {
+          const ext = String(payload.ext || "").trim() || "(none)";
+          const mime = String(payload.mime || "").trim() || "application/octet-stream";
+          this.mdHtml = `<p class="md-error">Preview unavailable for binary file type.</p><p class="md-meta">ext: ${escapeHtml(
+            ext
+          )} | mime: ${escapeHtml(mime)}</p>`;
+        } else {
+          const text = String(payload.content || "");
+          const truncated = Boolean(payload.truncated);
+          const body = `<pre><code>${escapeHtml(text)}</code></pre>`;
+          const note = truncated ? '<p class="md-meta">Preview truncated to 250 KB.</p>' : "";
+          this.mdHtml = `${note}${body}`;
+        }
+      } catch (err) {
+        this.mdTitle = "Unable to open file";
+        this.mdHtml = `<p class="md-error">${escapeHtml(String(err.message || err))}</p>`;
+      }
+    },
+
+    async loadMarkdownOverlay(path) {
+      await this.loadFileOverlay(path);
+    },
+
+    closeMarkdownOverlay() {
+      this.mdOverlayOpen = false;
+      this.mdTitle = "File Preview";
+      this.mdPath = "";
+      this.mdHtml = "";
+      this.updateBodyClasses();
+    },
+
+    async bootstrapConversations(options = {}) {
+      if (this.auth.enabled && !this.auth.authenticated) {
+        return;
+      }
+      const activateApp = options?.activateApp !== false;
+
+      await this.refreshConversations();
+      const hashId = location.hash.replace("#", "").trim();
+      const hasHash = hashId && this.conversations.some((c) => c.id === hashId);
+      if (hasHash) {
+        await this.openConversation(hashId, { activateApp });
+        return;
+      }
+
+      if (this.conversations.length > 0) {
+        await this.openConversation(this.conversations[0].id, { activateApp });
+        return;
+      }
+
+      await this.createConversation("", { activateApp });
+    },
+
+    onWindowClick(event) {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        this.chatMenuOpen = false;
+        this.waypointBuilderOpen = false;
+        this.waypointCalendarMemberFilterOpen = false;
+        this.homeWeatherExpanded = false;
+        return;
+      }
+      if (this.chatMenuOpen && !target.closest(".chat-menu-wrap")) {
+        this.chatMenuOpen = false;
+      }
+      if (this.homeWeatherExpanded && !target.closest(".home-hero-weather")) {
+        this.homeWeatherExpanded = false;
+      }
+      if (this.waypointBuilderOpen && !target.closest(".waypoint-builder-wrap")) {
+        this.waypointBuilderOpen = false;
+      }
+      if (this.waypointCalendarMemberFilterOpen && !target.closest(".waypoint-member-filter")) {
+        this.waypointCalendarMemberFilterOpen = false;
+      }
+      if (Object.keys(this.swipeOpen).length && !target.closest(".swipe-row")) {
+        this.swipeOpen = {};
+      }
+    },
+
+    onKeyDown(event) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      this.closeAllOverlays();
+    },
+
+    async onHashChange() {
+      const id = location.hash.replace("#", "").trim();
+      if (!id || (!this.auth.authenticated && this.auth.enabled)) {
+        return;
+      }
+      if (this.activeConversationId === id) {
+        return;
+      }
+      try {
+        await this.openConversation(id);
+      } catch (_err) {}
+    },
+
+    onResize() {
+      this.syncViewportHeight();
+      this.updateBodyClasses();
+      this.resizeComposer();
+    },
+  },
+
+  async mounted() {
+    this.initVoice();
+    let storedMode = "talk";
+    let storedProject = "general";
+    let storedTheme = "Night";
+    let storedUsername = "owner";
+    try {
+      const savedMode = localStorage.getItem("foxforge_input_mode");
+      if (savedMode === "command") {
+        storedMode = "make";
+      } else if (savedMode === "talk" || savedMode === "forage" || savedMode === "make") {
+        storedMode = savedMode;
+      }
+      const savedProject = localStorage.getItem("foxforge_active_project");
+      if (savedProject) {
+        storedProject = normalizeProjectSlug(savedProject);
+      }
+      const savedTheme = localStorage.getItem("foxforge_theme");
+      if (savedTheme) {
+        storedTheme = savedTheme;
+      }
+      const savedUsername = localStorage.getItem("foxforge_login_username");
+      if (savedUsername) {
+        storedUsername = String(savedUsername).trim() || storedUsername;
+      }
+    } catch (_err) {}
+
+    this.inputMode = storedMode;
+    this.setActiveProject(storedProject);
+    this.applyTheme(storedTheme, false);
+    await this.applyFontConfig();
+    this.loginUsername = storedUsername;
+    this.syncViewportHeight();
+    this.updateBodyClasses();
+    this.resizeComposer();
+
+    this._boundWindowClick = this.onWindowClick.bind(this);
+    this._boundResize = this.onResize.bind(this);
+    this._boundHashChange = this.onHashChange.bind(this);
+    this._boundKeydown = this.onKeyDown.bind(this);
+
+    window.addEventListener("click", this._boundWindowClick);
+    window.addEventListener("resize", this._boundResize);
+    window.addEventListener("orientationchange", this._boundResize);
+    window.addEventListener("hashchange", this._boundHashChange);
+    window.addEventListener("keydown", this._boundKeydown);
+    this._boundSidebarTouchStart = this._onGlobalSidebarTouchStart.bind(this);
+    this._boundSidebarTouchEnd = this._onGlobalSidebarTouchEnd.bind(this);
+    window.addEventListener("touchstart", this._boundSidebarTouchStart, { passive: true });
+    window.addEventListener("touchend", this._boundSidebarTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", this._boundSidebarTouchEnd, { passive: true });
+    this._boundSwipeMove = this._onGlobalSwipeMove.bind(this);
+    window.addEventListener("touchmove", this._boundSwipeMove, { passive: false });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", this._boundResize);
+    }
+
+    await this.initializeWebPushSupport();
+    await this.fetchAuthStatus();
+    await this.bootstrapConversations({ activateApp: false });
+    await this.refreshPanelBadges();
+    await this.refreshProjectPipeline();
+    try {
+      await this.initializeHomeWeather();
+    } catch (_err) {}
+    if (this.auth.enabled && this.auth.authenticated) {
+      this.setActiveApp("home");
+    }
+
+    this._panelPollTimer = window.setInterval(async () => {
+      if (this.auth.enabled && !this.auth.authenticated) {
+        return;
+      }
+      try {
+        await this.refreshPanelBadges();
+      } catch (_err) {}
+      try {
+        await this.refreshConversations();
+      } catch (_err) {}
+      if (this.webPushModalOpen) {
+        try {
+          await this.refreshWebPushSettings();
+        } catch (_err) {}
+      }
+    }, 30000);
+
+    this._homePhraseTimer = window.setInterval(() => {
+      this.refreshHomePhrase();
+    }, 60000);
+
+    this._composerPlaceholderTimer = window.setInterval(() => {
+      this.composerPlaceholderFading = true;
+      setTimeout(() => {
+        this.composerPlaceholderIdx += 1;
+        this.composerPlaceholderFading = false;
+      }, 320);
+    }, 5000);
+
+    this._homeWeatherPollTimer = window.setInterval(async () => {
+      if (this.auth.enabled && !this.auth.authenticated) {
+        return;
+      }
+      if (
+        !Number.isFinite(Number(this.homeWeather.latitude)) ||
+        !Number.isFinite(Number(this.homeWeather.longitude))
+      ) {
+        return;
+      }
+      try {
+        await this.refreshHomeWeather({ silent: true });
+      } catch (_err) {}
+    }, 20 * 60 * 1000);
+
+    this._thinkingTimer = window.setInterval(() => {
+      this.thinkingNowTs = Date.now();
+    }, 1000);
+  },
+
+  beforeUnmount() {
+    if (this._boundWindowClick) {
+      window.removeEventListener("click", this._boundWindowClick);
+    }
+    if (this._boundResize) {
+      window.removeEventListener("resize", this._boundResize);
+      window.removeEventListener("orientationchange", this._boundResize);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", this._boundResize);
+      }
+    }
+    if (this._boundHashChange) {
+      window.removeEventListener("hashchange", this._boundHashChange);
+    }
+    if (this._boundKeydown) {
+      window.removeEventListener("keydown", this._boundKeydown);
+    }
+    if (this._boundSidebarTouchStart) {
+      window.removeEventListener("touchstart", this._boundSidebarTouchStart);
+    }
+    if (this._boundSidebarTouchEnd) {
+      window.removeEventListener("touchend", this._boundSidebarTouchEnd);
+      window.removeEventListener("touchcancel", this._boundSidebarTouchEnd);
+    }
+    if (this._boundSwipeMove) {
+      window.removeEventListener("touchmove", this._boundSwipeMove);
+    }
+    if (this._waypointPollTimer) {
+      window.clearInterval(this._waypointPollTimer);
+      this._waypointPollTimer = null;
+    }
+    if (this._panelPollTimer) {
+      window.clearInterval(this._panelPollTimer);
+      this._panelPollTimer = null;
+    }
+    if (this._homePhraseTimer) {
+      window.clearInterval(this._homePhraseTimer);
+      this._homePhraseTimer = null;
+    }
+    if (this._homeWeatherPollTimer) {
+      window.clearInterval(this._homeWeatherPollTimer);
+      this._homeWeatherPollTimer = null;
+    }
+    if (this._thinkingTimer) {
+      window.clearInterval(this._thinkingTimer);
+      this._thinkingTimer = null;
+    }
+    if (this._composerPlaceholderTimer) {
+      window.clearInterval(this._composerPlaceholderTimer);
+      this._composerPlaceholderTimer = null;
+    }
+  },
+});
+
+app.config.compilerOptions.delimiters = ["[[", "]]"];
+app.mount("#app");

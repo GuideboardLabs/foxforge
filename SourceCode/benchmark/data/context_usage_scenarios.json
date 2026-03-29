@@ -1,0 +1,36 @@
+[
+  {
+    "id": "weekly_family_overview",
+    "query": "What should I be paying attention to this week for the kids?",
+    "expect": {
+      "allow_personal": true,
+      "family_query": true
+    }
+  },
+  {
+    "id": "general_fact_question",
+    "query": "Explain how heat pumps work.",
+    "expect": {
+      "allow_personal": false,
+      "family_query": false,
+      "explicit_memory_query": false
+    }
+  },
+  {
+    "id": "gift_preference_question",
+    "query": "What gift ideas would make sense for my wife this month?",
+    "expect": {
+      "allow_personal": true,
+      "family_query": true,
+      "preference_query": true
+    }
+  },
+  {
+    "id": "explicit_memory_request",
+    "query": "What do you remember about my family?",
+    "expect": {
+      "allow_personal": true,
+      "explicit_memory_query": true
+    }
+  }
+]
