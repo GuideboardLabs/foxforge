@@ -2929,10 +2929,13 @@ class WebResearchEngine:
                     continue
                 depth = source.get("depth", None)
                 tier = str(source.get("source_tier", "tier3")).strip() or "tier3"
+                freshness = float(source.get("freshness_score", 0.0))
                 if isinstance(depth, int):
-                    lines.append(f"- d={depth} [{tier} {score:.2f} fresh={float(source.get("freshness_score", 0.0)):.2f}] {title or url_value} | {url_value}")
+                    lines.append(
+                        f"- d={depth} [{tier} {score:.2f} fresh={freshness:.2f}] {title or url_value} | {url_value}"
+                    )
                 else:
-                    lines.append(f"- [{tier} {score:.2f} fresh={float(source.get("freshness_score", 0.0)):.2f}] {title or url_value} | {url_value}")
+                    lines.append(f"- [{tier} {score:.2f} fresh={freshness:.2f}] {title or url_value} | {url_value}")
                 if snippet:
                     lines.append(f"  snippet: {snippet}")
                 count += 1
