@@ -7,7 +7,7 @@
 ![Runtime](https://img.shields.io/badge/runtime-local--first-orange)
 ![LLM](https://img.shields.io/badge/LLM-Ollama-black)
 ![Status](https://img.shields.io/badge/status-experimental-yellow)
-![CI](https://github.com/FoxforgeLabs/Foxforge-Release/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/GuideBoardLabs/Foxforge/actions/workflows/ci.yml/badge.svg)
 
 **Self-hosted AI workspace. No API keys. No cloud. No subscriptions.**
 
