@@ -3,11 +3,11 @@
 # Foxforge
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
-![License](https://img.shields.io/badge/license-Service--Only%20Source--Available-orange)
 ![Runtime](https://img.shields.io/badge/runtime-local--first-orange)
 ![LLM](https://img.shields.io/badge/LLM-Ollama-black)
 ![Status](https://img.shields.io/badge/status-experimental-yellow)
-![CI](https://github.com/GuideBoardLabs/Foxforge/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-Service--Only%20Source--Available-orange)
+
 
 **Self-hosted AI workspace. No API keys. No cloud. No subscriptions.**
 
