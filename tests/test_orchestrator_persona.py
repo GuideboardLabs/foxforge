@@ -19,6 +19,10 @@ class OrchestratorPersonaTests(unittest.TestCase):
         text = self.orch._strip_foxforge_vocative_prefix("Guidey, add a reminder for tomorrow")
         self.assertEqual(text, "add a reminder for tomorrow")
 
+    def test_strip_fredrick_prefix_for_vocative_address(self) -> None:
+        text = self.orch._strip_foxforge_vocative_prefix("Fredrick, add a reminder for tomorrow")
+        self.assertEqual(text, "add a reminder for tomorrow")
+
     def test_does_not_strip_when_alias_is_subject(self) -> None:
         text = self.orch._strip_foxforge_vocative_prefix("Foxforge is helping my workflow")
         self.assertEqual(text, "Foxforge is helping my workflow")
@@ -38,7 +42,9 @@ class OrchestratorPersonaTests(unittest.TestCase):
 
     def test_persona_block_includes_manifesto_principles(self) -> None:
         persona = self.orch._foxforge_persona_block().lower()
-        self.assertIn("you are foxforge", persona)
+        self.assertIn("fredrick the fox", persona)
+        self.assertIn("warm", persona)
+        self.assertNotIn("dark humor", persona)
         if self.orch.manifesto_path.exists():
             self.assertIn("foxforge manifesto principles", persona)
 

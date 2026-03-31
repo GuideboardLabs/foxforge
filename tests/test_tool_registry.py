@@ -27,7 +27,7 @@ class ToolRegistryTests(unittest.TestCase):
         registry = runtime.build_tool_registry(bus=object())
         names = set(registry.names())
         expected = {
-            'ollama', 'web_engine', 'cloud_engine', 'project_memory', 'topic_memory',
+            'ollama', 'web_engine', 'project_memory', 'topic_memory',
             'pipeline_store', 'learning_engine', 'reflection_engine', 'workspace_tools',
             'embedding_memory', 'bus',
         }

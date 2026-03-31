@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,31 @@ from web_gui.utils.history_builders import (
 
 if TYPE_CHECKING:
     from web_gui.app_context import AppContext
+
+_IMAGE_GEN_DIRECT_RE = re.compile(r"\b(/imagine|text[- ]?to[- ]?image|t2i)\b", re.IGNORECASE)
+_IMAGE_GEN_VERB_RE = re.compile(
+    r"\b(draw|paint|generate|create|make|render|illustrate|imagine|design)\b",
+    re.IGNORECASE,
+)
+_IMAGE_GEN_NOUN_RE = re.compile(
+    r"\b(image|picture|photo|illustration|art|artwork|portrait|wallpaper)\b",
+    re.IGNORECASE,
+)
+_IMAGE_GEN_OF_RE = re.compile(
+    r"\b(?:an?\s+)?(?:image|picture|photo|illustration|portrait|artwork)\s+of\b",
+    re.IGNORECASE,
+)
+
+
+def _is_image_gen_request(text: str) -> bool:
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    if _IMAGE_GEN_DIRECT_RE.search(low):
+        return True
+    if _IMAGE_GEN_OF_RE.search(low):
+        return True
+    return bool(_IMAGE_GEN_VERB_RE.search(low) and _IMAGE_GEN_NOUN_RE.search(low))
 
 
 def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
@@ -120,6 +146,11 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                     lane_guess = ""
                 is_foraging_request = lane_guess in {"research", "project"}
 
+        is_image_gen_request = _is_image_gen_request(raw_content)
+        if is_image_gen_request:
+            is_foraging_request = False
+            is_talk_request = False
+
         user_msg = store.add_message(
             conversation_id,
             "user",
@@ -178,6 +209,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         doc_context = ""
         image_analysis_failures: list[str] = []
         pipeline_error = ""
+        gen_attachments: list[dict] = []
         try:
             image_attachments = [a for a in attachments if str(a.get("type", "")) == "image"]
             doc_attachments = [a for a in attachments if str(a.get("type", "")) == "document"]
@@ -219,7 +251,45 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             else:
                 reply_text = ""
 
-            if not reply_text and is_talk_request:
+            if not reply_text and is_image_gen_request:
+                _progress("image_gen_queued", "Image generation request detected.")
+                attach_dir = ctx.attachment_dir_for(profile, conversation_id)
+                attach_dir.mkdir(parents=True, exist_ok=True)
+                image_gen_result = orch._run_registered_agent(
+                    "image_gen",
+                    orch._make_agent_task(
+                        lane="image_gen",
+                        text=raw_content,
+                        context={
+                            "positive_prompt": raw_content,
+                            "conversation_id": conversation_id,
+                            "attach_dir": str(attach_dir),
+                        },
+                        progress_callback=lambda stage, detail=None: _progress(
+                            stage,
+                            str(detail.get("note", "") if isinstance(detail, dict) else detail or ""),
+                        ),
+                    ),
+                )
+                if image_gen_result.get("ok"):
+                    gen_filename = str(image_gen_result.get("filename", ""))
+                    gen_url = str(image_gen_result.get("url", ""))
+                    gen_seed = int(image_gen_result.get("seed", 0))
+                    gen_attachments = [{
+                        "id": f"gen_{gen_seed % 100000:05d}",
+                        "type": "image",
+                        "name": gen_filename,
+                        "filename": gen_filename,
+                        "mime": "image/png",
+                        "size": 0,
+                        "url": gen_url,
+                    }]
+                    reply_text = f"Here is your generated image.\n\n_Seed: {gen_seed}_"
+                else:
+                    reply_text = str(image_gen_result.get("message", "Image generation failed."))
+                _progress("image_gen_done", "Image generation completed.")
+
+            elif not reply_text and is_talk_request:
                 _progress("talk_mode", "Running conversation-layer reply.")
                 talk_input = normalized_talk
                 if image_context:
@@ -340,6 +410,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             foraging=is_foraging_request,
             request_id=request_id,
             meta=msg_meta,
+            attachments=gen_attachments if gen_attachments else None,
         )
         if assistant_msg is None:
             ctx.job_manager.finish(profile, request_id, status="failed", detail="Failed to persist assistant reply.")

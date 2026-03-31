@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from shared_tools.cloud_consult import CloudConsultEngine
 from shared_tools.continuous_improvement import ContinuousImprovementEngine
 from shared_tools.embedding_memory import EmbeddingMemory
 from shared_tools.external_requests import ExternalRequestStore, ExternalToolsSettings
@@ -46,12 +45,6 @@ class OrchestratorInfraRuntime:
         if "web_engine" not in self._cache:
             self._cache["web_engine"] = WebResearchEngine(self.repo_root)
         return self._cache["web_engine"]
-
-    @property
-    def cloud_engine(self) -> CloudConsultEngine:
-        if "cloud_engine" not in self._cache:
-            self._cache["cloud_engine"] = CloudConsultEngine(self.repo_root)
-        return self._cache["cloud_engine"]
 
     @property
     def external_tools_settings(self) -> ExternalToolsSettings:
@@ -131,7 +124,6 @@ class OrchestratorInfraRuntime:
         registry = ToolRegistry()
         registry.register("ollama", self.ollama, description="Shared Ollama client")
         registry.register("web_engine", self.web_engine, description="Web research engine")
-        registry.register("cloud_engine", self.cloud_engine, description="Cloud consult engine")
         registry.register(
             "external_tools_settings",
             self.external_tools_settings,

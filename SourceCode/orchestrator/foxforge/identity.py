@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 
 FOXFORGE_ALIASES: tuple[str, ...] = (
+    "fredrick",
+    "frederick",
+    "fredrick the fox",
+    "frederick the fox",
     "foxforge",
     "gb",
     "guidey",
@@ -47,11 +51,18 @@ def mentions_foxforge_alias(text: str) -> bool:
     low = str(text or "").strip().lower()
     if not low:
         return False
-    if re.search(r"\bgb\b", low):
-        return True
-    if "guide fierri" in low:
-        return True
-    return any(alias in low for alias in ("foxforge", "guidey", "guidester"))
+    for alias in FOXFORGE_ALIASES:
+        if alias == "gb":
+            if re.search(r"\bgb\b", low):
+                return True
+            continue
+        if " " in alias:
+            if alias in low:
+                return True
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", low):
+            return True
+    return False
 
 
 def strip_foxforge_vocative_prefix(text: str) -> str:
@@ -60,7 +71,7 @@ def strip_foxforge_vocative_prefix(text: str) -> str:
         return ""
     pattern = re.compile(
         r"^\s*(?:(?:hey|hi|yo|ok|okay)\s+)?"
-        r"(?P<alias>foxforge|guidey|guidester|gb|guide\s+fierri)\b"
+        r"(?P<alias>foxforge|guidey|guidester|gb|guide\s+fierri|fred(?:er|r)ick(?:\s+the\s+fox)?)\b"
         r"(?P<sep>\s*[,:\-!]\s*|\s+)"
         r"(?P<rest>.+)$",
         flags=re.IGNORECASE,

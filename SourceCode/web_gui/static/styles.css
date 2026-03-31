@@ -10488,6 +10488,23 @@ body.day .home-junction-btn strong { color: var(--neu-primary) !important; }
 .waypoint-day-action-btn.is-yellow { color: #facc15 !important; }
 .waypoint-day-action-btn.is-red { color: #f87171 !important; }
 
+/* ── Generated image in assistant message ───────────────────── */
+.msg-attachments .msg-attachment-card.is-generated {
+    width: 100%;
+    max-width: 254px;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 4px 4px 10px rgba(0,0,0,0.4), -2px -2px 6px rgba(255,255,255,0.04);
+    background: var(--surface-2, #0d1c1e);
+}
+.msg-attachments .msg-attachment-card.is-generated img {
+    width: 100%;
+    height: auto;
+    max-height: 254px;
+    object-fit: contain;
+    display: block;
+}
+
 /* ============================================================
    END NEUROMORPHIC VISUAL OVERRIDES
    ============================================================ */

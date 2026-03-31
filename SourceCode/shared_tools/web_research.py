@@ -611,8 +611,6 @@ class WebResearchEngine:
                         "conflict_detection_enabled": True,
                         "crawl_relevance_gating_enabled": False,
                         "crawl_relevance_min_score": 0.1,
-                        "fact_check_enabled": False,
-                        "fact_check_provider": "local",
                         "searxng_base_url": "http://127.0.0.1:8080",
                         "searxng_timeout_sec": 20,
                         "searxng_engines": "",
@@ -714,12 +712,6 @@ class WebResearchEngine:
         except (TypeError, ValueError):
             crawl_relevance_min_score = 0.1
         data["crawl_relevance_min_score"] = max(0.0, min(crawl_relevance_min_score, 1.0))
-        data["fact_check_enabled"] = bool(data.get("fact_check_enabled", False))
-        fact_check_provider = str(data.get("fact_check_provider", "local")).strip().lower() or "local"
-        if fact_check_provider not in {"local", "gemini"}:
-            fact_check_provider = "local"
-        data["fact_check_provider"] = fact_check_provider
-
         data["crawl_enabled"] = bool(data.get("crawl_enabled", True))
 
         try:
@@ -867,8 +859,6 @@ class WebResearchEngine:
             f"- conflict_detection_enabled: {settings.get('conflict_detection_enabled', False)}\n"
             f"- crawl_relevance_gating_enabled: {settings.get('crawl_relevance_gating_enabled', False)}\n"
             f"- crawl_relevance_min_score: {settings.get('crawl_relevance_min_score', 0.1)}\n"
-            f"- fact_check_enabled: {settings.get('fact_check_enabled', False)}\n"
-            f"- fact_check_provider: {settings.get('fact_check_provider', 'local')}\n"
             f"- searxng_base_url: {settings.get('searxng_base_url', 'http://127.0.0.1:8080')}\n"
             f"- searxng_timeout_sec: {settings.get('searxng_timeout_sec', 20)}\n"
             f"- searxng_engines: {settings.get('searxng_engines', '') or '(auto)'}\n"
@@ -2560,8 +2550,6 @@ class WebResearchEngine:
                 },
                 "crawl_relevance_gating_enabled": bool(settings.get("crawl_relevance_gating_enabled", False)),
                 "crawl_gated_links": crawl_gated_links,
-                "fact_check_enabled": bool(settings.get("fact_check_enabled", False)),
-                "fact_check_provider": str(settings.get("fact_check_provider", "local")),
                 "crawl_pages": len(crawled_pages),
                 "crawl_failures": len(crawl_failures),
                 "crawl_enabled": crawl_enabled,
@@ -2638,8 +2626,6 @@ class WebResearchEngine:
             f"- crawl_relevance_gating_enabled: {bool(settings.get('crawl_relevance_gating_enabled', False))}",
             f"- crawl_relevance_min_score: {float(settings.get('crawl_relevance_min_score', 0.1)):.2f}",
             f"- crawl_gated_links: {crawl_gated_links}",
-            f"- fact_check_enabled: {bool(settings.get('fact_check_enabled', False))}",
-            f"- fact_check_provider: {settings.get('fact_check_provider', 'local')}",
             f"- crawl_enabled: {crawl_enabled}",
             f"- crawl4ai_enabled: {settings.get('crawl4ai_enabled', True)}",
             f"- newspaper_enabled: {settings.get('newspaper_enabled', True)}",
@@ -2783,8 +2769,6 @@ class WebResearchEngine:
             "conflict_summary": conflict_summary,
             "crawl_relevance_gating_enabled": bool(settings.get("crawl_relevance_gating_enabled", False)),
             "crawl_gated_links": crawl_gated_links,
-            "fact_check_enabled": bool(settings.get("fact_check_enabled", False)),
-            "fact_check_provider": str(settings.get("fact_check_provider", "local")),
             "crawl_enabled": crawl_enabled,
             "crawl_pages": len(crawled_pages),
             "crawl_failures": len(crawl_failures),
@@ -2813,8 +2797,6 @@ class WebResearchEngine:
             "conflict_summary": conflict_summary,
             "crawl_relevance_gating_enabled": bool(settings.get("crawl_relevance_gating_enabled", False)),
             "crawl_gated_links": crawl_gated_links,
-            "fact_check_enabled": bool(settings.get("fact_check_enabled", False)),
-            "fact_check_provider": str(settings.get("fact_check_provider", "local")),
             "crawl_pages": len(crawled_pages),
             "crawl_failures": len(crawl_failures),
             "crawl_enabled": crawl_enabled,

@@ -18,7 +18,6 @@ if str(SOURCE) not in sys.path:
 from shared_tools.activity_bus import ActivityBus
 from shared_tools.activity_store import ActivityStore
 from shared_tools.approval_gate import ApprovalGate
-from shared_tools.cloud_consult import CloudConsultEngine
 from shared_tools.context_policy import analyze_query_context, build_context_usage_guidance, evaluate_context_use
 from shared_tools.continuous_improvement import ContinuousImprovementEngine
 from shared_tools.domain_reputation import DomainReputation
@@ -123,10 +122,6 @@ class FoxforgeOrchestrator:
         self.improvement_engine = ContinuousImprovementEngine(repo_root)
         self.project_slug = "general"
         self.model_routing = load_model_routing(repo_root)
-        _cs = self.cloud_engine._load_settings()
-        _ck = self.cloud_engine._resolve_gemini_keys(_cs)
-        _cm = str(_cs.get("mode", "off")).strip().lower()
-        self.cloud_enabled = bool(_ck) and _cm not in ("off", "disabled", "")
         self.tool_registry = self._infra.build_tool_registry(bus=self.bus)
         self.manifesto_path = self.repo_root / "Runtime" / "config" / "foxforge_manifesto.md"
         self._manifesto_cache_mtime: float = -1.0
@@ -136,10 +131,6 @@ class FoxforgeOrchestrator:
     @property
     def web_engine(self):
         return self._infra.web_engine
-
-    @property
-    def cloud_engine(self):
-        return self._infra.cloud_engine
 
     @property
     def external_tools_settings(self):
@@ -1190,144 +1181,6 @@ class FoxforgeOrchestrator:
             except Exception:
                 pass
 
-    def _extract_checkable_sentences(self, text: str) -> list[str]:
-        """Return sentences that contain dates, numbers, or proper noun phrases."""
-        _FACT_RE = re.compile(
-            r"\b(\d{4}"
-            r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
-            r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-            r"\s+\d{1,2},?\s+\d{4}"
-            r"|\d[\d,.]+\s*(?:million|billion|trillion|percent|%|km|mi|lb|kg|mph|GHz|TB|GB|MB)"
-            r"|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b",
-            re.IGNORECASE,
-        )
-        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-        results: list[str] = []
-        for sent in sentences:
-            sent = sent.strip()
-            if len(sent) < 20:
-                continue
-            if _FACT_RE.search(sent):
-                results.append(sent)
-        return results
-
-    def _parse_fact_check_response(self, raw: str) -> list[dict[str, str]]:
-        """Extract corrections list from model response. Returns [] on parse failure."""
-        text = raw.strip()
-        match = re.search(r"\[.*?\]", text, re.DOTALL)
-        if not match:
-            return []
-        try:
-            data = json.loads(match.group(0))
-        except (json.JSONDecodeError, ValueError):
-            return []
-        if not isinstance(data, list):
-            return []
-        results: list[dict[str, str]] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            claim = str(item.get("claim", "")).strip()
-            correction = str(item.get("correction", "")).strip()
-            if claim and correction:
-                results.append({"claim": claim, "correction": correction})
-        return results
-
-    def _fact_check_reply(self, reply_text: str) -> str:
-        """Non-blocking post-finalize fact-check pass.
-
-        When fact_check_enabled is True, extracts checkable claims from the
-        reply, verifies them against recent web source context, and appends a
-        compact correction block. Returns original reply unchanged on any error
-        or when no corrections are found.
-
-        Providers:
-          local  — orchestrator_reasoning Ollama model (no cloud dependency)
-          gemini — direct Gemini call, falls back to local if key absent
-        """
-        try:
-            settings = self.web_engine._load_settings()
-            if not bool(settings.get("fact_check_enabled", False)):
-                return reply_text
-
-            provider = str(settings.get("fact_check_provider", "local")).strip().lower()
-            if provider not in {"local", "gemini"}:
-                provider = "local"
-            if provider == "gemini" and not str(os.getenv("GEMINI_API_KEY", "")).strip():
-                provider = "local"
-
-            web_context = self.web_engine.web_context_for_project(self.project_slug, limit=6)
-            if not web_context and provider == "local":
-                return reply_text
-
-            claims = self._extract_checkable_sentences(reply_text)
-            if not claims:
-                return reply_text
-
-            claims_text = "\n".join(f"- {c}" for c in claims[:8])
-            source_block = web_context.strip()[:3000] if web_context else ""
-            prompt = (
-                "You are a fact-verification pass for Foxforge.\n"
-                "Check ONLY factual claims involving names, dates, numbers, or events.\n"
-                "Do not comment on style, tone, or completeness.\n\n"
-                f"Source context:\n{source_block or '(no web sources available)'}\n\n"
-                f"Claims to check:\n{claims_text}\n\n"
-                "Return a JSON array of corrections only.\n"
-                'Format: [{"claim": "...", "correction": "..."}]\n'
-                "Omit any claim that is correct or cannot be verified from the sources above.\n"
-                "Return [] if nothing needs correction."
-            )
-
-            raw = ""
-            if provider == "gemini":
-                cloud_cfg = self.cloud_engine._load_settings()
-                gemini_model = str(cloud_cfg.get("gemini_model", "gemini-2.0-flash"))
-                raw = self.cloud_engine._call_gemini(prompt, gemini_model)
-            else:
-                cfg = lane_model_config(self.repo_root, "orchestrator_reasoning")
-                model = cfg.get("model", "")
-                if not model:
-                    return reply_text
-                raw = self.ollama.chat(
-                    model=model,
-                    system_prompt="You are a fact-checker. Return only valid JSON.",
-                    user_prompt=prompt,
-                    temperature=0.1,
-                    num_ctx=4096,
-                    think=False,
-                    timeout=90,
-                    retry_attempts=2,
-                    retry_backoff_sec=1.0,
-                )
-
-            corrections = self._parse_fact_check_response(raw)
-            if not corrections:
-                return reply_text
-
-            annotation_lines = ["", "Fact-check notes:"]
-            for item in corrections[:5]:
-                claim = str(item.get("claim", "")).strip()
-                correction = str(item.get("correction", "")).strip()
-                if claim and correction:
-                    annotation_lines.append(f"- {claim} → {correction}")
-
-            if len(annotation_lines) <= 2:
-                return reply_text
-
-            self.bus.emit(
-                "orchestrator",
-                "fact_check_corrections_found",
-                {
-                    "project": self.project_slug,
-                    "provider": provider,
-                    "corrections_count": len(corrections),
-                },
-            )
-            return reply_text + "\n" + "\n".join(annotation_lines)
-
-        except Exception:
-            return reply_text
-
     def _normalize_worker_result(self, lane: str, data: dict[str, Any] | None) -> WorkerResult:
         return WorkerResult.from_legacy(lane, data)
 
@@ -1340,7 +1193,7 @@ class FoxforgeOrchestrator:
         worker_result: dict[str, Any] | None = None,
         context_feedback: dict[str, Any] | None = None,
     ) -> str:
-        checked_reply = self._fact_check_reply(reply_text)
+        checked_reply = reply_text
         final_reply = self._attach_reflection_cycle(
             user_text=user_text,
             lane=lane,
@@ -1422,213 +1275,6 @@ class FoxforgeOrchestrator:
             return ""
         return body[: max(500, min(limit, 30000))]
 
-    def _should_offer_cloud(self, text: str, lane: str) -> bool:
-        lane_key = lane.strip().lower()
-        low = text.lower()
-        high_value_markers = [
-            "final",
-            "client",
-            "production",
-            "architecture",
-            "security",
-            "compliance",
-            "legal",
-            "citation",
-            "source",
-            "fact-check",
-            "verify",
-            "tradeoff",
-            "risk",
-            "launch",
-        ]
-        if lane_key in {"research", "project"}:
-            if any(token in low for token in high_value_markers):
-                return True
-            return len(low) >= 280
-        if lane_key == "ui":
-            return any(token in low for token in high_value_markers)
-        return False
-
-    def _cloud_priority(self, text: str, lane: str) -> str:
-        lane_key = lane.strip().lower()
-        low = text.lower()
-        high_tokens = [
-            "final",
-            "client",
-            "production",
-            "security",
-            "legal",
-            "compliance",
-            "critical",
-            "must",
-            "deadline",
-            "ship",
-            "launch",
-        ]
-        mid_tokens = ["verify", "tradeoff", "risk", "architecture", "review", "qa", "audit"]
-        if lane_key == "ui" and any(token in low for token in high_tokens):
-            return "high"
-        if any(token in low for token in high_tokens):
-            return "high"
-        if any(token in low for token in mid_tokens):
-            return "medium"
-        return "low"
-
-    def _build_cloud_context(self, *, text: str, lane: str, worker_result: dict[str, Any] | None, web_context: str) -> str:
-        lines = [
-            f"Lane: {lane}",
-            "User request:",
-            text.strip(),
-        ]
-        project_context = self.project_memory.summary_text(self.project_slug, limit_chars=2200)
-        if project_context.strip():
-            lines.extend(["", project_context.strip()])
-        if web_context.strip():
-            lines.extend(["", "Web context:", web_context.strip()])
-
-        if isinstance(worker_result, dict):
-            summary_path = str(worker_result.get("summary_path", "")).strip()
-            spec_path = str(worker_result.get("path", "")).strip()
-            if summary_path:
-                lines.extend(["", f"Local summary path: {summary_path}"])
-                preview = self._read_file_preview(summary_path, limit=7000)
-                if preview.strip():
-                    lines.extend(["Local summary preview:", preview.strip()])
-            elif spec_path:
-                lines.extend(["", f"Local output path: {spec_path}"])
-                preview = self._read_file_preview(spec_path, limit=7000)
-                if preview.strip():
-                    lines.extend(["Local output preview:", preview.strip()])
-        return "\n".join([x for x in lines if x is not None]).strip()
-
-    def _prepare_cloud_consult(
-        self,
-        *,
-        text: str,
-        lane: str,
-        worker_result: dict[str, Any] | None = None,
-        web_context: str = "",
-    ) -> tuple[str, dict[str, Any]]:
-        if not self.cloud_enabled:
-            return "", {}
-
-        mode = self.cloud_engine.get_mode()
-        lane_key = lane.strip().lower()
-        details: dict[str, Any] = {
-            "mode": mode,
-            "requested": False,
-            "pending_id": "",
-            "response_path": "",
-            "provider": "",
-            "model": "",
-            "status": "skipped",
-            "rate_limited": False,
-        }
-        if mode == "off" or not self._should_offer_cloud(text, lane_key):
-            return "", details
-
-        usage = self.cloud_engine.usage_snapshot()
-        priority = self._cloud_priority(text=text, lane=lane_key)
-        details["priority"] = priority
-        details["usage"] = usage
-        remaining = int(usage.get("remaining", 0))
-        daily_limit = int(usage.get("daily_limit", 1))
-        reserve_ratio = float(usage.get("reserve_ratio", 0.2))
-        reserve_floor = max(1, int(daily_limit * reserve_ratio))
-        if remaining <= reserve_floor and priority == "low":
-            details["status"] = "skipped_budget"
-            return (
-                "Cloud consult skipped to preserve limited external budget for higher-priority requests.",
-                details,
-            )
-
-        reason = "Escalate to stronger cloud reasoning for quality and gap checks."
-        context = self._build_cloud_context(text=text, lane=lane_key, worker_result=worker_result, web_context=web_context)
-
-        if mode == "ask":
-            pending = self.cloud_engine.create_pending(
-                project=self.project_slug,
-                lane=lane_key,
-                query=text,
-                reason=reason,
-                context=context,
-            )
-            details["requested"] = True
-            details["pending_id"] = str(pending.get("id", ""))
-            details["status"] = "pending_approval"
-            self.bus.emit(
-                "orchestrator",
-                "cloud_consult_pending_created",
-                {
-                    "project": self.project_slug,
-                    "lane": lane_key,
-                    "pending_id": details["pending_id"],
-                    "mode": mode,
-                },
-            )
-            note = (
-                "Cloud ASK mode queued an explicit approval request instead of auto-running.\n"
-                f"Pending id: {details['pending_id']}"
-            )
-            return note, details
-            return note, details
-
-        result = self.cloud_engine.run_query(
-            project=self.project_slug,
-            lane=lane_key,
-            query=text,
-            reason=reason,
-            context=context,
-            request_id="auto",
-            note="auto cloud mode",
-        )
-        details["requested"] = True
-        details["response_path"] = str(result.get("response_path", ""))
-        details["provider"] = str(result.get("provider", ""))
-        details["model"] = str(result.get("model", ""))
-
-        if bool(result.get("ok", False)):
-            details["status"] = "completed"
-            self.bus.emit(
-                "orchestrator",
-                "cloud_consult_auto_completed",
-                {
-                    "project": self.project_slug,
-                    "lane": lane_key,
-                    "mode": mode,
-                    "provider": details["provider"],
-                    "model": details["model"],
-                    "response_path": details["response_path"],
-                },
-            )
-            note = (
-                "Cloud AUTO mode completed.\n"
-                f"Provider/model: {details['provider']}:{details['model']}\n"
-                f"Response file: {details['response_path']}"
-            )
-            return note, details
-
-        details["status"] = "failed_nonblocking"
-        message = str(result.get("message", "Cloud consult failed."))
-        is_rate_limited = bool(result.get("rate_limited", False))
-        details["rate_limited"] = is_rate_limited
-        self.bus.emit(
-            "orchestrator",
-            "cloud_consult_nonblocking_failed",
-            {
-                "project": self.project_slug,
-                "lane": lane_key,
-                "mode": mode,
-                "message": message,
-                "rate_limited": is_rate_limited,
-            },
-        )
-        if is_rate_limited:
-            note = "Cloud AUTO mode hit external rate limits after retries; continued without blocking."
-        else:
-            note = f"Cloud AUTO mode failed but remained non-blocking: {message}"
-        return note, details
-
     def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general") -> tuple[str, str, dict[str, Any]]:
         mode = self.web_engine.get_mode()
         lane_key = lane.strip().lower()
@@ -1651,8 +1297,6 @@ class FoxforgeOrchestrator:
             "conflict_count": 0,
             "crawl_relevance_gating_enabled": False,
             "crawl_gated_links": 0,
-            "fact_check_enabled": False,
-            "fact_check_provider": "local",
             "crawl_pages": 0,
             "crawl_failures": 0,
             "sources": [],
@@ -1687,8 +1331,6 @@ class FoxforgeOrchestrator:
         details["conflict_count"] = int(details["conflict_summary"].get("conflict_count", 0))
         details["crawl_relevance_gating_enabled"] = bool(result.get("crawl_relevance_gating_enabled", False))
         details["crawl_gated_links"] = int(result.get("crawl_gated_links", 0))
-        details["fact_check_enabled"] = bool(result.get("fact_check_enabled", False))
-        details["fact_check_provider"] = str(result.get("fact_check_provider", "local"))
         details["crawl_pages"] = int(result.get("crawl_pages", 0))
         details["crawl_failures"] = int(result.get("crawl_failures", 0))
         details["sources"] = result.get("sources", []) if isinstance(result.get("sources", []), list) else []
@@ -2178,92 +1820,6 @@ class FoxforgeOrchestrator:
             lines.extend(file_lines)
         return "\n".join(lines)
 
-    def _gemini_critique_pass(self, question: str, synthesis_text: str) -> str:
-        """Run a narrow Gemini claim-check against recent web context. Returns formatted notes or ''."""
-        settings = self.cloud_engine._load_settings()
-        if not bool(settings.get("gemini_critique_enabled", False)):
-            return ""
-        claims = self._extract_checkable_sentences(synthesis_text)
-        if not claims:
-            return ""
-        web_context = self.web_engine.web_context_for_project(self.project_slug, limit=6)
-        source_packets: list[dict[str, str]] = []
-        for idx, block in enumerate((web_context or "").split("\n\n")):
-            block = block.strip()
-            if not block:
-                continue
-            source_packets.append({
-                "title": f"Source {idx + 1}",
-                "domain": "",
-                "excerpt": block[:500],
-            })
-            if len(source_packets) >= 10:
-                break
-        if not source_packets:
-            return ""
-        model = str(settings.get("gemini_model", "gemini-2.0-flash"))
-        prompt = self.cloud_engine._build_claim_check_prompt(
-            query=question,
-            claims=claims[:8],
-            source_packets=source_packets,
-            mode_label="final_answer",
-        )
-        critique_settings = dict(settings)
-        critique_settings["retry_attempts"] = 1
-        last_err = ""
-        for idx, key in enumerate(self.cloud_engine._resolve_gemini_keys(settings)):
-            try:
-                raw, _used_model = self.cloud_engine._call_provider_with_retry(
-                    "gemini",
-                    prompt,
-                    critique_settings,
-                    api_key=key,
-                )
-                checks = self.cloud_engine._normalize_claim_checks(raw)
-                flagged = [c for c in checks if c.get("verdict") in {"contradicted", "insufficient"}]
-                self.cloud_engine._record_cloud_request(
-                    request_id=f"claimcheck_{uuid.uuid4().hex[:12]}",
-                    project=self.project_slug,
-                    lane="project",
-                    mode="auto",
-                    purpose="claim_check",
-                    request_payload={
-                        "query": question,
-                        "claims": claims[:8],
-                        "source_count": len(source_packets),
-                    },
-                    response_payload={
-                        "status": "completed",
-                        "provider": "gemini",
-                        "model": model,
-                        "key_index_used": idx,
-                        "claim_checks": checks,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    status="completed",
-                )
-                if not flagged:
-                    return ""
-                lines: list[str] = []
-                for item in flagged[:5]:
-                    claim = str(item.get("claim", "")).strip()
-                    verdict = str(item.get("verdict", "")).strip()
-                    reason = str(item.get("reason", "")).strip()
-                    refs = item.get("evidence_refs", []) or []
-                    ref_text = f" [refs: {', '.join(str(r) for r in refs)}]" if refs else ""
-                    if claim and verdict:
-                        lines.append(f"- {claim} -> {verdict}: {reason}{ref_text}".rstrip())
-                return "\n".join(lines)
-            except Exception as exc:
-                last_err = str(exc)
-                continue
-        self.bus.emit(
-            "orchestrator",
-            "gemini_critique_failed",
-            {"error": last_err[:300], "model": model},
-        )
-        return ""
-
     def _queue_action_proposals(self, reply: str) -> None:
         """Extract actionable next steps from synthesis and queue as approval proposals."""
         try:
@@ -2502,19 +2058,7 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'UI lane completed.')} Output: {out.get('path', '')}"
-            cloud_note, cloud_details = self._prepare_cloud_consult(
-                text=text,
-                lane=lane,
-                worker_result=out,
-                web_context="",
-            )
-            if cloud_details:
-                out["cloud_details"] = cloud_details
-            if cloud_note:
-                fallback = f"{fallback}\n{cloud_note}"
             reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
-            if cloud_note and cloud_note not in reply:
-                reply = f"{reply}\n{cloud_note}"
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2544,19 +2088,7 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'App build completed.')} Output: {out.get('path', '')}"
-            cloud_note, cloud_details = self._prepare_cloud_consult(
-                text=text,
-                lane=lane,
-                worker_result=out,
-                web_context="",
-            )
-            if cloud_details:
-                out["cloud_details"] = cloud_details
-            if cloud_note:
-                fallback = f"{fallback}\n{cloud_note}"
             reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
-            if cloud_note and cloud_note not in reply:
-                reply = f"{reply}\n{cloud_note}"
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2887,17 +2419,6 @@ class FoxforgeOrchestrator:
             )
             return f"Pending action ignored: {action_id}"
 
-        if action_id.strip().lower().startswith("cloud_"):
-            row = self.cloud_engine.ignore(request_id=action_id, reason=reason or "ignored by user")
-            if row is None:
-                return f"Pending action not found or already resolved: {action_id}"
-            self.bus.emit(
-                "orchestrator",
-                "pending_action_ignored",
-                {"id": action_id, "type": "cloud_consult", "reason": reason},
-            )
-            return f"Pending action ignored: {action_id}"
-
         if action_id.strip().lower().startswith("web_"):
             row = self.web_engine.ignore(request_id=action_id, reason=reason or "ignored by user")
             if row is None:
@@ -2924,57 +2445,6 @@ class FoxforgeOrchestrator:
             return (
                 "External request routing is not enabled in this phase. "
                 "OpenClaw/CrewAI dispatch is intentionally gated off."
-            )
-
-        if action_id.strip().lower().startswith("cloud_"):
-            request = self.cloud_engine.get_request(action_id)
-            if request is None:
-                return f"Pending action not found: {action_id}"
-            if str(request.get("status", "")).lower() != "open":
-                return f"Pending action is not open: {action_id}"
-            request_text = (
-                "Please provide a cloud-grade reasoning pass for this query.\n\n"
-                f"Cloud Request ID: {action_id}\n"
-                f"Project: {request.get('project', self.project_slug)}\n"
-                f"Lane: {request.get('lane', 'project')}\n"
-                f"Reason: {request.get('reason', '')}\n"
-                f"Query: {request.get('query', '')}\n"
-                f"Context Preview:\n{request.get('context_preview', '')}\n\n"
-                "Return concise recommendations and risks."
-            )
-            if note.strip():
-                request_text += f"\nUser note: {note.strip()}\n"
-            try:
-                pending = self.handoff_queue.create_pending(
-                    target="codex",
-                    request_text=request_text,
-                    project_slug=str(request.get("project", self.project_slug)),
-                )
-                approved = self.handoff_queue.approve(
-                    request_id=str(pending.get("id", "")),
-                    reason=f"routed from pending action {action_id}",
-                    actor="orchestrator",
-                )
-            except (ValueError, PermissionError) as exc:
-                return str(exc)
-            routed = self.cloud_engine.mark_routed(
-                action_id,
-                target="codex",
-                note=note,
-                handoff_id=str(pending.get("id", "")),
-            )
-            if routed is None or approved is None:
-                return f"Failed to route pending action {action_id} to Codex inbox."
-            self.bus.emit(
-                "orchestrator",
-                "pending_action_routed_codex",
-                {"id": action_id, "handoff_id": pending.get("id", ""), "type": "cloud_consult"},
-            )
-            return (
-                f"Pending action routed to Codex inbox.\n"
-                f"Action: {action_id}\n"
-                f"Handoff: {pending.get('id','')}\n"
-                f"Inbox file: {approved.get('outbox_path','')}"
             )
 
         if action_id.strip().lower().startswith("web_"):
@@ -3116,20 +2586,6 @@ class FoxforgeOrchestrator:
             )
             return f"Pending action ignored: {action_id}"
 
-        if action_id.strip().lower().startswith("cloud_"):
-            note = answer.strip()
-            if not note:
-                return "Answer text is required."
-            ignored = self.cloud_engine.ignore(action_id, reason=f"cloud disabled; user answer: {note}")
-            if ignored is None:
-                return f"Pending action not found or already resolved: {action_id}"
-            self.bus.emit(
-                "orchestrator",
-                "pending_action_ignored",
-                {"id": action_id, "type": "cloud_consult", "reason": note},
-            )
-            return f"Cloud integrations are disabled. Pending action archived: {action_id}"
-
         if action_id.strip().lower().startswith("web_"):
             note = answer.strip()
             if not note:
@@ -3181,37 +2637,6 @@ class FoxforgeOrchestrator:
                     )
                 except Exception:
                     pass
-                # Gemini post-foraging claim-check (non-blocking, one call per session)
-                _critique_lessons = 0
-                _claim_check_issues = 0
-                try:
-                    _cr = self.cloud_engine.claim_check_research_summary(
-                        project=str(result.get("project", self.project_slug)),
-                        query=str(result.get("query", "")),
-                        sources=result.get("sources", []),
-                        source_path=str(result.get("source_path", "")),
-                    )
-                    if _cr.get("ok"):
-                        _issues = [
-                            item for item in (_cr.get("claim_checks") or [])
-                            if str(item.get("verdict", "")).strip().lower() in {"contradicted", "insufficient"}
-                        ]
-                        _claim_check_issues = len(_issues)
-                        _source_path = str(result.get("source_path", "")).strip()
-                        if _issues and _source_path:
-                            try:
-                                with Path(_source_path).open("a", encoding="utf-8") as fh:
-                                    fh.write("\n\n---\n## Gemini Claim Check\n\n")
-                                    for item in _issues[:8]:
-                                        claim = str(item.get("claim", "")).strip()
-                                        verdict = str(item.get("verdict", "")).strip()
-                                        reason = str(item.get("reason", "")).strip()
-                                        if claim and verdict:
-                                            fh.write(f"- {claim} -> {verdict}: {reason}\n")
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
                 self.bus.emit(
                     "orchestrator",
                     "web_research_completed",
@@ -3234,7 +2659,6 @@ class FoxforgeOrchestrator:
                         f"\nTopic memory: {topic_result.get('canon_added', 0)} facts auto-canonized, "
                         f"{topic_result.get('reviews_created', 0)} pending review in Postbag."
                     )
-                _critique_note = f"\nGemini critique: {_critique_lessons} lesson(s) learned." if _critique_lessons else ""
                 return (
                     f"Web research completed: {action_id}\n"
                     f"Sources captured: {result.get('source_count', 0)}\n"
@@ -3242,7 +2666,6 @@ class FoxforgeOrchestrator:
                     f"Source cache file: {result.get('source_path', '')}\n"
                     f"Learned lessons from sources: {learned.get('learned_lessons', 0)}"
                     f"{topic_note}"
-                    f"{_critique_note}"
                 )
             return f"Web research attempted but no sources captured: {action_id}"
 

@@ -2,7 +2,9 @@
   "llama_cpp_servers": {
     "turbo_deepseek": {
       "base_url": "http://127.0.0.1:8180",
-      "models": ["deepseek-r1:8b"],
+      "models": [
+        "deepseek-r1:8b"
+      ],
       "fallback_to_ollama": true
     }
   },
@@ -15,7 +17,10 @@
     "timeout_sec": 240,
     "retry_attempts": 3,
     "retry_backoff_sec": 1.2,
-    "fallback_models": ["qwen3:8b", "deepseek-r1:8b"]
+    "fallback_models": [
+      "qwen3:8b",
+      "deepseek-r1:8b"
+    ]
   },
   "orchestrator_reasoning": {
     "purpose": "Task planning, routing, and final synthesis",
@@ -27,12 +32,18 @@
     "timeout_sec": 180,
     "retry_attempts": 6,
     "retry_backoff_sec": 1.6,
-    "fallback_models": ["deepseek-r1:8b", "dolphin3:8b"],
+    "fallback_models": [
+      "deepseek-r1:8b",
+      "dolphin3:8b"
+    ],
     "synthesis_timeout_sec": 300,
     "synthesis_retry_attempts": 7,
     "synthesis_retry_backoff_sec": 1.8,
     "synthesis_validation_cycles": 3,
-    "synthesis_fallback_models": ["deepseek-r1:8b", "dolphin3:8b"],
+    "synthesis_fallback_models": [
+      "deepseek-r1:8b",
+      "dolphin3:8b"
+    ],
     "reflection_gate_open_limit": 3,
     "reflection_temperature": 0.2,
     "reflection_num_ctx": 16384,
@@ -40,7 +51,7 @@
     "reflection_timeout_sec": 300
   },
   "research_pool": {
-    "purpose": "Foraging and evidence synthesis — reading web crawl output and general reasoning",
+    "purpose": "Foraging and evidence synthesis \u2014 reading web crawl output and general reasoning",
     "provider": "ollama",
     "model": "cogito:8b",
     "parallel_agents": 2,
@@ -50,7 +61,11 @@
     "retry_attempts": 6,
     "retry_backoff_sec": 1.8,
     "validation_cycles": 3,
-    "fallback_models": ["deepseek-r1:8b", "qwen2.5-coder:7b", "mistral:7b"],
+    "fallback_models": [
+      "deepseek-r1:8b",
+      "qwen2.5-coder:7b",
+      "mistral:7b"
+    ],
     "agent_mix": [
       {
         "persona": "market_analyst",
@@ -59,7 +74,11 @@
         "num_ctx": 20480,
         "retry_attempts": 8,
         "retry_backoff_sec": 2.0,
-        "fallback_models": ["dolphin3:8b", "qwen2.5-coder:7b", "mistral:7b"],
+        "fallback_models": [
+          "dolphin3:8b",
+          "qwen2.5-coder:7b",
+          "mistral:7b"
+        ],
         "validation_cycles": 3
       },
       {
@@ -87,7 +106,7 @@
     ]
   },
   "synthesis": {
-    "purpose": "Cross-agent synthesis — reasoning-focused model for unified narrative output",
+    "purpose": "Cross-agent synthesis \u2014 reasoning-focused model for unified narrative output",
     "provider": "ollama",
     "model": "phi4:14b",
     "temperature": 0.2,
@@ -96,7 +115,10 @@
     "synthesis_retry_attempts": 4,
     "synthesis_validation_cycles": 2,
     "synthesis_retry_backoff_sec": 2.0,
-    "synthesis_fallback_models": ["deepseek-r1:8b", "dolphin3:8b"]
+    "synthesis_fallback_models": [
+      "deepseek-r1:8b",
+      "dolphin3:8b"
+    ]
   },
   "ui_pool": {
     "purpose": "Flask + vanilla JS implementation planning and code generation",
@@ -115,11 +137,28 @@
     "temperature": 0.5,
     "num_ctx": 12288,
     "timeout_sec": 240,
-    "fallback_models": ["dolphin3:8b", "qwen3:4b"]
+    "fallback_models": [
+      "dolphin3:8b",
+      "qwen3:4b"
+    ]
   },
   "embeddings": {
     "purpose": "RAG and memory embeddings",
     "provider": "ollama",
     "model": "mxbai-embed-large"
+  },
+  "image_generation": {
+    "purpose": "Text-to-image via ComfyUI + FLUX.1 Schnell GGUF",
+    "provider": "comfyui",
+    "base_url": "http://127.0.0.1:8188",
+    "workflow": "flux_schnell_gguf",
+    "steps": 4,
+    "width": 512,
+    "height": 512,
+    "timeout_sec": 60,
+    "unet_name": "flux1-schnell-Q5_K_S.gguf",
+    "clip_l_name": "clip_l.safetensors",
+    "t5_name": "t5xxl_fp8_e4m3fn.safetensors",
+    "vae_name": "ae.safetensors"
   }
 }

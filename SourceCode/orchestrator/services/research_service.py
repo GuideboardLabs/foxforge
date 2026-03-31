@@ -109,14 +109,6 @@ class ResearchService:
                     f"Partial summary saved to {out.get('summary_path', '')}."
                 )
             )
-        cloud_note, cloud_details = host._prepare_cloud_consult(
-            text=text,
-            lane="project",
-            worker_result=out,
-            web_context=web_context,
-        )
-        if cloud_details:
-            out["cloud_details"] = cloud_details
         fallback = (
             "I treated this as project strategy and asked the Foraging pool for a baseline synthesis. "
             f"Summary: {out['summary_path']}"
@@ -128,11 +120,9 @@ class ResearchService:
             out=out,
             fallback=fallback,
             web_note=web_note,
-            cloud_note=cloud_note,
             reminder_note=reminder_note,
             event_note=event_note,
             queue_proposals=True,
-            critique=True,
         )
 
     def _execute_light_research(
@@ -211,14 +201,6 @@ class ResearchService:
                     f"Partial summary saved to {out.get('summary_path', '')}."
                 )
             )
-        cloud_note, cloud_details = host._prepare_cloud_consult(
-            text=text,
-            lane=lane,
-            worker_result=out,
-            web_context=web_context,
-        )
-        if cloud_details:
-            out["cloud_details"] = cloud_details
         fallback = f"{out['message']} Summary: {out['summary_path']}"
         return self._finalize_research_reply(
             host,
@@ -227,11 +209,9 @@ class ResearchService:
             out=out,
             fallback=fallback,
             web_note=web_note,
-            cloud_note=cloud_note,
             reminder_note=reminder_note,
             event_note=event_note,
             queue_proposals=True,
-            critique=True,
         )
 
     def _run_research_pool(
@@ -292,42 +272,19 @@ class ResearchService:
         out: dict[str, Any],
         fallback: str,
         web_note: str,
-        cloud_note: str,
         reminder_note: str,
         event_note: str,
         queue_proposals: bool,
-        critique: bool,
     ) -> str:
         if web_note:
             fallback = f"{fallback}\n{web_note}"
-        if cloud_note:
-            fallback = f"{fallback}\n{cloud_note}"
         reply = host._orchestrator_finalize(text, lane, out, fallback)
         if web_note and web_note not in reply:
             reply = f"{reply}\n{web_note}"
-        if cloud_note and cloud_note not in reply:
-            reply = f"{reply}\n{cloud_note}"
         if queue_proposals:
             host._queue_action_proposals(reply)
-        critique_text = ""
-        cloud_details = out.get("cloud_details", {}) if isinstance(out.get("cloud_details", {}), dict) else {}
-        skip_critique_due_to_rate_limit = bool(cloud_details.get("rate_limited", False))
-        if critique:
-            if not skip_critique_due_to_rate_limit:
-                critique_text = host._gemini_critique_pass(text, reply)
-            if critique_text:
-                summary_path = str(out.get("summary_path", "")).strip()
-                if summary_path:
-                    try:
-                        Path(summary_path).open("a", encoding="utf-8").write(
-                            f"\n\n---\n## Gemini Claim Check\n\n{critique_text}\n"
-                        )
-                    except Exception:
-                        pass
         artifacts = host._format_research_artifacts_block(out)
         reply = f"{reply}\n\n{artifacts}"
-        if critique_text:
-            reply = f"{reply}\n\n---\n**Gemini Claim Check**\n\n{critique_text}"
         topic_reviews = int(out.get("topic_reviews_created", 0) or 0)
         if topic_reviews > 0:
             reply = f"{reply}\n\n_{topic_reviews} fact(s) queued for Postbag review._"

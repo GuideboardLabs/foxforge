@@ -1093,8 +1093,6 @@ const app = window.Vue.createApp({
         foraging_paused: false,
         foraging_active_jobs: 0,
         foraging_yielding: false,
-        gemini_critique_enabled: false,
-        gemini_critique_keys: 0,
         briefings_unread: 0,
         action_proposals_pending: 0,
         watchtower_active: 0,
@@ -1412,6 +1410,56 @@ const app = window.Vue.createApp({
     activeConversationSendingIsForaging() {
       const meta = this.conversationSendingMeta(this.activeConversationId);
       return Boolean(meta && meta.foraging);
+    },
+    activeConversationSendingIsImageGen() {
+      const meta = this.conversationSendingMeta(this.activeConversationId);
+      return Boolean(meta && meta.imageGen);
+    },
+    activeConversationImageGenPhrase() {
+      const phrases = [
+        'Firing up ComfyUI…',
+        'Releasing Ollama VRAM…',
+        'Loading FLUX model…',
+        'Encoding your prompt…',
+        'Sampling latents…',
+        'Denoising…',
+        'Denoising…',
+        'Denoising…',
+        'Decoding image…',
+        'Almost there…',
+      ];
+      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      return phrases[idx];
+    },
+    activeConversationThinkingPhrase() {
+      const phrases = [
+        'Thinking…',
+        'Considering…',
+        'Spelinking…',
+        'Reflecting…',
+        'Weighing options…',
+        'Consulting the latent space…',
+        'Drafting a response…',
+        'Thinking…',
+        'Almost ready…',
+        'Putting it together…',
+      ];
+      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      return phrases[idx];
+    },
+    activeConversationForagingPhrase() {
+      const phrases = [
+        'Spinning up agents…',
+        'Dispatching researchers…',
+        'Crawling sources…',
+        'Reading the web…',
+        'Cross-referencing…',
+        'Sifting results…',
+        'Synthesizing findings…',
+        'Compiling report…',
+      ];
+      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      return phrases[idx];
     },
     activeConversationElapsedSec() {
       const meta = this.conversationSendingMeta(this.activeConversationId);
@@ -5262,18 +5310,11 @@ const app = window.Vue.createApp({
           foraging_paused: Boolean(payload.foraging_paused),
           foraging_active_jobs: Number(payload.foraging_active_jobs || 0),
           foraging_yielding: Boolean(payload.foraging_yielding),
-          gemini_critique_enabled: Boolean(this.panelStatus.gemini_critique_enabled),
-          gemini_critique_keys: Number(this.panelStatus.gemini_critique_keys || 0),
           briefings_unread: Number(payload.briefings_unread || 0),
           watchtower_active: Number(payload.watchtower_active || 0),
           topics_with_research: Number(payload.topics_with_research || 0),
           forage_cards_pinned: Number(payload.forage_cards_pinned || 0),
         };
-        try {
-          const cs = await this.apiGet("/api/settings/gemini-critique");
-          this.panelStatus.gemini_critique_enabled = Boolean(cs.enabled);
-          this.panelStatus.gemini_critique_keys = Number(cs.api_keys_count || 0);
-        } catch (_) {}
         await this.refreshLessonsUnreadCount();
         await this.refreshReflectionsUnreadCount();
         if (Number.isFinite(Number(payload.waypoint_open_tasks))) {
@@ -5295,8 +5336,6 @@ const app = window.Vue.createApp({
           foraging_paused: false,
           foraging_active_jobs: 0,
           foraging_yielding: false,
-          gemini_critique_enabled: false,
-          gemini_critique_keys: 0,
           briefings_unread: 0,
             watchtower_active: 0,
           topics_with_research: 0,
@@ -5333,25 +5372,6 @@ const app = window.Vue.createApp({
         );
       } catch (err) {
         window.alert(`Could not change web mode: ${String(err.message || err)}`);
-      }
-    },
-
-    async toggleGeminiCritique() {
-      this.chatMenuOpen = false;
-      const next = !Boolean(this.panelStatus.gemini_critique_enabled);
-      try {
-        const payload = await this.apiPost("/api/settings/gemini-critique", { enabled: next });
-        this.panelStatus.gemini_critique_enabled = Boolean(payload.enabled);
-        this.panelStatus.gemini_critique_keys = Number(payload.api_keys_count || 0);
-        const keyNote = payload.api_keys_count
-          ? ` (${payload.api_keys_count} key(s) ready)`
-          : " — add keys to Runtime/cloud/settings.json gemini_api_keys[]";
-        window.alert(
-          `Gemini critique: ${payload.enabled ? "ON" : "OFF"}${keyNote}\n` +
-          "When ON, Gemini reviews each completed foraging summary. Lessons saved automatically."
-        );
-      } catch (err) {
-        window.alert(`Gemini critique toggle failed: ${String(err.message || err)}`);
       }
     },
 
@@ -6930,6 +6950,13 @@ const app = window.Vue.createApp({
       const talkModeRequest = this.inputMode === "talk" && !typedContent.startsWith("/");
       const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "command" : "talk");
       const likelyForagingRequest = sendMode === "forage";
+      const likelyImageGenRequest =
+        /\b(?:\/imagine|text[- ]?to[- ]?image|t2i)\b/i.test(typedContent) ||
+        /\b(?:an?\s+)?(?:image|picture|photo|illustration|portrait|artwork)\s+of\b/i.test(typedContent) ||
+        (
+          /\b(draw|paint|generate|create|make|render|illustrate|imagine|design)\b/i.test(typedContent) &&
+          /\b(image|picture|photo|illustration|art|artwork|portrait|wallpaper)\b/i.test(typedContent)
+        );
       let requestId = "";
       try {
         if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -6944,6 +6971,7 @@ const app = window.Vue.createApp({
         startedAt: Date.now(),
         cancelRequested: false,
         foraging: likelyForagingRequest,
+        imageGen: likelyImageGenRequest,
       });
       this.chatMenuOpen = false;
       this.draft = "";

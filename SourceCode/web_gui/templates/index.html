@@ -433,7 +433,7 @@
                 <a
                   v-for="img in messageImageAttachments(msg)"
                   :key="img.id || img.url"
-                  class="msg-attachment-card"
+                  :class="['msg-attachment-card', { 'is-generated': img.id && String(img.id).startsWith('gen_') }]"
                   :href="img.url"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -482,10 +482,13 @@
               </div>
             </article>
             </template>
-                        <article v-if="activeConversationSending && !activeConversationSendingIsForaging" class="msg assistant pending">
+                        <article v-if="activeConversationSending && !activeConversationSendingIsForaging && !activeConversationSendingIsImageGen" class="msg assistant pending">
                             <div class="msg-content">
                                 <span class="thinking-loader" aria-hidden="true">
                                     <span></span><span></span><span></span>
+                                </span>
+                                <span class="foraging-stage-label">
+                                    [[ activeConversationThinkingPhrase ]]
                                 </span>
                                 <span class="thinking-elapsed">
                                     [[ activeConversationElapsedSec > 0 ? activeConversationElapsedSec + 's' : '' ]]
@@ -504,7 +507,7 @@
                                     <span></span><span></span><span></span>
                                 </span>
                                 <span class="foraging-stage-label">
-                                    [[ activeConversationSendingLabel || 'Foraging…' ]]
+                                    [[ activeConversationSendingLabel || activeConversationForagingPhrase ]]
                                 </span>
                                 <span class="thinking-elapsed">
                                     [[ activeConversationElapsedSec > 0 ? activeConversationElapsedSec + 's' : '' ]]
@@ -515,6 +518,19 @@
                                     <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
                                     Stop
                                 </button>
+                            </div>
+                        </article>
+                        <article v-if="activeConversationSending && activeConversationSendingIsImageGen" class="msg assistant pending">
+                            <div class="msg-content">
+                                <span class="thinking-loader" aria-hidden="true">
+                                    <span></span><span></span><span></span>
+                                </span>
+                                <span class="foraging-stage-label imagegen-stage-label">
+                                    [[ activeConversationImageGenPhrase ]]
+                                </span>
+                                <span class="thinking-elapsed">
+                                    [[ activeConversationElapsedSec > 0 ? activeConversationElapsedSec + 's' : '' ]]
+                                </span>
                             </div>
                         </article>
                     </section>
@@ -1714,9 +1730,6 @@
                     <div class="system-settings-actions">
                       <button class="panel-action-btn" type="button" @click="cycleWebMode">
                         Web Research: [[ formatModeLabel(panelStatus.web_mode) ]]
-                      </button>
-                      <button class="panel-action-btn" type="button" @click="toggleGeminiCritique">
-                        Gemini Critique: [[ panelStatus.gemini_critique_enabled ? 'On' : 'Off' ]]
                       </button>
                       <button class="panel-action-btn" type="button" @click="toggleForagingPause">
                         Foraging: [[ panelStatus.foraging_paused ? 'Paused' : ((panelStatus.foraging_active_jobs || 0) > 0 ? 'Active' : 'Ready') ]]

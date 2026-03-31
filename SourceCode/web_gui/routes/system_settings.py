@@ -58,22 +58,6 @@ def register_settings_routes(bp: Blueprint, ctx: AppContext) -> None:
         ctx.cache_clear(str(profile.get("id", "")))
         return {"ok": True, "mode": orch.external_tools_settings.get_mode()}, 200
 
-    @bp.route("/api/settings/gemini-critique", methods=["GET"])
-    def get_gemini_critique() -> tuple[dict, int]:
-        ctx.require_profile()
-        from shared_tools.cloud_consult import CloudConsultEngine
-        return {"ok": True, **CloudConsultEngine(ctx.root).get_critique_settings()}, 200
-
-    @bp.route("/api/settings/gemini-critique", methods=["POST"])
-    def set_gemini_critique() -> tuple[dict, int]:
-        ctx.require_profile()
-        payload = request.get_json(silent=True) or {}
-        enabled = bool(payload.get("enabled", False))
-        api_keys = payload.get("api_keys", None)
-        from shared_tools.cloud_consult import CloudConsultEngine
-        result = CloudConsultEngine(ctx.root).set_critique_settings(enabled=enabled, api_keys=api_keys)
-        return {"ok": True, **result}, 200
-
     @bp.route("/api/settings/web-push", methods=["GET"])
     def get_web_push_settings() -> tuple[dict, int]:
         profile = ctx.require_profile()

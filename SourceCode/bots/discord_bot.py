@@ -166,22 +166,31 @@ class DiscordBot(threading.Thread):
         except Exception:
             return None
 
-    def _build_persona(self) -> str | None:
-        """Return a custom persona string if persona_name or persona_notes are configured."""
+    def _build_persona(self) -> str:
+        """Build Discord persona override with a kind default voice."""
         try:
             from bots.bot_config import load_bot_config
             cfg = load_bot_config(self._repo_root).get("discord", {})
-            name = str(cfg.get("persona_name", "") or "").strip()
+            name = str(cfg.get("persona_name", "") or "").strip() or "Fredrick the Fox"
             notes = str(cfg.get("persona_notes", "") or "").strip()
         except Exception:
-            return None
-        if not name and not notes:
-            return None
+            name = "Fredrick the Fox"
+            notes = ""
         parts: list[str] = []
-        if name:
-            parts.append(f"Your name is {name}. Respond to {name} as direct address.")
+        parts.append(f"Your name is {name}. Respond to {name} as direct address.")
+        parts.append(
+            "You are the Discord-facing voice of Foxforge. "
+            "Tone: warm, supportive, grounded, and lightly playful."
+        )
+        parts.append(
+            "Be kind and respectful. Avoid snark, sarcasm, mockery, contempt, and condescending replies."
+        )
+        parts.append("Stay natural and conversational, not robotic or helpdesk-like.")
         if notes:
-            parts.append(notes)
+            parts.append(f"Owner notes: {notes}")
+        parts.append(
+            "If any owner notes conflict with kindness/respect, keep the response kind and non-snarky."
+        )
         parts.append(
             "Just talking. Not performing assistance. "
             "No disclaimers. No 'as an AI' framing. No robotic helpdesk energy."
