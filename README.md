@@ -2,12 +2,12 @@
 
 # Foxforge
 
+[![CI](https://github.com/GuideboardLabs/Foxforge/actions/workflows/ci.yml/badge.svg)](https://github.com/GuideboardLabs/Foxforge/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![Runtime](https://img.shields.io/badge/runtime-local--first-orange)
 ![LLM](https://img.shields.io/badge/LLM-Ollama-black)
 ![Status](https://img.shields.io/badge/status-experimental-yellow)
 ![License](https://img.shields.io/badge/license-Service--Only%20Source--Available-orange)
-
 
 **Self-hosted AI workspace. No API keys. No cloud. No subscriptions.**
 
@@ -25,45 +25,104 @@ It combines conversational orchestration, structured planning, memory systems, a
 | **Offline** | Works without internet | Requires connectivity |
 | **Customizable** | Full source — fork and modify | Black box |
 
-## What Foxforge is for
+## Start Here (10 minutes)
 
-Foxforge is built for people who want one practical system to:
+### Fresh clone
 
-- think through ideas in chat,
-- run research and synthesis,
-- organize family and life operations,
-- build tools and content,
-- and keep long-lived context in a usable "Second Brain."
+```bash
+git clone https://github.com/GuideboardLabs/Foxforge.git
+cd Foxforge
+```
 
-The design philosophy is local-first and user-owned:
+### Linux (Ubuntu 24.04 / 22.04 LTS)
 
-- local execution by default,
-- inspectable code and prompts,
-- composable components,
-- and no required cloud lock-in.
+```bash
+chmod +x install_foxforge_linux.sh
+./install_foxforge_linux.sh
+```
+
+Then start the app:
+
+```bash
+sudo systemctl start foxforge
+# or
+./start_foxforge.sh
+```
+
+### Windows
+
+```powershell
+git clone https://github.com/GuideboardLabs/Foxforge.git
+cd Foxforge
+powershell -ExecutionPolicy Bypass -File .\install_foxforge.ps1
+powershell -ExecutionPolicy Bypass -File .\start_foxforge_web.ps1
+```
+
+Open: `http://127.0.0.1:5050`
+
+For recipient-friendly install steps, see [INSTALL_GUIDE.md](INSTALL_GUIDE.md).
+
+## Feature Status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Discovery lane (research) | Available | Core workflow for web and local synthesis |
+| Make lane (build/create) | Available | Code, docs, and artifact generation workflows |
+| Topic system + memory | Available | Persistent context across sessions |
+| Watchtower / briefing flows | Experimental | Active and evolving during experimental phase |
+| Bot integrations (Discord/Slack/Telegram) | Experimental | Optional setup and environment dependent |
+| Local image generation (ComfyUI) | Experimental | Optional external service, model-dependent |
+| Image-to-video (Wan2.2/SVD XT) | Experimental | Optional, VRAM-dependent |
+| Personal lane / Life Admin | Temporarily unavailable | Disabled in this hard-cutover build |
+
+## Platform Support
+
+| Platform | Status | Notes |
+|---|---|---|
+| Ubuntu 24.04 LTS | Tested (primary) | Preferred for GPU inference |
+| Ubuntu 22.04 LTS | Tested | Installer supports this target |
+| Windows 11 | Tested | Installer + web launcher supported |
+| Other Linux distros | Experimental | May work, but not part of tested matrix |
+| macOS | Untested | No official support commitment yet |
+
+## Security Notes
+
+- Foxforge is local-first and stores runtime state in your local `Runtime/` and outputs in `Projects/`.
+- Startup scripts can bind the app to all interfaces (`0.0.0.0`) depending on launch mode, which can make it reachable from LAN/Tailscale.
+- Keep local-only access by using loopback host (`127.0.0.1`) when desired.
+- Change web host/port via `FOXFORGE_WEB_HOST` and `FOXFORGE_WEB_PORT` (or launch script flags).
+- Set `FOXFORGE_WEB_PASSWORD` in environments where you expose beyond localhost.
+
+## Docs Index
+
+- [INSTALL_GUIDE.md](INSTALL_GUIDE.md) — recipient-focused install guide
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution workflow and standards
+- [ComfyUI image + video setup](docs/comfyui_image_video_setup.md) — full model, workflow, and VRAM guidance
+- [Workspace tools](docs/workspace_tools.md) — utility scripts and tooling notes
+- [Phase changelogs](docs/changelogs/) — milestone-level updates
 
 ## Core capabilities
 
 - **Orchestrated chat** with intent routing across work lanes.
-- **Life Admin + Second Brain** for durable personal context and memory-aware workflows.
 - **Second Brain memory** for persistent personal/project context with review controls.
 - **Topic system** for long-lived research domains and memory enrichment.
 - **Research lane** for evidence collection and synthesis.
 - **Make lane** for building apps, scripts, docs, and other artifacts.
 - **Watchtower/briefing flows** for ongoing situational awareness.
-- **Bot integrations** for Discord, Slack, and Telegram — bring Foxforge into your existing chat workflows.
+- **Bot integrations** for Discord, Slack, and Telegram.
+- **Local image generation** and **image-to-video** via ComfyUI.
 
 ## Architecture
 
 ```text
                         ┌─────────────────────────────┐
-                        │       Flask API (app.py)     │
-                        │  auth · sessions · REST API  │
+                        │       Flask API (app.py)    │
+                        │  auth · sessions · REST API │
                         └─────────────┬───────────────┘
                                       │
                         ┌─────────────▼───────────────┐
-                        │   Foxforge Orchestrator    │
-                        │   intent routing · context   │
+                        │    Foxforge Orchestrator    │
+                        │    intent routing · context  │
                         └──┬──────┬──────┬────────┬───┘
                            │      │      │        │
               ┌────────────▼┐ ┌───▼───┐ ┌▼──────┐ ┌▼──────────┐
@@ -72,15 +131,65 @@ The design philosophy is local-first and user-owned:
               └────────────┘ └───────┘ └────────┘ └────────────┘
                            │
               ┌────────────▼──────────────────────────┐
-              │            Memory systems              │
-              │  Project · Topic · Personal (2nd Brain)│
+              │            Memory systems             │
+              │  Project · Topic · Personal (2nd Brain) │
               └────────────────────────────────────────┘
                            │
               ┌────────────▼──────────────────────────┐
-              │          External services             │
-              │   Ollama (LLM) · SearXNG · Crawl4AI   │
+              │          External services            │
+              │  Ollama · SearXNG · Crawl4AI · ComfyUI │
               └────────────────────────────────────────┘
 ```
+
+## Local image and video generation
+
+Foxforge connects to [ComfyUI](https://github.com/comfyanonymous/ComfyUI) for image generation, enhancement, and image-to-video.
+This is optional and can run on a separate machine from Foxforge.
+
+You can use:
+
+- Pony XL style presets (higher quality, ~8 GB VRAM target)
+- Classic SD presets (faster/lower VRAM)
+- Wan2.2 image-to-video (8+ GB VRAM, recommended 16+ GB)
+- SVD XT fallback (4-6 GB VRAM)
+
+For full setup details (required custom nodes, exact model files, workflow export, Wan2.2 activation, and fallback paths), see [ComfyUI image + video setup](docs/comfyui_image_video_setup.md).
+
+## Requirements
+
+- **Python 3.10+**
+- **Ollama** running locally
+- **Docker** (optional, for web-foraging stack — SearXNG + Crawl4AI)
+- **ComfyUI** (optional, for image generation and image-to-video)
+- **Optional extras**
+  - `requirements-optional-docs.txt` for PDF / DOCX / OCR helpers
+  - `requirements-optional-bots.txt` for Discord bot support
+- **GPU drivers** (optional but recommended for performance)
+  - AMD: ROCm 6.x — RX 5000 series and newer
+  - NVIDIA: CUDA toolkit — GTX 10xx and newer, any RTX series
+
+## Optional web-foraging stack
+
+Powers the web research (Fieldbook) lane. Requires Docker.
+
+Linux:
+
+```bash
+docker start searxng crawl4ai
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_web_foraging_stack.ps1
+```
+
+Default service ports:
+
+| Service | Port |
+|---|---:|
+| SearXNG | 8080 |
+| Crawl4AI | 11235 |
 
 ## Repository layout
 
@@ -97,137 +206,23 @@ The design philosophy is local-first and user-owned:
 | `Runtime/` | Local runtime state (generated at runtime; user-owned data) |
 | `Projects/` | Generated project outputs and artifacts |
 
-## Requirements
-
-- **Python 3.10+**
-- **Ollama** running locally
-- **Docker** (optional, for web-foraging stack — SearXNG + Crawl4AI)
-- **Optional extras** (install only if you want those features)
-  - `requirements-optional-docs.txt` for PDF / DOCX / OCR helpers
-  - `requirements-optional-bots.txt` for Discord bot support
-- **GPU drivers** (optional but recommended for performance)
-  - AMD: ROCm 6.x — RX 5000 series and newer
-  - NVIDIA: CUDA toolkit — GTX 10xx and newer, any RTX series
-  - CPU-only mode works without any GPU drivers, just slower
-
-## Quick start
-
-### Linux (Ubuntu 24.04 / 22.04 LTS) — recommended for GPU inference
-
-A single script handles everything: system packages, Ollama, GPU drivers, Python deps, model pulls, owner account, Docker containers, and systemd auto-start.
-
-```bash
-chmod +x install_foxforge_linux.sh
-./install_foxforge_linux.sh
-```
-
-The script will ask which GPU you have (AMD / NVIDIA / None) and install only what is relevant for your hardware. All other steps are automatic.
-
-> **AMD users:** ROCm (~2 GB) is installed to enable GPU inference via ROCm/HIP.
-> A log out / log back in is required after install for GPU group membership to take effect.
-> Verify with `rocm-smi` after relogging.
-
-> **NVIDIA users:** The NVIDIA driver and CUDA toolkit (~3–4 GB) are installed.
-> A reboot may be required for CUDA to activate.
-> Verify with `nvidia-smi` after rebooting.
-
-> **CPU-only users:** Skip the GPU step. Everything works the same, inference is just slower.
-
-After the script finishes:
-
-```bash
-sudo systemctl start foxforge
-# or
-./start_foxforge.sh
-```
-
-Open: `http://127.0.0.1:5050`
-
----
-
-### Windows — installer flow
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install_foxforge.ps1
-```
-
-Then launch:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_foxforge_web.ps1
-```
-
-Open: `http://127.0.0.1:5050`
-
-For full recipient-friendly install details, see [INSTALL_GUIDE.md](INSTALL_GUIDE.md).
-
-### Manual model pull (if needed)
-
-```powershell
-ollama pull dolphin3:8b
-ollama pull deepseek-r1:8b
-ollama pull qwen2.5-coder:7b
-ollama pull qwen2.5:7b
-ollama pull mistral:7b
-ollama pull qwen3:4b
-ollama pull qwen3:8b
-ollama pull nomic-embed-text
-```
-
-## Optional web-foraging stack
-
-Powers the web research (Fieldbook) lane. Requires Docker.
-
-**Linux** — handled automatically by `install_foxforge_linux.sh`. To start manually:
-
-```bash
-docker start searxng crawl4ai
-```
-
-**Windows** — run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_web_foraging_stack.ps1
-```
-
-Default service ports:
-
-| Service | Port |
-|---|---:|
-| SearXNG | 8080 |
-| Crawl4AI | 11235 |
-
-## Everyday usage model
-
-Foxforge centers around three working lanes:
-
-- **Discovery**: research, compare, and synthesize.
-- **Make**: generate and iterate on implementations/artifacts.
-- **Personal**: currently unavailable in this hard-cutover build.
-
-The orchestrator coordinates these with shared context from memory and project/topic systems.
-
-## Topics and knowledge domains
-
-Topics are persistent domains used for research organization and memory context.
-Foxforge supports broad topic typing, including technical, medical, finance, current events, and `animal_care`, among others.
-
 ## Configuration
 
 Primary runtime model config:
 
 - `SourceCode/configs/model_routing.json`
 
-Useful startup script:
+Useful startup scripts:
 
-- `start_foxforge_web.ps1` (starts Ollama service checks and web app launch flow)
+- `start_foxforge_web.sh` (Linux launcher with host/port flags)
+- `start_foxforge_web.ps1` (Windows launcher)
 
 ## Data ownership and runtime state
 
 Foxforge stores local runtime state inside this repo folder (or derived runtime paths), including:
 
-- memory/state under `Runtime/`,
-- generated artifacts under `Projects/`.
+- memory/state under `Runtime/`
+- generated artifacts under `Projects/`
 
 The clean packaging script intentionally excludes user runtime/project outputs by default.
 
@@ -263,23 +258,14 @@ pip install -r requirements-optional-docs.txt
 pip install -r requirements-optional-bots.txt
 ```
 
-Compile-check major modules:
+## Changelog and release notes
 
-```bash
-python3 -m compileall SourceCode tests smoke_test.py run_integration_tests.py tools
-```
-
-Manual browser verification:
-
-```bash
-python3 tools/browser_headless_smoke.py
-```
-
-Maintainers should refresh the pinned lockfile from a clean environment with:
-
-```bash
-python3 tools/refresh_requirements_lock.py
-```
+- [docs/changelogs/phase19_accuracy_semantic_ui.md](docs/changelogs/phase19_accuracy_semantic_ui.md)
+- [docs/changelogs/phase18c_confidence_and_memory.md](docs/changelogs/phase18c_confidence_and_memory.md)
+- [docs/changelogs/phase18b_research_speed.md](docs/changelogs/phase18b_research_speed.md)
+- [docs/changelogs/phase18a_query_routing.md](docs/changelogs/phase18a_query_routing.md)
+- [docs/release_notes_phase18_optimization.md](docs/release_notes_phase18_optimization.md)
+- [docs/release_notes_phase17_research_quality.md](docs/release_notes_phase17_research_quality.md)
 
 ## Packaging and distribution
 
@@ -305,85 +291,86 @@ powershell -ExecutionPolicy Bypass -File .\build_installer_exe.ps1
 
 ### Ollama not responding
 
-**Linux:**
+Linux:
+
 ```bash
 sudo systemctl restart ollama
 sudo journalctl -u ollama -n 50
 ```
 
-**Windows:**
+Windows:
+
 ```powershell
 ollama serve
 ```
 
 ### Foxforge not starting
 
-**Linux:**
+Linux:
+
 ```bash
 sudo journalctl -u foxforge -n 50
 ```
 
-**Windows:** re-run the start script and check the terminal output.
+Windows: re-run the start script and check the terminal output.
 
 ### GPU not being used by Ollama
 
-**AMD (Linux):** Verify ROCm is working and your user is in the `render` and `video` groups:
+AMD (Linux):
+
 ```bash
 rocm-smi
-groups $USER   # should include render and video
+groups $USER
 ```
+
 If groups are missing, run `sudo usermod -aG render,video $USER` and log out / back in.
 
-**NVIDIA (Linux):** Verify the driver and CUDA are active:
+NVIDIA (Linux):
+
 ```bash
 nvidia-smi
 ```
-If not found, reboot — NVIDIA drivers often require a full reboot to load.
+
+If not found, reboot and check again.
 
 ### First-owner setup incomplete
 
-**Linux:**
+Linux:
+
 ```bash
-./install_foxforge_linux.sh   # re-running is safe, skips completed steps
+./install_foxforge_linux.sh
 ```
 
-**Windows:**
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_foxforge.ps1
 ```
 
 ### Port conflict on web startup
 
-**Linux** — edit the systemd service or set the environment variable before starting:
+Linux:
+
 ```bash
 sudo systemctl edit foxforge
 # Add: Environment="FOXFORGE_WEB_PORT=5051"
 sudo systemctl restart foxforge
 ```
 
-**Windows:**
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start_foxforge_web.ps1 -WebPort 5051
 ```
 
-### App behavior seems stale or inconsistent
-
-```bash
-python3 smoke_test.py
-python3 run_integration_tests.py
-python3 tools/ui_phase_smoke.py
-python3 tools/repo_health_check.py
-```
-
 ## Project status
 
-Foxforge is functional and actively used. It is in an **experimental** phase — APIs and config formats may change between releases.
+Foxforge is functional and actively used. It is in an **experimental** phase.
+APIs and config formats may change between releases.
 
-- CI runs on Python 3.10 and 3.12 on every push
-- Tested on Ubuntu 24.04 LTS (primary platform) and Windows 11
-- GPU-accelerated inference via AMD ROCm 6.x or NVIDIA CUDA; CPU-only also works
-
-Issues and pull requests welcome. Large feature additions should open a discussion first.
+- CI runs on Python 3.10 and 3.12 on every push/PR
+- Tested on Ubuntu 24.04 LTS (primary), Ubuntu 22.04 LTS, and Windows 11
+- GPU acceleration via AMD ROCm or NVIDIA CUDA; CPU-only also works
 
 ## Contributing
 

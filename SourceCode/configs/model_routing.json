@@ -232,20 +232,20 @@
     "timeout_sec": 1800
   },
   "video_generation": {
-    "_note": "Requires 16GB+ VRAM GPU. Dormant — switch agent_registry video_gen to ImageToVideoAgent to activate.",
-    "purpose": "Image-to-video via ComfyUI + Wan2.1 I2V 480P GGUF",
+    "_note": "Requires 8GB+ VRAM. Dormant by default — see README for activation steps. Workflow JSON must be exported from ComfyUI (wan22_i2v_480p.json).",
+    "purpose": "Image-to-video via ComfyUI + Wan2.2 TI2V 5B GGUF (recommended) or I2V 14B GGUF (high quality)",
     "provider": "comfyui",
     "base_url": "http://100.69.67.59:8188",
-    "workflow": "wan21_i2v_480p",
-    "model_name": "wan2.1-i2v-14b-480p-Q4_K_M.gguf",
-    "vae_name": "wan_2.1_vae.safetensors",
-    "text_encoder_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
+    "workflow": "wan22_i2v_480p",
+    "model_name": "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    "vae_name": "wan2.2_vae.safetensors",
+    "text_encoder_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
     "steps": 25,
     "cfg": 5.0,
     "width": 832,
     "height": 480,
     "num_frames": 81,
-    "timeout_sec": 900
+    "timeout_sec": 1800
   },
   "image_generation": {
     "purpose": "Text-to-image via ComfyUI + SD3.5 Medium GGUF",
