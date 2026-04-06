@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Foxforge</title>
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='branding/logo.svg', v=asset_v) }}" />
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='branding/logo.png', v=asset_v) }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='branding/logo.png', v=asset_v) }}" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -23,20 +23,16 @@
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar-top">
                     <button class="brand-mark brand-home-btn" type="button" title="Go to landing page" @click="goToLandingHome">
-            <img src="{{ url_for('static', filename='branding/logo.svg', v=asset_v) }}" alt="Foxforge logo" />
+            <img src="{{ url_for('static', filename='branding/logo.png', v=asset_v) }}" alt="Foxforge logo" />
           </button>
                     <div class="sidebar-title-wrap">
                         <h1>Foxforge</h1>
-                        <p>The Crossroads</p>
-                        <p v-if="auth.profile" class="profile-badge-line">
-                            <span class="profile-dot" :style="{ backgroundColor: auth.profile.color || '#4285f4' }"></span> [[ auth.profile.display_name || auth.profile.username || 'User' ]]
-                        </p>
                     </div>
                 </div>
 
                 <div class="new-chat-actions">
-                    <button class="new-chat-btn" type="button" @click="createConversation('general')">New Conversation</button>
-                    <button class="new-chat-btn new-general-btn" type="button" @click="beginThreadCreation()">Create Thread</button>
+                    <button class="new-chat-btn" type="button" @click="createConversation('general')">+ Chat</button>
+                    <button class="new-chat-btn new-general-btn" type="button" @click="beginThreadCreation()">+ Project</button>
                 </div>
 
                 <div class="conversation-list">
@@ -324,7 +320,7 @@
                                 <h2>[[ activeTitle ]]</h2>
                                 <p>
                                     The Junction - artifact: [[ activeProject ]] · topic: [[ activeTopicId || 'general' ]]
-                                    <span class="project-mode-pill" :class="`is-${projectPipeline.mode || 'research'}`">
+                                    <span class="project-mode-pill" :class="`is-${projectPipeline.mode || 'discovery'}`">
                     [[ projectModeLabel ]]
                   </span>
                                 </p>
@@ -353,6 +349,28 @@
                   <span class="composer-mode-label">Create</span>
                 </button>
                             </div>
+                            <button
+                                v-if="inputMode === 'make'"
+                                class="chat-menu-btn create-target-btn"
+                                type="button"
+                                @click="setProjectBuildTarget"
+                                :title="`Set delivery target (current: ${makeTargetLabel})`"
+                                aria-label="Set delivery target"
+                            >
+                                <span class="create-target-prefix">Target</span>
+                                <span class="create-target-value">[[ makeTargetLabel ]]</span>
+                            </button>
+                            <button
+                                class="chat-menu-btn image-tool-launch-btn"
+                                type="button"
+                                @click="openImageToolStyleModal"
+                                title="Image Tool"
+                                aria-label="Open Image Tool"
+                            >
+                                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                                    <path fill="currentColor" d="M4 5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4zm0 2h16v6.2l-3.4-3.4a1 1 0 0 0-1.42 0l-3.5 3.5-1.8-1.8a1 1 0 0 0-1.42 0L4 16.06V7zm0 10 5.06-5.06 1.8 1.8a1 1 0 0 0 1.42 0l3.5-3.5L20 14.44V17H4zM8.5 8.5A1.5 1.5 0 1 0 8.5 11a1.5 1.5 0 0 0 0-2.5z"/>
+                                </svg>
+                            </button>
                             <div class="chat-menu-wrap">
                                 <button class="chat-menu-btn" type="button" aria-label="Conversation actions" title="Conversation actions" @click="chatMenuOpen = !chatMenuOpen">...</button>
                                 <div class="chat-menu" :aria-hidden="chatMenuOpen ? 'false' : 'true'">
@@ -430,17 +448,46 @@
                 </div>
               </div>
               <div v-if="messageImageAttachments(msg).length" class="msg-attachments">
-                <a
+                <div
                   v-for="img in messageImageAttachments(msg)"
                   :key="img.id || img.url"
-                  :class="['msg-attachment-card', { 'is-generated': img.id && String(img.id).startsWith('gen_') }]"
-                  :href="img.url"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  :class="['msg-attachment-card', { 'is-generated': img.id && img.id.startsWith('gen_') }]"
+                  role="button"
+                  tabindex="0"
+                  @click.stop="openLightbox(img.url, img.name)"
+                  @keydown.enter.stop="openLightbox(img.url, img.name)"
                 >
                   <img :src="img.url" :alt="img.name || 'image attachment'" loading="lazy" />
                   <span>[[ img.name || 'image' ]]</span>
-                </a>
+                  <button
+                    v-if="img.filename"
+                    type="button"
+                    class="msg-attachment-animate-btn"
+                    title="Animate this image"
+                    @click.stop="openVideoTool(img)"
+                  >&#x25BA;</button>
+                  <button
+                    v-if="img.filename && img.modelFamily === 'xl'"
+                    type="button"
+                    class="msg-attachment-bgplus-btn"
+                    :class="{'is-busy': bgEnhanceBusy[img.filename]}"
+                    :disabled="bgEnhanceBusy[img.filename]"
+                    title="Enhance background detail"
+                    @click.stop="bgEnhance(img)"
+                  >BG+</button>
+                </div>
+              </div>
+              <div v-if="messageVideoAttachments(msg).length" class="msg-attachments msg-video-attachments">
+                <video
+                  v-for="vid in messageVideoAttachments(msg)"
+                  :key="vid.id || vid.url"
+                  :src="vid.url"
+                  class="msg-video-attachment"
+                  controls
+                  loop
+                  playsinline
+                  :title="vid.name || 'generated video'"
+                ></video>
               </div>
               <div v-if="msg.role === 'assistant'" class="msg-actions">
                 <button
@@ -544,8 +591,8 @@
                         <button class="composer-reply-cancel" type="button" @click="cancelReply" aria-label="Cancel reply">&times;</button>
                     </div>
                     <form class="composer" @submit.prevent="sendMessage">
-                        <input ref="imageInput" class="composer-file-input" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.md,.csv" multiple @change="onComposerImagesPicked" />
-                        <button class="composer-attach-btn" type="button" @click="openImagePicker" title="Attach files (images, PDFs, Word docs)">+</button>
+                        <input ref="imageInput" class="composer-file-input" type="file" accept="image/*" multiple @change="onComposerImagesPicked($event, 'image')" />
+                        <input ref="fileInput" class="composer-file-input" type="file" accept=".pdf,.doc,.docx,.txt,.md,.csv" multiple @change="onComposerImagesPicked($event, 'file')" />
                         <div v-if="composerImages.length" class="composer-attachments">
                             <article v-for="item in composerImages" :key="item.id" class="composer-attachment-item" :class="{'is-doc': item.isDoc}">
                                 <img v-if="!item.isDoc" :src="item.previewUrl" :alt="item.name || 'image'" />
@@ -556,20 +603,267 @@
                                 <button type="button" @click="removeComposerImage(item.id)" aria-label="Remove file">&times;</button>
                             </article>
                         </div>
-                        <div class="composer-input-wrap">
-                            <textarea v-model="draft" ref="composerInput" rows="1" @input="resizeComposer" @keydown.enter.exact.prevent="sendMessage"></textarea>
-                            <span class="composer-placeholder-overlay" :class="{'is-fading': composerPlaceholderFading}" v-if="!draft" aria-hidden="true">[[ composerPlaceholder ]]</span>
+                        <div class="composer-main-row">
+                            <div class="composer-add-menu-wrap">
+                                <button class="composer-attach-btn" type="button" @click.stop="toggleComposerAddMenu" title="Add image or file">+</button>
+                                <div class="composer-add-menu" :aria-hidden="composerAddMenuOpen ? 'false' : 'true'">
+                                    <section class="composer-add-group">
+                                        <p class="composer-add-group-title">Add</p>
+                                        <button class="composer-add-item" type="button" @click.stop="openImagePicker('image')">Image</button>
+                                        <button class="composer-add-item" type="button" @click.stop="openImagePicker('file')">File</button>
+                                    </section>
+                                </div>
+                            </div>
+                            <div class="composer-input-wrap">
+                                <textarea v-model="draft" ref="composerInput" rows="1" @input="resizeComposer" @keydown.enter.exact.prevent="sendMessage"></textarea>
+                                <span class="composer-placeholder-overlay" :class="{'is-fading': composerPlaceholderFading}" v-if="!draft" aria-hidden="true">[[ composerPlaceholder ]]</span>
+                            </div>
+                            <button v-if="voiceSupported" class="composer-voice-btn" :class="{'is-active': voiceActive}" type="button" @click="toggleVoice" :title="voiceActive ? 'Stop recording' : 'Speak message'" :aria-label="voiceActive ? 'Stop voice input' : 'Start voice input'">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                            </button>
+                            <button class="composer-send-btn" type="submit" :disabled="activeConversationSending || (!draft.trim() && !(composerImages || []).length)" aria-label="Send">
+                              &#x2191;
+                              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false" style="flex-shrink:0"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                            </button>
                         </div>
-                        <button v-if="voiceSupported" class="composer-voice-btn" :class="{'is-active': voiceActive}" type="button" @click="toggleVoice" :title="voiceActive ? 'Stop recording' : 'Speak message'" :aria-label="voiceActive ? 'Stop voice input' : 'Start voice input'">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-                        </button>
-                        <button class="composer-send-btn" type="submit" :disabled="activeConversationSending || (!draft.trim() && !(composerImages || []).length)" aria-label="Send">
-                          &#x2191;
-                          <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false" style="flex-shrink:0"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                        </button>
                     </form>
                 </section>
             </main>
+        </div>
+
+        <div class="image-tool-overlay" :aria-hidden="imageToolStyleModalOpen ? 'false' : 'true'" v-show="imageToolStyleModalOpen">
+            <div class="image-tool-backdrop" @click="closeImageToolStyleModal"></div>
+            <section class="image-tool-modal" role="dialog" aria-modal="true" aria-label="Choose image style">
+                <header class="image-tool-header">
+                    <h3>Image Tool</h3>
+                    <button type="button" class="image-tool-close" @click="closeImageToolStyleModal">&times;</button>
+                </header>
+                <p class="image-tool-subtitle">Pick a style to open prompt entry.</p>
+                <div class="image-tool-section-label">Pony XL</div>
+                <div class="image-tool-style-grid">
+                    <button
+                        v-for="style in imageToolStyleButtons.filter(s => s.modelFamily === 'xl')"
+                        :key="style.id"
+                        type="button"
+                        class="image-tool-style-btn"
+                        :class="{'is-disabled': style.disabled}"
+                        :disabled="style.disabled"
+                        @click="selectImageToolStyle(style)"
+                    >
+                        <span class="image-tool-style-title">[[ style.label ]]</span>
+                        <span v-if="style.disabled && style.installHint" class="image-tool-style-hint">[[ style.installHint ]]</span>
+                    </button>
+                </div>
+                <div class="image-tool-section-label image-tool-section-label--legacy" style="margin-top:14px;">Classic SD</div>
+                <div class="image-tool-style-grid">
+                    <button
+                        v-for="style in imageToolStyleButtons.filter(s => s.modelFamily !== 'xl')"
+                        :key="style.id"
+                        type="button"
+                        class="image-tool-style-btn image-tool-style-btn--legacy"
+                        :class="{'is-disabled': style.disabled}"
+                        :disabled="style.disabled"
+                        @click="selectImageToolStyle(style)"
+                    >
+                        <span class="image-tool-style-title">[[ style.label ]]</span>
+                        <span v-if="style.disabled && style.installHint" class="image-tool-style-hint">[[ style.installHint ]]</span>
+                    </button>
+                </div>
+                <p v-if="imageToolPresetLoading" class="image-tool-note">Loading curated styles...</p>
+                <p v-else-if="imageToolPresetError" class="image-tool-note">[[ imageToolPresetError ]]</p>
+            </section>
+        </div>
+
+        <div class="image-tool-overlay" :aria-hidden="imageToolPromptModalOpen ? 'false' : 'true'" v-show="imageToolPromptModalOpen">
+            <div class="image-tool-backdrop" @click="closeImageToolPromptModal"></div>
+            <section class="image-tool-modal image-tool-prompt-modal" role="dialog" aria-modal="true" aria-label="Image prompt">
+                <header class="image-tool-header">
+                    <h3>[[ imageToolSelectedStyle.label || 'Image Prompt' ]]</h3>
+                    <button type="button" class="image-tool-close" @click="closeImageToolPromptModal">&times;</button>
+                </header>
+                <div class="image-tool-label">
+                    <span>Prompt</span>
+                    <textarea
+                        ref="imageToolPromptInput"
+                        v-model="imageToolPrompt"
+                        rows="4"
+                        placeholder="Describe the image you want..."
+                        @keydown="onImageToolPromptKey"
+                    ></textarea>
+                    <div v-if="imageToolSlashMenuOpen && imageToolRefSlots.length" class="image-tool-slash-menu">
+                        <button
+                            v-for="slot in imageToolRefSlots"
+                            :key="slot.token"
+                            type="button"
+                            class="image-tool-slash-item"
+                            @mousedown.prevent="insertImageRefSlot(slot)"
+                        >
+                            <img v-if="slot.previewUrl" :src="slot.previewUrl" class="image-tool-slash-thumb" />
+                            <span>[[ slot.token ]]</span>
+                        </button>
+                    </div>
+                    <div v-if="imageToolRefSlots.length" class="image-tool-ref-chips">
+                        <span class="image-tool-ref-chips-label">Insert ref:</span>
+                        <button
+                            v-for="slot in imageToolRefSlots"
+                            :key="slot.token"
+                            type="button"
+                            class="image-tool-ref-chip"
+                            :title="`Insert ${slot.token} — ${slot.name}`"
+                            @click="insertImageRefSlot(slot)"
+                        >
+                            <img v-if="slot.previewUrl" :src="slot.previewUrl" class="image-tool-ref-chip-thumb" />
+                            <span>[[ slot.token ]]</span>
+                        </button>
+                    </div>
+                </div>
+                <label class="image-tool-label">
+                    <span>Negative Prompt (optional)</span>
+                    <input v-model="imageToolNegativePrompt" type="text" placeholder="blurry, low quality, deformed" />
+                </label>
+                <label class="image-tool-label image-tool-aspect-field">
+                    <span>Frame</span>
+                    <div class="image-tool-aspect-row" role="group" aria-label="Image frame">
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolAspect === 'square'}"
+                            @click="setImageToolAspect('square')"
+                            title="Square"
+                            aria-label="Square aspect ratio"
+                        >
+                            <span class="image-tool-aspect-glyph" aria-hidden="true">&#9634;</span>
+                            <span>SQ</span>
+                        </button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolAspect === 'landscape'}"
+                            @click="setImageToolAspect('landscape')"
+                            title="Landscape"
+                            aria-label="Landscape aspect ratio"
+                        >
+                            <span class="image-tool-aspect-glyph image-tool-aspect-glyph-land" aria-hidden="true">&#9645;</span>
+                            <span>LS</span>
+                        </button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolAspect === 'portrait'}"
+                            @click="setImageToolAspect('portrait')"
+                            title="Portrait"
+                            aria-label="Portrait aspect ratio"
+                        >
+                            <span class="image-tool-aspect-glyph image-tool-aspect-glyph-port" aria-hidden="true">&#9645;</span>
+                            <span>PT</span>
+                        </button>
+                    </div>
+                    <p class="image-tool-note">Resolution: [[ imageToolResolutionLabel ]]</p>
+                </label>
+                <label class="image-tool-label image-tool-aspect-field">
+                    <span>Subject <span class="image-tool-note" style="font-weight:400;margin-left:4px">(optional)</span></span>
+                    <div class="image-tool-aspect-row" role="group" aria-label="Subject type">
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolSubject === 'character'}"
+                            @click="setImageToolSubject('character')"
+                            title="Character or person — adds portrait/figure framing and style-specific character extras"
+                        >Portrait</button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolSubject === 'object'}"
+                            @click="setImageToolSubject('object')"
+                            title="Object or item — focuses on a single prop, clean background, sharp detail"
+                        >Still Life</button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': imageToolSubject === 'scene'}"
+                            @click="setImageToolSubject('scene')"
+                            title="Scene or landscape — cinematic composition, environmental detail, no forced subject"
+                        >Landscape</button>
+                    </div>
+                </label>
+                <label class="image-tool-label image-tool-steps-field">
+                    <span>Steps</span>
+                    <div class="image-tool-steps-row">
+                        <input v-model.number="imageToolSteps" type="number" min="4" max="80" step="1" />
+                        <button type="button" class="image-tool-secondary-btn" @click="saveImageToolDefaultStepsForCurrentStyle">
+                            Save Default
+                        </button>
+                    </div>
+                </label>
+                <p v-if="imageToolDefaultSaveNote" class="image-tool-save-confirm">[[ imageToolDefaultSaveNote ]]</p>
+                <label class="image-tool-toggle">
+                    <input type="checkbox" v-model="imageToolUseComposerRefs" :disabled="!composerImages.some((row) => !row.isDoc)" />
+                    <span>Use current composer images as references</span>
+                </label>
+                <p v-if="imageToolError" class="image-tool-error">[[ imageToolError ]]</p>
+                <p v-if="imageToolLastPromptFinal" class="image-tool-note">Final prompt: [[ imageToolLastPromptFinal ]]</p>
+                <div class="image-tool-actions">
+                    <button type="button" class="image-tool-secondary-btn" @click="openImageToolStyleModal">Back</button>
+                    <button type="button" class="image-tool-primary-btn" :disabled="imageToolBusy || !String(imageToolPrompt || '').trim()" @click="submitImageToolGenerate">
+                        [[ imageToolBusy ? 'Generating...' : 'Generate Image' ]]
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <div class="image-tool-overlay" :aria-hidden="videoToolOpen ? 'false' : 'true'" v-show="videoToolOpen">
+            <div class="image-tool-backdrop" @click="closeVideoTool"></div>
+            <section class="image-tool-modal image-tool-prompt-modal" role="dialog" aria-modal="true" aria-label="Animate image">
+                <header class="image-tool-header">
+                    <h3>Animate Image</h3>
+                    <button type="button" class="image-tool-close" @click="closeVideoTool">&times;</button>
+                </header>
+                <div v-if="videoToolRefImage" class="video-tool-ref-wrap">
+                    <img :src="videoToolRefImage.url" :alt="videoToolRefImage.name || 'reference'" class="video-tool-ref-preview" />
+                </div>
+                <label class="image-tool-label">
+                    <span>Motion prompt</span>
+                    <textarea
+                        v-model="videoToolPrompt"
+                        rows="3"
+                        placeholder="the fox slowly turns its head, leaves drift in the wind..."
+                    ></textarea>
+                </label>
+                <label class="image-tool-label">
+                    <span>Motion intensity</span>
+                    <div class="image-tool-aspect-row" role="group" aria-label="Motion intensity">
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': videoToolNumFrames === 49}"
+                            @click="videoToolNumFrames = 49"
+                        >Subtle</button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': videoToolNumFrames === 81}"
+                            @click="videoToolNumFrames = 81"
+                        >Normal</button>
+                        <button
+                            type="button"
+                            class="image-tool-aspect-btn"
+                            :class="{'is-active': videoToolNumFrames === 121}"
+                            @click="videoToolNumFrames = 121"
+                        >Dynamic</button>
+                    </div>
+                </label>
+                <p class="image-tool-note">~3 seconds · Takes 5–15 minutes on local hardware.</p>
+                <p v-if="videoToolError" class="image-tool-error">[[ videoToolError ]]</p>
+                <div class="image-tool-actions">
+                    <button type="button" class="image-tool-secondary-btn" @click="closeVideoTool">Cancel</button>
+                    <button
+                        type="button"
+                        class="image-tool-primary-btn"
+                        :disabled="videoToolBusy || !String(videoToolPrompt || '').trim()"
+                        @click="submitVideoToolGenerate"
+                    >Animate</button>
+                </div>
+            </section>
         </div>
 
         <div class="md-overlay" :aria-hidden="mdOverlayOpen ? 'false' : 'true'" v-show="mdOverlayOpen">
@@ -1043,43 +1337,19 @@
             <section class="actions-list">
                 <div v-if="pendingActionsLoading" class="actions-empty">Loading pending actions...</div>
                 <div v-else-if="!(pendingActions || []).length" class="actions-empty">Mailbox is clear right now.</div>
-                <div v-for="item in pendingActions" :key="item.id" class="swipe-row swipe-row--action" :data-swipe-key="`action_${item.id}`" @touchstart.passive="onSwipeTouchStart($event, `action_${item.id}`)" @touchend.passive="onSwipeTouchEnd($event, `action_${item.id}`)">
-                    <div class="swipe-action-r swipe-action--pos" @click.stop="handlePendingAction(item.id, item.type === 'topic_review' ? 'topic_yes' : 'answer')">
-                        <span class="swipe-action-icon">&#10003;</span>
-                        <span>[[ item.type === 'topic_review' ? 'Correct' : 'Answer' ]]</span>
+                <button
+                    v-for="item in pendingActions"
+                    :key="item.id"
+                    type="button"
+                    class="postbag-row"
+                    @click="openPostbagItem(item)"
+                >
+                    <div class="postbag-row-main">
+                        <span class="action-type-badge">[[ actionTypeBadge(item) ]]</span>
+                        <span class="postbag-row-title">[[ pendingActionTitle(item) ]]</span>
                     </div>
-                    <div class="swipe-action-l swipe-action--neg" @click.stop="handlePendingAction(item.id, item.type === 'topic_review' ? 'topic_no' : 'ignore')">
-                        <span class="swipe-action-icon">&#10005;</span>
-                        <span>Ignore</span>
-                    </div>
-                    <article class="action-card swipe-content" :class="['action-card--' + (item.type || 'default'), { 'is-swiped-l': swipeOpen[`action_${item.id}`] === 'l', 'is-swiped-r': swipeOpen[`action_${item.id}`] === 'r' }]">
-                        <header class="action-card-head">
-                            <h4>[[ pendingActionTitle(item) ]]</h4>
-                            <div class="action-card-meta-row">
-                                <span class="action-type-badge">[[ actionTypeBadge(item) ]]</span>
-                                <p>[[ formatDate(item.created_at) ]]</p>
-                            </div>
-                        </header>
-                        <div class="action-meta">
-                            <span>id: [[ item.id || '' ]]</span>
-                            <span>lane: [[ item.lane || 'project' ]]</span>
-                            <span>project: [[ item.project || '' ]]</span>
-                            <span v-if="item.type === 'external_request'">provider: [[ item.provider || '' ]]</span>
-                            <span v-if="item.type === 'external_request'">intent: [[ item.intent || '' ]]</span>
-                            <span v-if="item.type === 'external_request'">status: [[ item.status || '' ]]</span>
-                            <span v-if="item.type === 'external_request' && Number(item.suggestions_count || 0) > 0">suggestions: [[ Number(item.suggestions_count || 0) ]]</span>
-                        </div>
-                        <p v-if="item.type !== 'topic_review'" class="action-summary">[[ item.summary || '' ]]</p>
-                        <div v-if="item.type === 'topic_review'" class="action-controls action-controls--yesno">
-                            <button class="action-btn action-btn--no" type="button" @click="handlePendingAction(item.id, 'topic_no')">&#10005; No, wrong</button>
-                            <button class="action-btn action-btn--yes" type="button" @click="handlePendingAction(item.id, 'topic_yes')">&#10003; Yes, correct</button>
-                        </div>
-                        <div v-else class="action-controls">
-                            <button class="action-btn action-ignore" type="button" @click="handlePendingAction(item.id, 'ignore')">&#10005; Ignore</button>
-                            <button class="action-btn action-answer" type="button" @click="handlePendingAction(item.id, 'answer')">&#10003; Answer</button>
-                        </div>
-                    </article>
-                </div>
+                    <span class="postbag-row-preview">[[ item.summary || item.project || '' ]]</span>
+                </button>
                 <template v-if="workspacePatchProposals().length">
                     <div class="actions-section-header">Workspace Patch Proposals</div>
                     <div class="pending-action-card pending-action-card--proposal" v-for="prop in workspacePatchProposals()" :key="prop.id">
@@ -1114,6 +1384,41 @@
                     </div>
                 </template>
             </section>
+        </section>
+    </div>
+
+    <div class="postbag-item-overlay" v-if="postbagItemOpen" @click.self="closePostbagItem">
+        <section class="postbag-item-modal" role="dialog" aria-modal="true" aria-label="Postbag item">
+            <header class="postbag-item-header">
+                <div>
+                    <span class="action-type-badge" v-if="postbagItemData">[[ actionTypeBadge(postbagItemData) ]]</span>
+                    <h3 v-if="postbagItemData">[[ pendingActionTitle(postbagItemData) ]]</h3>
+                    <p v-if="postbagItemData" class="postbag-item-date">[[ formatDate(postbagItemData.created_at) ]]</p>
+                </div>
+                <button type="button" class="actions-close-btn" @click="closePostbagItem">&times;</button>
+            </header>
+            <div class="postbag-item-body" v-if="postbagItemData">
+                <div class="action-meta">
+                    <span>id: [[ postbagItemData.id || '' ]]</span>
+                    <span>lane: [[ postbagItemData.lane || 'project' ]]</span>
+                    <span>project: [[ postbagItemData.project || '' ]]</span>
+                    <span v-if="postbagItemData.type === 'external_request'">provider: [[ postbagItemData.provider || '' ]]</span>
+                    <span v-if="postbagItemData.type === 'external_request'">intent: [[ postbagItemData.intent || '' ]]</span>
+                    <span v-if="postbagItemData.type === 'external_request'">status: [[ postbagItemData.status || '' ]]</span>
+                    <span v-if="postbagItemData.type === 'external_request' && Number(postbagItemData.suggestions_count || 0) > 0">suggestions: [[ Number(postbagItemData.suggestions_count || 0) ]]</span>
+                </div>
+                <p v-if="postbagItemData.type !== 'topic_review'" class="action-summary">[[ postbagItemData.summary || '' ]]</p>
+            </div>
+            <footer class="postbag-item-footer" v-if="postbagItemData">
+                <div v-if="postbagItemData.type === 'topic_review'" class="action-controls action-controls--yesno">
+                    <button class="action-btn action-btn--no" type="button" @click="handlePostbagItemAction('topic_no')">&#10005; No, wrong</button>
+                    <button class="action-btn action-btn--yes" type="button" @click="handlePostbagItemAction('topic_yes')">&#10003; Yes, correct</button>
+                </div>
+                <div v-else class="action-controls">
+                    <button class="action-btn action-ignore" type="button" @click="handlePostbagItemAction('ignore')">&#10005; Ignore</button>
+                    <button class="action-btn action-answer" type="button" @click="handlePostbagItemAction('answer')">&#10003; Answer</button>
+                </div>
+            </footer>
         </section>
     </div>
 
@@ -2082,9 +2387,8 @@
                   </span>
                 </div>
                 <div class="outbox-controls">
-                  <button class="outbox-ingest-btn" type="button" @click="setProjectModeDirect('research')">Research/Plan</button>
-                  <button class="outbox-ingest-btn" type="button" @click="setProjectModeDirect('extend')">Extend Foxforge</button>
-                  <button class="outbox-ingest-btn" type="button" @click="setProjectModeDirect('make')">Build Standalone</button>
+                  <button class="outbox-ingest-btn" type="button" @click="setProjectModeDirect('discovery')">Set Discovery</button>
+                  <button class="outbox-ingest-btn" type="button" @click="setProjectModeDirect('make')">Set Make</button>
                   <button class="outbox-ingest-btn" type="button" @click="setProjectBuildTarget">Set Target</button>
                 </div>
                 <p>
@@ -2133,9 +2437,24 @@
     </div>
 
 
+    <div class="lightbox-overlay" v-if="lightboxOpen" @click.self="closeLightbox">
+        <div class="lightbox-modal">
+            <div class="lightbox-header">
+                <span class="lightbox-name">[[ lightboxName ]]</span>
+                <div class="lightbox-actions">
+                    <button type="button" class="lightbox-btn" @click="downloadLightboxImage" title="Download">&#10515;</button>
+                    <button type="button" class="lightbox-btn lightbox-close" @click="closeLightbox" title="Close">&times;</button>
+                </div>
+            </div>
+            <div class="lightbox-body">
+                <img :src="lightboxUrl" :alt="lightboxName" />
+            </div>
+        </div>
+    </div>
+
     <div class="auth-gate-overlay" v-if="auth.enabled && !auth.authenticated">
         <section class="auth-gate-card auth-gate-card-landing">
-            <img class="auth-gate-logo" src="{{ url_for('static', filename='branding/GuideBoard.png', v=asset_v) }}" alt="Foxforge" />
+            <img class="auth-gate-logo" src="{{ url_for('static', filename='branding/FoxForgeTitleBold.png', v=asset_v) }}" alt="Foxforge" />
             <p class="auth-gate-tagline">Welcome back to Foxforge.</p>
 
             <button v-if="!authShowForm" type="button" class="auth-gate-primary" @click="beginCheckIn">

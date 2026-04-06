@@ -5,11 +5,12 @@
 # treats it as a supported gfx1030-class device.
 
 export HSA_OVERRIDE_GFX_VERSION=10.3.0
+export HSA_ENABLE_SDMA=0
 export PYTORCH_HIP_ALLOC_CONF=garbage_collection_threshold:0.9,max_split_size_mb:512
 
 COMFYUI_DIR="${COMFYUI_INSTALL_DIR:-$HOME/ComfyUI}"
 source "$COMFYUI_DIR/.venv/bin/activate"
-COMFYUI_EXTRA_ARGS="${COMFYUI_EXTRA_ARGS:---lowvram}"
+COMFYUI_EXTRA_ARGS="${COMFYUI_EXTRA_ARGS:---lowvram --disable-async-offload --use-split-cross-attention}"
 
 echo "[ComfyUI] Starting on http://127.0.0.1:8188 ..."
 echo "[ComfyUI] Press Ctrl+C to stop."

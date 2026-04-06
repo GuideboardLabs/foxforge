@@ -1865,6 +1865,7 @@ class FoxforgeOrchestrator:
         progress_callback=None,
         conversation_summary: str = "",
         force_research: bool = False,
+        force_make: bool = False,
     ) -> str:
         self.bus.emit("orchestrator", "message_received", {"project": self.project_slug})
         incoming_text = str(text or "").strip()
@@ -1997,6 +1998,8 @@ class FoxforgeOrchestrator:
                 lane = _make_lane_for_target(inferred_target)
         if force_research:
             lane = "research"
+        elif force_make:
+            lane = _make_lane_for_target(inferred_target)
         elif turn_plan.lane_override and lane in {"research", "project", "personal"}:
             lane = turn_plan.lane_override
         query_mode = turn_plan.query_mode

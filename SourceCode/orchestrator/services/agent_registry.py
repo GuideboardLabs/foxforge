@@ -12,7 +12,10 @@ from agents_make.essay_pool import run_essay_pool
 from agents_research.deep_researcher import run_research_pool
 from agents_tool.tool_pool import run_tool_pool
 from agents_ui.ui_pool import run_ui_pool
-from .image_gen_agent import ImageGenAgent
+from .image_gen_agent import ImageComposeAgent, ImageGenAgent
+from .image_to_video_agent import ImageToVideoAgent
+from .image_enhance_agent import ImageEnhanceAgent
+from .stable_video_agent import StableVideoAgent
 
 
 class ResearchPoolAgent(BaseAgentExecutor):
@@ -187,6 +190,10 @@ def build_default_agent_registry() -> AgentRegistry:
     registry.register("make_tool", ToolPoolAgent())
     registry.register("ui", UiPoolAgent())
     registry.register("image_gen", ImageGenAgent())
+    registry.register("image_gen_compose", ImageComposeAgent())
+    registry.register("image_enhance", ImageEnhanceAgent())
+    registry.register("video_gen", StableVideoAgent())       # active: SVD XT
+    registry.register("video_gen_wan", ImageToVideoAgent())  # dormant: Wan2.1 (requires 16GB+ VRAM)
     return registry
 
 
@@ -195,6 +202,8 @@ __all__ = [
     "AppPoolAgent",
     "BaseAgentExecutor",
     "EssayPoolAgent",
+    "ImageToVideoAgent",
+    "StableVideoAgent",
     "OrchestratorRegistries",
     "ResearchPoolAgent",
     "ToolPoolAgent",

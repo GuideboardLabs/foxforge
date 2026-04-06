@@ -31,6 +31,28 @@ def _clean_topic_id(value: Any) -> str:
     return compact or "general"
 
 
+def _clean_image_style(value: Any) -> str:
+    style = str(value or "").strip().lower()
+    if style in {"realistic", "lora"}:
+        return style
+    return "realistic"
+
+
+def _clean_selected_loras(value: Any) -> list[str]:
+    raw_items = value if isinstance(value, (list, tuple, set)) else []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text[:220])
+        if len(out) >= 32:
+            break
+    return out
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     tmp_path.write_text(content, encoding="utf-8")
@@ -89,6 +111,10 @@ class ConversationStore:
     def _decorate(cls, data: dict[str, Any]) -> dict[str, Any]:
         if not str(data.get("topic_id", "")).strip():
             data["topic_id"] = "general" if str(data.get("project", "general")).strip() == "general" else ""
+        data["image_style"] = _clean_image_style(data.get("image_style", "realistic"))
+        data["selected_loras"] = _clean_selected_loras(data.get("selected_loras", []))
+        if data["selected_loras"] and data["image_style"] == "realistic":
+            data["image_style"] = "lora"
         unread_count = cls._assistant_unread_count(data)
         data["last_read_message_id"] = str(data.get("last_read_message_id", "")).strip()
         data["unread_count"] = unread_count
@@ -109,6 +135,8 @@ class ConversationStore:
                 "summary": "",
                 "messages": [],
                 "last_read_message_id": "",
+                "image_style": "realistic",
+                "selected_loras": [],
             }
             self._save(data)
             return self._decorate(data)
@@ -146,6 +174,36 @@ class ConversationStore:
             if data is None:
                 return None
             data["topic_id"] = _clean_topic_id(topic_id)
+            data["updated_at"] = _now_iso()
+            self._save(data)
+            return self._decorate(data)
+
+    def set_image_preferences(
+        self,
+        conversation_id: str,
+        *,
+        image_style: str | None = None,
+        selected_loras: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            data = self._load(conversation_id)
+            if data is None:
+                return None
+
+            if image_style is not None:
+                cleaned_style = _clean_image_style(image_style)
+                data["image_style"] = cleaned_style
+                if cleaned_style == "realistic" and selected_loras is None:
+                    data["selected_loras"] = []
+
+            if selected_loras is not None:
+                cleaned_loras = _clean_selected_loras(selected_loras)
+                data["selected_loras"] = cleaned_loras
+                if cleaned_loras:
+                    data["image_style"] = "lora"
+                elif image_style is None and str(data.get("image_style", "")).strip().lower() == "lora":
+                    data["image_style"] = "realistic"
+
             data["updated_at"] = _now_iso()
             self._save(data)
             return self._decorate(data)
@@ -200,6 +258,7 @@ class ConversationStore:
                         "mime": str(item.get("mime", "")).strip().lower(),
                         "url": str(item.get("url", "")).strip(),
                         "size": int(item.get("size", 0)) if str(item.get("size", "")).strip() else 0,
+                        "model_family": str(item.get("model_family", "")).strip().lower(),
                     }
                     safe_attachments.append(row)
                 if safe_attachments:

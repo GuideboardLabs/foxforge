@@ -1062,6 +1062,58 @@ const app = window.Vue.createApp({
       topicTypeOptions: TOPIC_TYPES,
       draft: "",
       composerImages: [],
+      composerAddMenuOpen: false,
+      composerImageStyle: "realistic",
+      composerLoraOptions: [],
+      composerSelectedLoras: [],
+      composerLoraLoading: false,
+      composerLoraError: "",
+      imageToolPresetOptions: [],
+      imageToolPresetLoading: false,
+      imageToolPresetError: "",
+      imageToolStyleModalOpen: false,
+      imageToolPromptModalOpen: false,
+      imageToolSelectedStyle: {
+        kind: "realistic",
+        label: "Realistic (SD3.5)",
+        modelFamily: "",
+        familyTag: "",
+        loras: [],
+        stylePresetId: "",
+        defaultSteps: 28,
+        defaultRefinePrompt: true,
+        defaultNegativePrompt: "",
+        defaultWidth: 768,
+        defaultHeight: 768,
+      },
+      imageToolAspect: "square",
+      imageToolSubject: "",
+      lightboxOpen: false,
+      lightboxUrl: "",
+      lightboxName: "",
+      postbagItemOpen: false,
+      postbagItemData: null,
+      imageToolPrompt: "",
+      imageToolNegativePrompt: "",
+      imageToolRefinePrompt: true,
+      imageToolSteps: 28,
+      imageToolStepDefaults: {},
+      imageToolStepDefaultsLoaded: false,
+      imageToolDefaultSaveNote: "",
+      imageToolUseComposerRefs: false,
+      imageToolBusy: false,
+      imageToolError: "",
+      imageToolLastPromptFinal: "",
+      imageToolSlashMenuOpen: false,
+      imageToolSlashInsertStart: 0,
+      bgEnhanceBusy: {},
+      videoToolOpen: false,
+      videoToolBusy: false,
+      videoToolError: "",
+      videoToolPrompt: "",
+      videoToolNegativePrompt: "",
+      videoToolRefImage: null,
+      videoToolNumFrames: 81,
       replyTargetMsg: null,
       voiceSupported: false,
       voiceActive: false,
@@ -1370,6 +1422,7 @@ const app = window.Vue.createApp({
       _homeWeatherPollTimer: null,
       _thinkingTimer: null,
       _composerPlaceholderTimer: null,
+      _imageToolDefaultSaveTimer: null,
       composerPlaceholderIdx: 0,
       composerPlaceholderFading: false,
       _stableAppVh: 0,
@@ -1390,6 +1443,67 @@ const app = window.Vue.createApp({
       const mode = this.inputMode || "talk";
       const pool = COMPOSER_PLACEHOLDERS[mode] || COMPOSER_PLACEHOLDERS.talk;
       return pool[this.composerPlaceholderIdx % pool.length];
+    },
+    imageToolStyleButtons() {
+      const rows = [{
+        id: "realistic",
+        kind: "realistic",
+        label: "Realistic (SD3.5)",
+        modelFamily: "",
+        familyTag: "",
+        loras: [],
+        stylePresetId: "",
+        defaultSteps: 28,
+        defaultRefinePrompt: true,
+        defaultNegativePrompt: "",
+        defaultWidth: 768,
+        defaultHeight: 768,
+        disabled: false,
+        installHint: "",
+      }];
+      for (const preset of (Array.isArray(this.imageToolPresetOptions) ? this.imageToolPresetOptions : [])) {
+        const presetId = String(preset?.id || "").trim();
+        if (!presetId) {
+          continue;
+        }
+        const defaults = preset?.defaults && typeof preset.defaults === "object" ? preset.defaults : {};
+        const resolved = String(preset?.resolved_lora_name || "").trim();
+        const kind = String(preset?.kind || "lora").trim().toLowerCase() || "lora";
+        const modelFamilyRaw = String(preset?.model_family || defaults?.model_family || "").trim().toLowerCase();
+        const modelFamily = modelFamilyRaw === "sdxl" ? "xl" : modelFamilyRaw;
+        const available = kind === "lora"
+          ? (Boolean(preset?.available) && Boolean(resolved))
+          : Boolean(preset?.available);
+        rows.push({
+          id: `preset:${presetId}`,
+          kind: kind === "realistic" ? "realistic" : "lora",
+          label: String(preset?.label || presetId).trim() || presetId,
+          modelFamily,
+          familyTag: modelFamily === "xl" ? "XL" : "",
+          loras: available ? [resolved] : [],
+          stylePresetId: presetId,
+          defaultSteps: Number(defaults?.steps || 30),
+          defaultRefinePrompt: defaults?.refine_prompt !== false,
+          defaultNegativePrompt: String(preset?.default_negative_prompt || "").trim(),
+          defaultWidth: Number(defaults?.width || 512),
+          defaultHeight: Number(defaults?.height || 512),
+          disabled: !available,
+          installHint: String(preset?.install_hint || "").trim(),
+        });
+      }
+      return rows;
+    },
+    imageToolResolutionLabel() {
+      const dims = this.imageToolResolutionForSelection(this.imageToolSelectedStyle, this.imageToolAspect);
+      return `${dims.width} x ${dims.height}`;
+    },
+    imageToolRefSlots() {
+      const imgs = (this.composerImages || []).filter((r) => !r?.isDoc);
+      return imgs.map((img, i) => ({
+        token: `{image${i + 1}}`,
+        name: String(img?.name || `image ${i + 1}`),
+        previewUrl: String(img?.previewUrl || ""),
+      }));
     },
     activeMessages() {
       return Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages : [];
@@ -1416,19 +1530,78 @@ const app = window.Vue.createApp({
       return Boolean(meta && meta.imageGen);
     },
     activeConversationImageGenPhrase() {
-      const phrases = [
-        'Firing up ComfyUI…',
-        'Releasing Ollama VRAM…',
-        'Loading FLUX model…',
-        'Encoding your prompt…',
-        'Sampling latents…',
-        'Denoising…',
-        'Denoising…',
-        'Denoising…',
-        'Decoding image…',
-        'Almost there…',
-      ];
-      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      const meta = this.conversationSendingMeta(this.activeConversationId);
+      const startedAt = Number(meta?.startedAt || 0);
+      const nowTs = Number(this.thinkingNowTs || Date.now());
+      const elapsed = startedAt > 0 ? Math.max(0, (nowTs - startedAt) / 1000) : 0;
+      let phrases, phaseStart;
+      if (elapsed < 22) {
+        // Phase 1: startup / model loading
+        phrases = [
+          'Warming up ComfyUI…',
+          'Loading the diffusion model…',
+          'Releasing Ollama VRAM…',
+          'Encoding your prompt…',
+          'Configuring LoRA weights…',
+          'Preparing the latent canvas…',
+          'Initializing the sampler…',
+          'Loading checkpoint weights…',
+          'Reading style parameters…',
+          'Setting up the neural pipeline…',
+          'Priming the diffusion engine…',
+        ];
+        phaseStart = 0;
+      } else if (elapsed < 62) {
+        // Phase 2: active denoising / sampling
+        phrases = [
+          'Sampling the latent space…',
+          'Denoising step by step…',
+          'Painting from noise…',
+          'Shapes emerging from static…',
+          'Each pass refines the image…',
+          'Diffusion in progress…',
+          'Brushstrokes taking form…',
+          'The image is becoming visible…',
+          'Sculpting detail from chaos…',
+          'Layers of structure accumulating…',
+          'Fine-tuning the composition…',
+          'Letting the model dream it through…',
+        ];
+        phaseStart = 22;
+      } else if (elapsed < 80) {
+        // Phase 3: decoding / post-processing
+        phrases = [
+          'Decoding the latent image…',
+          'Running the VAE decoder…',
+          'Converting latents to pixels…',
+          'Sharpening fine details…',
+          'Running post-processing pass…',
+          'Polishing edges and textures…',
+          'Face detailing in progress…',
+          'Applying finishing touches…',
+          'Quality refinement pass…',
+          'Almost painted…',
+          'Detail enhancement underway…',
+        ];
+        phaseStart = 62;
+      } else {
+        // Phase 4: wrapping up
+        phrases = [
+          'Wrapping up post-processing…',
+          'Saving the final image…',
+          'Last finishing touches…',
+          'Compressing the output…',
+          'Any moment now…',
+          'Finalizing the artwork…',
+          'Writing pixels to disk…',
+          'Image nearly ready…',
+          'Applying final strokes…',
+          'Sending the image your way…',
+          'Just about done…',
+        ];
+        phaseStart = 80;
+      }
+      const idx = Math.floor((elapsed - phaseStart) / 8) % phrases.length;
       return phrases[idx];
     },
     activeConversationThinkingPhrase() {
@@ -1690,6 +1863,8 @@ const app = window.Vue.createApp({
         this.actionsOverlayOpen ||
         this.panelOverlayOpen ||
         this.taskReminderOpen ||
+        this.imageToolStyleModalOpen ||
+        this.imageToolPromptModalOpen ||
         this.waypointTaskModalOpen ||
         this.waypointEventModalOpen ||
         this.waypointShoppingModalOpen ||
@@ -2367,6 +2542,14 @@ const app = window.Vue.createApp({
     "topicForm.type"(val) {
       this.topicFormUndergroundWarning = String(val || "").trim().toLowerCase() === "underground";
     },
+    sendingByConversation: {
+      handler(val) {
+        try {
+          sessionStorage.setItem("foxforge_pending_jobs", JSON.stringify(val || {}));
+        } catch (_e) {}
+      },
+      deep: true,
+    },
   },
 
   methods: {
@@ -2606,6 +2789,7 @@ const app = window.Vue.createApp({
             startedAt: Number(value.startedAt || Date.now()),
             cancelRequested: Boolean(value.cancelRequested),
             foraging: Boolean(value.foraging),
+            imageGen: Boolean(value.imageGen),
           };
         } else {
           next[id] = {
@@ -2613,6 +2797,7 @@ const app = window.Vue.createApp({
             startedAt: Date.now(),
             cancelRequested: false,
             foraging: false,
+            imageGen: false,
           };
         }
       } else {
@@ -2985,6 +3170,9 @@ const app = window.Vue.createApp({
       body.classList.toggle(
         "family-modal-open",
         this.familyProfileModalOpen ||
+          this.imageToolStyleModalOpen ||
+          this.imageToolPromptModalOpen ||
+          this.videoToolOpen ||
           this.webPushModalOpen ||
           this.projectPickerOpen ||
           this.projectTargetModalOpen ||
@@ -4066,8 +4254,22 @@ const app = window.Vue.createApp({
           type: String(item?.type || "").trim().toLowerCase(),
           url: String(item?.url || "").trim(),
           name: String(item?.name || "").trim(),
+          filename: String(item?.filename || item?.name || "").trim(),
+          modelFamily: String(item?.model_family || "").trim().toLowerCase(),
         }))
         .filter((item) => item.type === "image" && item.url);
+    },
+
+    messageVideoAttachments(msg) {
+      const rows = Array.isArray(msg?.attachments) ? msg.attachments : [];
+      return rows
+        .map((item) => ({
+          id: String(item?.id || "").trim(),
+          type: String(item?.type || "").trim().toLowerCase(),
+          url: String(item?.url || "").trim(),
+          name: String(item?.name || "").trim(),
+        }))
+        .filter((item) => item.type === "video" && item.url);
     },
 
     msgWebStack(msg) {
@@ -4090,20 +4292,748 @@ const app = window.Vue.createApp({
       return !!this.sourceExpandedMsgs[key];
     },
 
-    openImagePicker() {
-      const node = this.$refs.imageInput;
-      if (node && typeof node.click === "function") {
-        node.click();
+    syncImageGenPrefsFromConversation(convo) {
+      const row = convo && typeof convo === "object" ? convo : {};
+      const selected = this.normalizeLoraSelection(row?.selected_loras || []);
+      this.composerSelectedLoras = selected;
+      this.composerImageStyle = selected.length ? "lora" : "realistic";
+    },
+
+    normalizeLoraSelection(raw) {
+      const values = Array.isArray(raw) ? raw : [];
+      const seen = new Set();
+      const out = [];
+      for (const item of values) {
+        const text = String(item || "").trim();
+        if (!text || seen.has(text)) {
+          continue;
+        }
+        seen.add(text);
+        out.push(text);
+      }
+      return out.slice(0, 32);
+    },
+
+    async loadLoraOptions({ force = false } = {}) {
+      if (!force && this.composerLoraOptions.length) {
+        return;
+      }
+      this.composerLoraLoading = true;
+      this.composerLoraError = "";
+      try {
+        const payload = await this.apiGet("/api/image-gen/loras");
+        const rows = Array.isArray(payload?.loras) ? payload.loras : [];
+        this.composerLoraOptions = rows
+          .map((row) => {
+            const name = String(row?.name || row?.id || "").trim();
+            if (!name) return null;
+            return {
+              id: String(row?.id || name).trim(),
+              name,
+              label: String(row?.label || "").trim() || name,
+            };
+          })
+          .filter(Boolean);
+      } catch (err) {
+        this.composerLoraOptions = [];
+        this.composerLoraError = String(err.message || err);
+      } finally {
+        this.composerLoraLoading = false;
       }
     },
 
-    onComposerImagesPicked(event) {
+    async loadImageToolPresets({ force = false } = {}) {
+      if (!force && this.imageToolPresetOptions.length) {
+        return;
+      }
+      this.imageToolPresetLoading = true;
+      this.imageToolPresetError = "";
+      try {
+        const payload = await this.apiGet("/api/image-gen/presets");
+        const rows = Array.isArray(payload?.presets) ? payload.presets : [];
+        this.imageToolPresetOptions = rows
+          .map((row) => {
+            const presetId = String(row?.id || "").trim().toLowerCase();
+            if (!presetId) {
+              return null;
+            }
+            const defaults = row?.defaults && typeof row.defaults === "object" ? row.defaults : {};
+            return {
+              id: presetId,
+              label: String(row?.label || presetId).trim() || presetId,
+              kind: String(row?.kind || "lora").trim().toLowerCase() || "lora",
+              model_family: String(row?.model_family || "").trim().toLowerCase(),
+              available: Boolean(row?.available),
+              resolved_lora_name: String(row?.resolved_lora_name || "").trim(),
+              defaults,
+              default_negative_prompt: String(row?.default_negative_prompt || "").trim(),
+              install_hint: String(row?.install_hint || "").trim(),
+            };
+          })
+          .filter(Boolean);
+        if (payload && typeof payload === "object" && String(payload.error || "").trim()) {
+          this.imageToolPresetError = String(payload.error || "").trim();
+        }
+      } catch (err) {
+        this.imageToolPresetOptions = [];
+        this.imageToolPresetError = String(err.message || err);
+      } finally {
+        this.imageToolPresetLoading = false;
+      }
+    },
+
+    async persistImageGenPreferences() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      const selected = this.normalizeLoraSelection(this.composerSelectedLoras);
+      const imageStyle = selected.length ? "lora" : "realistic";
+      this.composerSelectedLoras = selected;
+      this.composerImageStyle = imageStyle;
+      try {
+        const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+          image_style: imageStyle,
+          selected_loras: selected,
+        });
+        if (payload?.conversation) {
+          this.syncImageGenPrefsFromConversation(payload.conversation);
+          if (String(this.activeConversationId || "").trim() === conversationId) {
+            this.activeConversation = payload.conversation;
+          }
+        }
+      } catch (err) {
+        console.warn("Image style preference save failed:", err);
+      }
+    },
+
+    async toggleComposerAddMenu() {
+      this.composerAddMenuOpen = !this.composerAddMenuOpen;
+    },
+
+    async setImageStyle(style) {
+      const key = String(style || "").trim().toLowerCase();
+      if (key !== "realistic") {
+        return;
+      }
+      this.composerImageStyle = "realistic";
+      this.composerSelectedLoras = [];
+      await this.persistImageGenPreferences();
+    },
+
+    isLoraSelected(name) {
+      const key = String(name || "").trim();
+      if (!key) {
+        return false;
+      }
+      return this.composerSelectedLoras.includes(key);
+    },
+
+    async toggleLoraSelection(name, checked) {
+      const key = String(name || "").trim();
+      if (!key) {
+        return;
+      }
+      const next = this.normalizeLoraSelection(this.composerSelectedLoras);
+      const has = next.includes(key);
+      if (checked && !has) {
+        next.push(key);
+      } else if (!checked && has) {
+        const idx = next.indexOf(key);
+        if (idx >= 0) {
+          next.splice(idx, 1);
+        }
+      }
+      this.composerSelectedLoras = this.normalizeLoraSelection(next);
+      this.composerImageStyle = this.composerSelectedLoras.length ? "lora" : "realistic";
+      await this.persistImageGenPreferences();
+    },
+
+    clampImageToolSteps(raw) {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) {
+        return 28;
+      }
+      return Math.max(4, Math.min(80, Math.round(n)));
+    },
+
+    clampImageToolDimension(raw, fallback = 512) {
+      const n = Number(raw);
+      const base = Number.isFinite(n) ? n : fallback;
+      const clipped = Math.max(256, Math.min(2048, Math.round(base)));
+      return Math.max(256, Math.round(clipped / 8) * 8);
+    },
+
+    imageToolAspectForDimensions(width, height) {
+      const w = this.clampImageToolDimension(width, 512);
+      const h = this.clampImageToolDimension(height, 512);
+      if (w > h) {
+        return "landscape";
+      }
+      if (h > w) {
+        return "portrait";
+      }
+      return "square";
+    },
+
+    setImageToolAspect(aspect) {
+      const key = String(aspect || "").trim().toLowerCase();
+      if (key === "landscape" || key === "portrait" || key === "square") {
+        this.imageToolAspect = key;
+      }
+    },
+
+    openPostbagItem(item) {
+      this.postbagItemData = item;
+      this.postbagItemOpen = true;
+    },
+
+    closePostbagItem() {
+      this.postbagItemOpen = false;
+      this.postbagItemData = null;
+    },
+
+    async handlePostbagItemAction(action) {
+      const item = this.postbagItemData;
+      if (!item) return;
+      this.closePostbagItem();
+      await this.handlePendingAction(item.id, action);
+    },
+
+    openLightbox(url, name) {
+      this.lightboxUrl = url;
+      this.lightboxName = name || "image";
+      this.lightboxOpen = true;
+    },
+
+    closeLightbox() {
+      this.lightboxOpen = false;
+      this.lightboxUrl = "";
+      this.lightboxName = "";
+    },
+
+    downloadLightboxImage() {
+      const a = document.createElement("a");
+      a.href = this.lightboxUrl;
+      a.download = this.lightboxName;
+      a.click();
+    },
+
+    setImageToolSubject(subject) {
+      const key = String(subject || "").trim().toLowerCase();
+      const valid = ["character", "object", "scene"];
+      if (!key || !valid.includes(key)) {
+        this.imageToolSubject = "";
+      } else {
+        this.imageToolSubject = this.imageToolSubject === key ? "" : key;
+      }
+    },
+
+    imageToolResolutionForSelection(style = null, aspect = "square") {
+      const row = style && typeof style === "object" ? style : this.imageToolSelectedStyle;
+      const baseWidth = this.clampImageToolDimension(row?.defaultWidth, 512);
+      const baseHeight = this.clampImageToolDimension(row?.defaultHeight, 512);
+      const key = String(aspect || "square").trim().toLowerCase();
+      if (key === "landscape") {
+        return { width: 704, height: 512 };
+      }
+      if (key === "portrait") {
+        return { width: 512, height: 704 };
+      }
+      const side = this.clampImageToolDimension(Math.min(baseWidth, baseHeight), 512);
+      return { width: side, height: side };
+    },
+
+    imageToolStyleStorageKey(style = null) {
+      const row = style && typeof style === "object" ? style : this.imageToolSelectedStyle;
+      const presetId = String(row?.stylePresetId || "").trim().toLowerCase();
+      if (presetId) {
+        return presetId;
+      }
+      const kind = String(row?.kind || "realistic").trim().toLowerCase();
+      return kind === "lora" ? "lora" : "realistic";
+    },
+
+    imageToolDefaultStepsForStyle(style = null) {
+      const row = style && typeof style === "object" ? style : this.imageToolSelectedStyle;
+      const storageKey = this.imageToolStyleStorageKey(row);
+      const savedRaw = this.imageToolStepDefaults && typeof this.imageToolStepDefaults === "object"
+        ? this.imageToolStepDefaults[storageKey]
+        : undefined;
+      if (Number.isFinite(Number(savedRaw))) {
+        return this.clampImageToolSteps(savedRaw);
+      }
+      const fallback = Number(row?.defaultSteps);
+      if (Number.isFinite(fallback)) {
+        return this.clampImageToolSteps(fallback);
+      }
+      const kind = String(row?.kind || "realistic").trim().toLowerCase();
+      return this.clampImageToolSteps(kind === "lora" ? 30 : 28);
+    },
+
+    imageToolSetStepsFromDefaults(style = null) {
+      this.imageToolSteps = this.imageToolDefaultStepsForStyle(style);
+    },
+
+    saveImageToolDefaultStepsForCurrentStyle() {
+      const storageKey = this.imageToolStyleStorageKey(this.imageToolSelectedStyle);
+      const steps = this.clampImageToolSteps(this.imageToolSteps);
+      this.imageToolSteps = steps;
+      const nextDefaults = this.imageToolStepDefaults && typeof this.imageToolStepDefaults === "object"
+        ? { ...this.imageToolStepDefaults }
+        : {};
+      nextDefaults[storageKey] = steps;
+      this.imageToolStepDefaults = nextDefaults;
+      try {
+        localStorage.setItem("foxforge_image_tool_step_defaults", JSON.stringify(nextDefaults));
+      } catch (_err) {}
+      const styleLabel = String(this.imageToolSelectedStyle?.label || "Selected Style").trim();
+      this.imageToolDefaultSaveNote = `Saved default steps for ${styleLabel}.`;
+      if (this._imageToolDefaultSaveTimer) {
+        window.clearTimeout(this._imageToolDefaultSaveTimer);
+      }
+      this._imageToolDefaultSaveTimer = window.setTimeout(() => {
+        this.imageToolDefaultSaveNote = "";
+        this._imageToolDefaultSaveTimer = null;
+      }, 2200);
+    },
+
+    loadImageToolStepDefaults() {
+      if (this.imageToolStepDefaultsLoaded) {
+        return;
+      }
+      let stepDefaults = {};
+      try {
+        const raw = localStorage.getItem("foxforge_image_tool_step_defaults");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            for (const [key, value] of Object.entries(parsed)) {
+              const cleanKey = String(key || "").trim().toLowerCase();
+              if (!cleanKey) {
+                continue;
+              }
+              const n = Number(value);
+              if (!Number.isFinite(n)) {
+                continue;
+              }
+              stepDefaults[cleanKey] = this.clampImageToolSteps(n);
+            }
+          }
+        }
+      } catch (_err) {
+        stepDefaults = {};
+      }
+      // One-time migration from the old per-kind keys.
+      try {
+        const oldReal = Number(localStorage.getItem("foxforge_image_tool_default_steps_realistic"));
+        const oldLora = Number(localStorage.getItem("foxforge_image_tool_default_steps_lora"));
+        if (Number.isFinite(oldReal) && stepDefaults.realistic === undefined) {
+          stepDefaults.realistic = this.clampImageToolSteps(oldReal);
+        }
+        if (Number.isFinite(oldLora) && stepDefaults.lora === undefined) {
+          stepDefaults.lora = this.clampImageToolSteps(oldLora);
+        }
+      } catch (_err) {}
+      this.imageToolStepDefaults = stepDefaults;
+      this.imageToolStepDefaultsLoaded = true;
+      this.imageToolSetStepsFromDefaults(this.imageToolSelectedStyle);
+    },
+
+    async openImageToolStyleModal() {
+      this.chatMenuOpen = false;
+      this.composerAddMenuOpen = false;
+      this.imageToolError = "";
+      this.imageToolLastPromptFinal = "";
+      this.imageToolDefaultSaveNote = "";
+      this.imageToolAspect = "square";
+      this.loadImageToolStepDefaults();
+      this.imageToolStyleModalOpen = true;
+      this.imageToolPromptModalOpen = false;
+      this.updateBodyClasses();
+      await this.loadImageToolPresets({ force: true });
+    },
+
+    closeImageToolStyleModal() {
+      this.imageToolStyleModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    closeImageToolPromptModal() {
+      this.imageToolPromptModalOpen = false;
+      this.imageToolSlashMenuOpen = false;
+      this.imageToolBusy = false;
+      this.imageToolDefaultSaveNote = "";
+      this.updateBodyClasses();
+    },
+
+    onImageToolPromptKey(e) {
+      if (this.imageToolSlashMenuOpen) {
+        if (e.key === "Escape" || e.key === "Tab" || e.key === "Enter") {
+          this.imageToolSlashMenuOpen = false;
+          if (e.key === "Escape") e.preventDefault();
+        }
+        return;
+      }
+      if (e.key === "/" && this.imageToolRefSlots.length) {
+        this.$nextTick(() => {
+          const ta = this.$refs.imageToolPromptInput;
+          this.imageToolSlashInsertStart = ta ? Math.max(0, (ta.selectionStart || 1) - 1) : 0;
+          this.imageToolSlashMenuOpen = true;
+        });
+      }
+    },
+
+    insertImageRefSlot(slot) {
+      const ta = this.$refs.imageToolPromptInput;
+      if (!ta) {
+        this.imageToolPrompt = (this.imageToolPrompt || "") + slot.token;
+        this.imageToolSlashMenuOpen = false;
+        return;
+      }
+      const val = this.imageToolPrompt || "";
+      const cursorEnd = ta.selectionStart ?? val.length;
+      const insertAt = this.imageToolSlashMenuOpen ? this.imageToolSlashInsertStart : cursorEnd;
+      const replaceEnd = this.imageToolSlashMenuOpen ? cursorEnd : cursorEnd;
+      this.imageToolPrompt = val.slice(0, insertAt) + slot.token + val.slice(replaceEnd);
+      this.imageToolSlashMenuOpen = false;
+      this.$nextTick(() => {
+        const newPos = insertAt + slot.token.length;
+        ta.setSelectionRange(newPos, newPos);
+        ta.focus();
+      });
+    },
+
+    selectImageToolStyle(style) {
+      const row = style && typeof style === "object"
+        ? style
+        : {
+          kind: "realistic",
+          label: "Realistic (SD3.5)",
+          modelFamily: "",
+          familyTag: "",
+          loras: [],
+          stylePresetId: "",
+          defaultSteps: 28,
+          defaultRefinePrompt: true,
+          defaultNegativePrompt: "",
+          defaultWidth: 768,
+          defaultHeight: 768,
+        };
+      if (row.disabled) {
+        this.imageToolError = String(row.installHint || "This preset is not available yet.").trim();
+        return;
+      }
+      const kind = String(row.kind || "realistic").trim().toLowerCase() === "lora" ? "lora" : "realistic";
+      const modelFamilyRaw = String(row.modelFamily || "").trim().toLowerCase();
+      const modelFamily = modelFamilyRaw === "sdxl" ? "xl" : modelFamilyRaw;
+      const loras = this.normalizeLoraSelection(row.loras || []);
+      this.imageToolSelectedStyle = {
+        kind,
+        label: String(row.label || (kind === "lora" ? "LoRA Style" : "Realistic (SD3.5)")).trim(),
+        modelFamily,
+        familyTag: String(row.familyTag || "").trim(),
+        loras,
+        stylePresetId: String(row.stylePresetId || "").trim().toLowerCase(),
+        defaultSteps: Number(row.defaultSteps),
+        defaultRefinePrompt: row.defaultRefinePrompt !== false,
+        defaultNegativePrompt: String(row.defaultNegativePrompt || "").trim(),
+        defaultWidth: Number(row.defaultWidth),
+        defaultHeight: Number(row.defaultHeight),
+      };
+      this.imageToolSetStepsFromDefaults(this.imageToolSelectedStyle);
+      this.imageToolAspect = "square";
+      this.imageToolSubject = "";
+      this.imageToolRefinePrompt = this.imageToolSelectedStyle.defaultRefinePrompt !== false;
+      this.imageToolNegativePrompt = this.imageToolSelectedStyle.defaultNegativePrompt;
+      this.imageToolStyleModalOpen = false;
+      this.imageToolPromptModalOpen = true;
+      this.imageToolError = "";
+      this.imageToolLastPromptFinal = "";
+      this.updateBodyClasses();
+      this.$nextTick(() => {
+        const node = this.$refs.imageToolPromptInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    async submitImageToolGenerate() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId || this.imageToolBusy) {
+        return;
+      }
+      const prompt = String(this.imageToolPrompt || "").trim();
+      if (!prompt) {
+        this.imageToolError = "Prompt is required.";
+        return;
+      }
+      // Generate request_id now, before the call, so sessionStorage can persist it
+      let imageGenRequestId = "";
+      try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          imageGenRequestId = String(window.crypto.randomUUID());
+        }
+      } catch (_e) {}
+      if (!imageGenRequestId) {
+        imageGenRequestId = `imgtool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      }
+      // Close modal immediately and show thinking bubble in chat
+      this.imageToolPromptModalOpen = false;
+      this.imageToolStyleModalOpen = false;
+      this.imageToolBusy = true;
+      this.imageToolError = "";
+      this.imageToolLastPromptFinal = "";
+      this.updateBodyClasses();
+      this.setConversationSending(conversationId, {
+        requestId: imageGenRequestId,
+        startedAt: Date.now(),
+        cancelRequested: false,
+        foraging: false,
+        imageGen: true,
+      });
+      this.$nextTick(() => this.scrollMessages());
+      try {
+        const loras = this.normalizeLoraSelection(this.imageToolSelectedStyle?.loras || []);
+        const styleKind = String(this.imageToolSelectedStyle?.kind || "").trim().toLowerCase() === "lora"
+          ? "lora"
+          : "realistic";
+        const modelFamilyRaw = String(this.imageToolSelectedStyle?.modelFamily || "").trim().toLowerCase();
+        const modelFamily = modelFamilyRaw === "sdxl" ? "xl" : modelFamilyRaw;
+        const stylePresetId = String(this.imageToolSelectedStyle?.stylePresetId || "").trim().toLowerCase();
+        const steps = this.clampImageToolSteps(this.imageToolSteps);
+        const dims = this.imageToolResolutionForSelection(this.imageToolSelectedStyle, this.imageToolAspect);
+        this.imageToolSteps = steps;
+        let payload = null;
+        const imageRefs = this.imageToolUseComposerRefs
+          ? (Array.isArray(this.composerImages) ? this.composerImages.filter((row) => !row?.isDoc) : [])
+          : [];
+        if (imageRefs.length) {
+          const formData = new FormData();
+          formData.append("prompt", prompt);
+          formData.append("request_id", imageGenRequestId);
+          formData.append("negative_prompt", String(this.imageToolNegativePrompt || "").trim());
+          formData.append("refine_prompt", "true");
+          formData.append("image_style", styleKind);
+          formData.append("selected_loras", JSON.stringify(loras));
+          if (modelFamily) {
+            formData.append("model_family_override", modelFamily);
+          }
+          if (stylePresetId) {
+            formData.append("style_preset_id", stylePresetId);
+          }
+          formData.append("steps", String(steps));
+          formData.append("width", String(dims.width));
+          formData.append("height", String(dims.height));
+          if (this.imageToolSubject) {
+            formData.append("scene_subject", this.imageToolSubject);
+          }
+          for (const row of imageRefs) {
+            if (row?.file) {
+              formData.append("images", row.file, row.name || "reference.png");
+            }
+          }
+          payload = await this.apiPostForm(
+            `/api/conversations/${encodeURIComponent(conversationId)}/image-tool/generate`,
+            formData
+          );
+        } else {
+          payload = await this.apiPost(
+            `/api/conversations/${encodeURIComponent(conversationId)}/image-tool/generate`,
+            {
+              prompt,
+              request_id: imageGenRequestId,
+              negative_prompt: String(this.imageToolNegativePrompt || "").trim(),
+              refine_prompt: true,
+              image_style: styleKind,
+              selected_loras: loras,
+              model_family_override: modelFamily,
+              style_preset_id: stylePresetId,
+              steps,
+              width: dims.width,
+              height: dims.height,
+              scene_subject: this.imageToolSubject || "",
+            }
+          );
+        }
+        const convo = payload?.conversation || null;
+        if (convo && String(this.activeConversationId || "").trim() === conversationId) {
+          this.activeConversation = convo;
+          this.syncImageGenPrefsFromConversation(convo);
+          this.$nextTick(() => this.scrollMessages());
+        }
+        this.imageToolLastPromptFinal = String(payload?.prompt_final || "").trim();
+        this.imageToolPrompt = "";
+        try {
+          await this.refreshConversations();
+          await this.refreshPanelBadges();
+        } catch (_err) {}
+      } catch (err) {
+        this.imageToolError = String(err.message || err);
+        // Reopen modal so the user can see the error and retry
+        this.imageToolPromptModalOpen = true;
+        this.updateBodyClasses();
+      } finally {
+        this.imageToolBusy = false;
+        this.setConversationSending(conversationId, false);
+        if (String(this.activeConversationId || "").trim() === conversationId) {
+          this.$nextTick(() => this.scrollMessages());
+        }
+      }
+    },
+
+    async bgEnhance(img) {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId || !img?.filename) return;
+      const key = img.filename;
+      if (this.bgEnhanceBusy[key]) return;
+      let requestId = "";
+      try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          requestId = String(window.crypto.randomUUID());
+        }
+      } catch (_e) {}
+      if (!requestId) requestId = `bge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      this.bgEnhanceBusy = { ...this.bgEnhanceBusy, [key]: true };
+      this.setConversationSending(conversationId, {
+        requestId,
+        startedAt: Date.now(),
+        cancelRequested: false,
+        foraging: false,
+        imageGen: true,
+      });
+      this.$nextTick(() => this.scrollMessages());
+      try {
+        const payload = await this.apiPost(
+          `/api/conversations/${encodeURIComponent(conversationId)}/image-tool/bg-enhance`,
+          { source_filename: img.filename, request_id: requestId }
+        );
+        const convo = payload?.conversation || null;
+        if (convo && String(this.activeConversationId || "").trim() === conversationId) {
+          this.activeConversation = convo;
+          this.$nextTick(() => this.scrollMessages());
+        }
+        try { await this.refreshConversations(); } catch (_e) {}
+      } catch (err) {
+        if (!this.isLikelyNetworkDropError(err)) {
+          alert(`BG+ failed: ${err.message || err}`);
+          this.setConversationSending(conversationId, false);
+        }
+      } finally {
+        this.bgEnhanceBusy = { ...this.bgEnhanceBusy, [key]: false };
+        this.$nextTick(() => this.scrollMessages());
+      }
+    },
+
+    openVideoTool(img) {
+      this.videoToolRefImage = img || null;
+      this.videoToolPrompt = "";
+      this.videoToolNegativePrompt = "";
+      this.videoToolError = "";
+      this.videoToolNumFrames = 81;
+      this.videoToolOpen = true;
+      this.updateBodyClasses();
+    },
+
+    closeVideoTool() {
+      this.videoToolOpen = false;
+      this.videoToolRefImage = null;
+      this.videoToolError = "";
+      this.updateBodyClasses();
+    },
+
+    async submitVideoToolGenerate() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId || this.videoToolBusy) return;
+      const prompt = String(this.videoToolPrompt || "").trim();
+      if (!prompt) {
+        this.videoToolError = "Motion prompt is required.";
+        return;
+      }
+      const refFilename = String(
+        this.videoToolRefImage?.filename || this.videoToolRefImage?.name || ""
+      ).trim();
+      if (!refFilename) {
+        this.videoToolError = "Reference image is required.";
+        return;
+      }
+      let requestId = "";
+      try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          requestId = String(window.crypto.randomUUID());
+        }
+      } catch (_e) {}
+      if (!requestId) {
+        requestId = `vidtool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      }
+      this.videoToolOpen = false;
+      this.videoToolBusy = true;
+      this.videoToolError = "";
+      this.updateBodyClasses();
+      this.setConversationSending(conversationId, {
+        requestId,
+        startedAt: Date.now(),
+        cancelRequested: false,
+        foraging: false,
+        imageGen: true,
+      });
+      this.$nextTick(() => this.scrollMessages());
+      try {
+        const payload = await this.apiPost(
+          `/api/conversations/${encodeURIComponent(conversationId)}/image-tool/video-generate`,
+          {
+            prompt,
+            request_id: requestId,
+            negative_prompt: String(this.videoToolNegativePrompt || "").trim(),
+            ref_image_filename: refFilename,
+            num_frames: this.videoToolNumFrames,
+          }
+        );
+        const convo = payload?.conversation || null;
+        if (convo && String(this.activeConversationId || "").trim() === conversationId) {
+          this.activeConversation = convo;
+          this.$nextTick(() => this.scrollMessages());
+        }
+        try {
+          await this.refreshConversations();
+          await this.refreshPanelBadges();
+        } catch (_err) {}
+      } catch (err) {
+        if (this.isLikelyNetworkDropError(err)) {
+          // Browser killed the long-running fetch — generation is still running server-side.
+          // Keep the thinking bubble alive; recoverMessageRequest will pick up the result.
+        } else {
+          this.videoToolError = String(err.message || err);
+          this.videoToolOpen = true;
+          this.updateBodyClasses();
+          this.setConversationSending(conversationId, false);
+        }
+      } finally {
+        this.videoToolBusy = false;
+        if (String(this.activeConversationId || "").trim() === conversationId) {
+          this.$nextTick(() => this.scrollMessages());
+        }
+      }
+    },
+
+    openImagePicker(kind = "image") {
+      const key = String(kind || "image").trim().toLowerCase();
+      const node = key === "file" ? this.$refs.fileInput : this.$refs.imageInput;
+      if (node && typeof node.click === "function") {
+        node.click();
+      }
+      this.composerAddMenuOpen = false;
+    },
+
+    onComposerImagesPicked(event, kind = "") {
       const input = event?.target || null;
       const files = Array.from(input?.files || []);
       if (!files.length) {
         return;
       }
       const DOC_EXTS = new Set([".pdf", ".doc", ".docx", ".txt", ".md", ".csv"]);
+      const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
       const DOC_ICONS = { ".pdf": "📄", ".doc": "📝", ".docx": "📝", ".txt": "📃", ".md": "📃", ".csv": "📊" };
       const current = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
       const seen = new Set(current.map((x) => `${x.name}|${x.size}|${x.lastModified}`));
@@ -4113,11 +5043,14 @@ const app = window.Vue.createApp({
         const mime = String(file.type || "").toLowerCase();
         const extMatch = String(file.name || "").match(/\.[^.]+$/);
         const ext = extMatch ? extMatch[0].toLowerCase() : "";
-        const isImage = mime.startsWith("image/");
+        const mode = String(kind || "").trim().toLowerCase();
+        const isImage = (mime.startsWith("image/") || IMAGE_EXTS.has(ext)) && mode !== "file";
         const isDoc = DOC_EXTS.has(ext) || ["application/pdf", "application/msword",
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
           "text/plain", "text/markdown", "text/csv"].includes(mime);
-        if (!isImage && !isDoc) continue;
+        if (mode === "image" && !isImage) continue;
+        if (mode === "file" && !isDoc) continue;
+        if (mode !== "image" && mode !== "file" && !isImage && !isDoc) continue;
         const key = `${String(file.name || "")}|${Number(file.size || 0)}|${Number(file.lastModified || 0)}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -4165,6 +5098,10 @@ const app = window.Vue.createApp({
       const input = this.$refs.imageInput;
       if (input) {
         input.value = "";
+      }
+      const fileInput = this.$refs.fileInput;
+      if (fileInput) {
+        fileInput.value = "";
       }
     },
 
@@ -5416,6 +6353,8 @@ const app = window.Vue.createApp({
       this.closeSystemPanel();
       this.closeMarkdownOverlay();
       this.closeTaskReminderDialog();
+      this.closeImageToolPromptModal();
+      this.closeImageToolStyleModal();
       this.closeFamilyProfileModal();
       this.closeWebPushSettingsModal();
       this.closeEmailSettingsModal();
@@ -6334,9 +7273,11 @@ const app = window.Vue.createApp({
       }
       this.activeConversationId = convo.id;
       this.activeConversation = convo;
+      this.syncImageGenPrefsFromConversation(convo);
       this.setActiveProject(convo.project || this.activeProject);
       this.activeTopicId = normalizeTopicId(convo.topic_id || (String(convo.project || "").trim() === "general" ? "general" : this.activeTopicId));
       this.chatMenuOpen = false;
+      this.composerAddMenuOpen = false;
       this.actionsOverlayOpen = false;
       this.panelOverlayOpen = false;
       const activateApp = options?.activateApp !== false;
@@ -6943,20 +7884,25 @@ const app = window.Vue.createApp({
       }
       const typedContent = String(this.draft || "").trim();
       const imageRows = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      const selectedLoras = this.normalizeLoraSelection(this.composerSelectedLoras);
+      const imageStyle = selectedLoras.length ? "lora" : "realistic";
+      this.composerSelectedLoras = selectedLoras;
+      this.composerImageStyle = imageStyle;
       if (!typedContent && imageRows.length === 0) {
         return;
       }
 
       const talkModeRequest = this.inputMode === "talk" && !typedContent.startsWith("/");
-      const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "command" : "talk");
+      const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "make" : "talk");
       const likelyForagingRequest = sendMode === "forage";
-      const likelyImageGenRequest =
+      const likelyImageGenRequest = sendMode !== "make" && (
         /\b(?:\/imagine|text[- ]?to[- ]?image|t2i)\b/i.test(typedContent) ||
         /\b(?:an?\s+)?(?:image|picture|photo|illustration|portrait|artwork)\s+of\b/i.test(typedContent) ||
         (
           /\b(draw|paint|generate|create|make|render|illustrate|imagine|design)\b/i.test(typedContent) &&
           /\b(image|picture|photo|illustration|art|artwork|portrait|wallpaper)\b/i.test(typedContent)
-        );
+        )
+      );
       let requestId = "";
       try {
         if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -6974,12 +7920,16 @@ const app = window.Vue.createApp({
         imageGen: likelyImageGenRequest,
       });
       this.chatMenuOpen = false;
+      this.composerAddMenuOpen = false;
       this.draft = "";
       this.composerImages = [];
       const replyTarget = this.replyTargetMsg || null;
       this.replyTargetMsg = null;
       if (this.$refs.imageInput) {
         this.$refs.imageInput.value = "";
+      }
+      if (this.$refs.fileInput) {
+        this.$refs.fileInput.value = "";
       }
       this.resizeComposer();
       let sentSuccessfully = false;
@@ -7016,6 +7966,8 @@ const app = window.Vue.createApp({
           formData.append("content", typedContent);
           formData.append("mode", sendMode);
           formData.append("request_id", requestId);
+          formData.append("image_style", imageStyle);
+          formData.append("selected_loras", JSON.stringify(selectedLoras));
           for (const row of imageRows) {
             if (row?.file) {
               formData.append("images", row.file, row.name || "image");
@@ -7023,7 +7975,13 @@ const app = window.Vue.createApp({
           }
           payload = await this.apiPostForm(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, formData);
         } else {
-          const jsonBody = { content: typedContent, mode: sendMode, request_id: requestId };
+          const jsonBody = {
+            content: typedContent,
+            mode: sendMode,
+            request_id: requestId,
+            image_style: imageStyle,
+            selected_loras: selectedLoras,
+          };
           if (replyTarget) jsonBody.reply_to = replyTarget;
           payload = await this.apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, jsonBody);
         }
@@ -7032,6 +7990,7 @@ const app = window.Vue.createApp({
           if (String(this.activeConversationId || "").trim() === conversationId) {
             this.activeConversation = convo;
             this.activeConversationId = convo.id;
+            this.syncImageGenPrefsFromConversation(convo);
             this.setActiveProject(convo.project || this.activeProject);
             this.activeTopicId = normalizeTopicId(convo.topic_id || this.activeTopicId);
             // TTS: speak the last assistant reply
@@ -8212,6 +9171,8 @@ const app = window.Vue.createApp({
         this.actionsOverlayOpen ||
         this.panelOverlayOpen ||
         this.taskReminderOpen ||
+        this.imageToolStyleModalOpen ||
+        this.imageToolPromptModalOpen ||
         this.familyProfileModalOpen ||
         this.webPushModalOpen ||
         this.projectPickerOpen ||
@@ -9672,6 +10633,7 @@ const app = window.Vue.createApp({
       const target = event.target;
       if (!(target instanceof Element)) {
         this.chatMenuOpen = false;
+        this.composerAddMenuOpen = false;
         this.waypointBuilderOpen = false;
         this.waypointCalendarMemberFilterOpen = false;
         this.homeWeatherExpanded = false;
@@ -9679,6 +10641,9 @@ const app = window.Vue.createApp({
       }
       if (this.chatMenuOpen && !target.closest(".chat-menu-wrap")) {
         this.chatMenuOpen = false;
+      }
+      if (this.composerAddMenuOpen && !target.closest(".composer-add-menu-wrap")) {
+        this.composerAddMenuOpen = false;
       }
       if (this.homeWeatherExpanded && !target.closest(".home-hero-weather")) {
         this.homeWeatherExpanded = false;
@@ -9781,6 +10746,23 @@ const app = window.Vue.createApp({
     await this.initializeWebPushSupport();
     await this.fetchAuthStatus();
     await this.bootstrapConversations({ activateApp: false });
+    // Restore in-progress regular-message sends after page reload
+    try {
+      const raw = sessionStorage.getItem("foxforge_pending_jobs");
+      if (raw) {
+        const stored = JSON.parse(raw);
+        if (stored && typeof stored === "object") {
+          for (const [cid, meta] of Object.entries(stored)) {
+            const rid = String(meta?.requestId || "").trim();
+            if (!rid) continue;
+            this.setConversationSending(cid, meta);
+            this.recoverMessageRequest(cid, rid, Boolean(meta.foraging))
+              .then(() => { this.setConversationSending(cid, false); })
+              .catch(() => { this.setConversationSending(cid, false); });
+          }
+        }
+      }
+    } catch (_e) {}
     await this.refreshPanelBadges();
     await this.refreshProjectPipeline();
     try {
@@ -9889,6 +10871,10 @@ const app = window.Vue.createApp({
     if (this._composerPlaceholderTimer) {
       window.clearInterval(this._composerPlaceholderTimer);
       this._composerPlaceholderTimer = null;
+    }
+    if (this._imageToolDefaultSaveTimer) {
+      window.clearTimeout(this._imageToolDefaultSaveTimer);
+      this._imageToolDefaultSaveTimer = null;
     }
   },
 });

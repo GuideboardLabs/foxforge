@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flask import Blueprint, abort, request, send_from_directory
 
+from shared_tools.comfyui_client import ComfyUIClient
+from shared_tools.image_gen_presets import load_image_gen_presets, resolve_preset_lora_name
+from shared_tools.model_routing import lane_model_config
 from web_gui.chat_helpers import DEFAULT_PROJECT, GENERAL_PROJECT
 from web_gui.utils.file_utils import (
     guess_mime_from_ext as _guess_mime_from_ext,
@@ -20,6 +24,128 @@ if TYPE_CHECKING:
 
 
 def register_conversation_routes(bp: Blueprint, ctx: AppContext) -> None:
+    def _normalize_lora_selection(raw: Any) -> list[str]:
+        values = raw if isinstance(raw, list) else []
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in values:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text[:220])
+            if len(out) >= 32:
+                break
+        return out
+
+    @bp.route("/api/image-gen/loras", methods=["GET"])
+    def list_image_gen_loras() -> tuple[dict, int]:
+        profile = ctx.require_profile()
+        repo_root = ctx.repo_root_for_profile(profile)
+        cfg_sd15 = lane_model_config(repo_root, "image_generation_sd15")
+        cfg_xl = lane_model_config(repo_root, "image_generation_xl")
+        cfg_compose = lane_model_config(repo_root, "image_generation_compose")
+        cfg_realistic = lane_model_config(repo_root, "image_generation")
+        base_url = str(
+            cfg_sd15.get("base_url")
+            or cfg_xl.get("base_url")
+            or cfg_compose.get("base_url")
+            or cfg_realistic.get("base_url")
+            or "http://127.0.0.1:8188"
+        ).strip()
+        client = ComfyUIClient(base_url)
+        if not client.is_available():
+            return {
+                "ok": False,
+                "base_url": base_url,
+                "loras": [],
+                "error": f"ComfyUI is not available at {base_url}.",
+            }, 503
+        try:
+            rows = [
+                {
+                    "id": name,
+                    "name": name,
+                    "label": Path(name).stem.replace("_", " ").strip() or name,
+                }
+                for name in client.list_loras(timeout=20)
+            ]
+            return {"ok": True, "base_url": base_url, "loras": rows}, 200
+        except Exception as exc:
+            return {
+                "ok": False,
+                "base_url": base_url,
+                "loras": [],
+                "error": f"Could not load LoRA list from ComfyUI: {exc}",
+            }, 502
+
+    @bp.route("/api/image-gen/presets", methods=["GET"])
+    def list_image_gen_presets() -> tuple[dict, int]:
+        profile = ctx.require_profile()
+        repo_root = ctx.repo_root_for_profile(profile)
+        cfg_sd15 = lane_model_config(repo_root, "image_generation_sd15")
+        cfg_xl = lane_model_config(repo_root, "image_generation_xl")
+        cfg_compose = lane_model_config(repo_root, "image_generation_compose")
+        cfg_realistic = lane_model_config(repo_root, "image_generation")
+        base_url = str(
+            cfg_sd15.get("base_url")
+            or cfg_xl.get("base_url")
+            or cfg_compose.get("base_url")
+            or cfg_realistic.get("base_url")
+            or "http://127.0.0.1:8188"
+        ).strip()
+        catalog = load_image_gen_presets(repo_root)
+        client = ComfyUIClient(base_url)
+        available_loras: list[str] = []
+        lookup_error = ""
+        if client.is_available():
+            try:
+                available_loras = client.list_loras(timeout=20)
+            except Exception as exc:
+                lookup_error = f"Could not load LoRA list from ComfyUI: {exc}"
+        else:
+            lookup_error = f"ComfyUI is not available at {base_url}."
+
+        rows: list[dict[str, Any]] = []
+        for preset in catalog:
+            kind = str(preset.get("kind", "lora")).strip().lower() or "lora"
+            defaults = preset.get("defaults", {}) if isinstance(preset.get("defaults"), dict) else {}
+            row: dict[str, Any] = {
+                "id": str(preset.get("id", "")).strip(),
+                "label": str(preset.get("label", "")).strip(),
+                "kind": kind,
+                "model_family": (
+                    str(preset.get("model_family", "")).strip().lower()
+                    or str(defaults.get("model_family", "")).strip().lower()
+                ),
+                "defaults": dict(defaults),
+                "default_negative_prompt": str(preset.get("default_negative_prompt", "")).strip(),
+                "available": True,
+                "resolved_lora_name": "",
+                "install_hint": "",
+            }
+            if kind == "lora":
+                candidates = [str(x).strip() for x in preset.get("lora_candidates", []) if str(x).strip()]
+                resolved_name = resolve_preset_lora_name(preset, available_loras)
+                row["resolved_lora_name"] = resolved_name
+                if candidates:
+                    # LoRA file is required — mark unavailable if not installed
+                    row["available"] = bool(resolved_name)
+                    if not resolved_name:
+                        candidate_csv = ", ".join(candidates)
+                        row["install_hint"] = (
+                            f"Install one of [{candidate_csv}] into ComfyUI/models/loras, then reopen Image Tool."
+                        )
+                # else: no candidates = base model preset, always available, no LoRA needed
+            rows.append(row)
+
+        return {
+            "ok": not bool(lookup_error),
+            "base_url": base_url,
+            "presets": rows,
+            "error": lookup_error,
+        }, 200
+
     @bp.route("/api/markdown", methods=["GET"])
     def read_markdown_file() -> tuple[dict, int]:
         profile = ctx.require_profile()
@@ -144,8 +270,16 @@ def register_conversation_routes(bp: Blueprint, ctx: AppContext) -> None:
         title = str(payload.get("title", "")).strip()
         project_raw = payload.get("project")
         topic_id_raw = payload.get("topic_id")
-        if not title and project_raw is None and topic_id_raw is None:
-            return {"error": "Either title, project, or topic_id is required"}, 400
+        image_style_raw = payload.get("image_style") if "image_style" in payload else None
+        selected_loras_raw = payload.get("selected_loras") if "selected_loras" in payload else None
+        if (
+            not title
+            and project_raw is None
+            and topic_id_raw is None
+            and image_style_raw is None
+            and selected_loras_raw is None
+        ):
+            return {"error": "Either title, project, topic_id, image_style, or selected_loras is required"}, 400
         updated = store.get(conversation_id)
         if updated is None:
             abort(404, description="Conversation not found")
@@ -163,6 +297,33 @@ def register_conversation_routes(bp: Blueprint, ctx: AppContext) -> None:
             if not topic_id and str((updated or {}).get("project", "")).strip() == DEFAULT_PROJECT:
                 topic_id = "general"
             updated = store.set_topic(conversation_id, topic_id)
+            if updated is None:
+                abort(404, description="Conversation not found")
+        if image_style_raw is not None or selected_loras_raw is not None:
+            selected_loras: list[str] | None = None
+            if selected_loras_raw is not None:
+                if isinstance(selected_loras_raw, list):
+                    selected_loras = _normalize_lora_selection(selected_loras_raw)
+                elif isinstance(selected_loras_raw, str):
+                    parsed: list[str] = []
+                    raw_text = selected_loras_raw.strip()
+                    if raw_text.startswith("["):
+                        try:
+                            maybe = json.loads(raw_text)
+                            if isinstance(maybe, list):
+                                parsed = [str(x) for x in maybe]
+                        except json.JSONDecodeError:
+                            parsed = []
+                    else:
+                        parsed = [part.strip() for part in raw_text.split(",") if part.strip()]
+                    selected_loras = _normalize_lora_selection(parsed)
+                else:
+                    selected_loras = []
+            updated = store.set_image_preferences(
+                conversation_id,
+                image_style=(str(image_style_raw) if image_style_raw is not None else None),
+                selected_loras=selected_loras,
+            )
             if updated is None:
                 abort(404, description="Conversation not found")
         if updated is None:
