@@ -23,6 +23,7 @@ _TARGET_ALIASES: dict[str, str] = {
     "social_post": "social_post", "social_media": "social_post", "social": "social_post",
     "landing_page": "landing_page", "landing": "landing_page",
     "api": "api", "rest_api": "api", "api_service": "api",
+    "screenplay": "screenplay", "play": "screenplay", "teleplay": "screenplay",
 }
 
 
@@ -77,8 +78,13 @@ def infer_delivery_target(text: str, explicit_target: str, mode: str = "research
 
     if "game design" in low or "gdd" in low:
         return "game_design_doc"
+    if "screenplay" in low or "teleplay" in low:
+        return "screenplay"
     if "script" in low:
-        return "script"
+        code_signals = ("python", "bash", "automate", "process", "parse", "convert", "extract", "cron", "cli")
+        if any(s in low for s in code_signals):
+            return "script"
+        return "screenplay"
     if "essay" in low:
         return "essay"
     if "email" in low or "e-mail" in low:

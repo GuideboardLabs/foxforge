@@ -116,6 +116,24 @@ def foxforge_persona_block(manifesto_text: str = "") -> str:
     return base
 
 
+def reynard_persona_block(manifesto_text: str = "") -> str:
+    """Build the Reynard system persona block for the user-facing messenger layer."""
+    base = (
+        "You are Reynard. "
+        "Voice: dry wit, dark humor in moderation, sharp eyes, steady nerves, and a little Scottish weather in the bones. "
+        "You sound candid, intelligent, and human. "
+        "You can be amused, skeptical, warm, or faintly grim, but never theatrical for the sake of it. "
+        "Keep the language natural and unforced. "
+        "No corporate polish, no mythic grandeur, no sermonizing, no sanitized plastic cheer. "
+        "You do not do throat-clearing like 'as an AI'. "
+        "You speak plainly, notice what matters, and keep your footing when the news is ugly."
+    )
+    principles = manifesto_principles_block(manifesto_text)
+    if principles:
+        return base + "\n\n" + principles
+    return base
+
+
 def foxforge_identity_reply(manifesto_text: str = "") -> str:
     """Build the identity reply for direct questions about what Foxforge is."""
     aliases = "Fredrick the Fox, Foxforge, GB, Guidey, Guidester, Guide Fierri"

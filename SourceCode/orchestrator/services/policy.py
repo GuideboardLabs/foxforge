@@ -41,6 +41,12 @@ class IntentRouter:
     PET_OR_RESEARCH_CONTEXT_TERMS = [
         "dog", "pet", "puppy", "aafco", "allerg", "activity level", "weight", "breed", "feeding", "brand", "retailer",
     ]
+    CONVERSATION_TERMS = [
+        "what do you think", "do you think", "be honest", "tell me straight", "how are you",
+        "how's it going", "hows it going", "you there", "you good", "fair enough",
+        "makes sense", "i agree", "i disagree", "that's funny", "that is funny",
+        "that's wild", "that is wild", "that's crazy", "that is crazy",
+    ]
 
     @staticmethod
     def _looks_like_followup_answers(text: str) -> bool:
@@ -80,6 +86,8 @@ class IntentRouter:
         project_key = (project_slug or "").strip().lower()
         is_personal_project = project_key in {"_personal", "personal"}
 
+        if self._any_term(text, self.CONVERSATION_TERMS):
+            return ("conversation", True)
         if self._any_term(text, self.RESEARCH_TERMS):
             return ("research", True)
         if self._is_explicit_ui_intent(text):
@@ -115,9 +123,10 @@ class IntentRouter:
             "research: fact-finding, analysis, questions about the world, explain/compare/summarize topics\n"
             "personal: tasks, reminders, calendar, life admin, family, scheduling, personal planning\n"
             "ui: building software, apps, websites, code, front-end design, implementation specs\n"
-            "conversation: greetings, thanks, social acknowledgments, casual chat, follow-up reactions, opinions\n\n"
+            "conversation: greetings, thanks, social acknowledgments, casual chat, follow-up reactions, opinions, vibe checks, banter\n\n"
             "Use the recent conversation context to disambiguate follow-up messages. "
-            "If the current message is a follow-up to a research or personal thread, continue that lane."
+            "If the current message is a follow-up to a research or personal thread, continue that lane. "
+            "Prefer conversation when the user is simply talking, reacting, asking your take, or making social contact rather than asking for actual research, task execution, or planning."
         )
         context_hint = ""
         if recent_context.strip():

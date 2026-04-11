@@ -232,7 +232,10 @@ def register_conversation_routes(bp: Blueprint, ctx: AppContext) -> None:
             topic_id = "general"
         if project == GENERAL_PROJECT and title.strip() == "New Chat" and kind == "general":
             title = "General Chat"
-        convo = store.create(title=title, project=project, topic_id=topic_id or "general")
+        path = ""
+        if topic_id and topic_id != "general" and project != GENERAL_PROJECT:
+            path = store._generate_path(project, title)
+        convo = store.create(title=title, project=project, topic_id=topic_id or "general", path=path)
         ctx.cache_clear(str(profile.get("id", "")))
         return {"conversation": convo}, 201
 

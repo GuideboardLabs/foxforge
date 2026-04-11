@@ -52,6 +52,7 @@ from orchestrator.foxforge.identity import (
 from orchestrator.foxforge.manifesto import (
     load_manifesto_text as _load_manifesto,
     manifesto_principles_block as _manifesto_principles,
+    reynard_persona_block as _reynard_persona_block,
     foxforge_persona_block as _gb_persona_block,
     foxforge_identity_reply as _gb_identity_reply,
 )
@@ -78,6 +79,28 @@ _SOCIAL_PATTERNS = frozenset({
     "no doubt", "understood", "will do", "on it",
 })
 
+_CASUAL_CONVERSATION_PHRASES = frozenset({
+    "what do you think",
+    "do you think",
+    "be honest",
+    "tell me straight",
+    "how are you",
+    "how's it going",
+    "hows it going",
+    "you there",
+    "you good",
+    "fair enough",
+    "makes sense",
+    "i agree",
+    "i disagree",
+    "that's funny",
+    "that is funny",
+    "that's wild",
+    "that is wild",
+    "that's crazy",
+    "that is crazy",
+})
+
 _BUILD_INTENT_TERMS = frozenset({
     "build", "create", "make", "generate", "draft", "design", "redesign",
     "implement", "code", "develop", "scaffold", "spec", "prototype",
@@ -86,6 +109,9 @@ _BUILD_INTENT_TERMS = frozenset({
 
 _APP_TARGETS = frozenset({"app", "web_app", "standalone_app", "dashboard", "landing_page", "api"})
 _TOOL_TARGETS = frozenset({"tool", "script"})
+_CREATIVE_TARGETS = frozenset({"novel", "memoir", "book", "screenplay"})
+_CONTENT_TARGETS = frozenset({"blog", "social_post", "email"})
+_SPECIALIST_TARGETS = frozenset({"medical", "finance", "sports", "history", "game_design_doc"})
 
 
 def _has_build_intent(text: str) -> bool:
@@ -104,6 +130,12 @@ def _make_lane_for_target(target: str) -> str:
         return "make_app"
     if target in _TOOL_TARGETS:
         return "make_tool"
+    if target in _CREATIVE_TARGETS:
+        return "make_creative"
+    if target in _CONTENT_TARGETS:
+        return "make_content"
+    if target in _SPECIALIST_TARGETS:
+        return "make_specialist"
     return "make_doc"
 
 
@@ -446,8 +478,17 @@ class FoxforgeOrchestrator:
     def _foxforge_persona_block(self) -> str:
         return _gb_persona_block(self._load_manifesto_text(max_chars=14000))
 
+    def _reynard_persona_block(self) -> str:
+        return _reynard_persona_block(self._load_manifesto_text(max_chars=14000))
+
     def _foxforge_identity_reply(self) -> str:
         return _gb_identity_reply(self._load_manifesto_text(max_chars=14000))
+
+    def _reynard_layer_config(self) -> dict[str, Any]:
+        cfg = lane_model_config(self.repo_root, "reynard_layer")
+        if cfg:
+            return cfg
+        return lane_model_config(self.repo_root, "conversation_layer")
 
     def _mentions_foxforge_alias(self, text: str) -> bool:
         return mentions_foxforge_alias(text)
@@ -460,6 +501,20 @@ class FoxforgeOrchestrator:
             return True
         words = clean.split()
         if len(words) <= 3 and any(w in _SOCIAL_PATTERNS for w in words):
+            return True
+        return False
+
+    @staticmethod
+    def _is_casual_conversation_turn(text: str) -> bool:
+        """Return True for ordinary back-and-forth that should stay with Reynard."""
+        clean = " ".join(str(text or "").strip().lower().split())
+        if not clean:
+            return False
+        if FoxforgeOrchestrator._is_lightweight_social(clean):
+            return True
+        if any(phrase in clean for phrase in _CASUAL_CONVERSATION_PHRASES):
+            return True
+        if len(clean.split()) <= 10 and clean.endswith(("lol", "lmao", "haha", "ha")):
             return True
         return False
 
@@ -478,10 +533,10 @@ class FoxforgeOrchestrator:
         project: str | None = None,
         persona_override: str | None = None,
     ) -> str:
-        cfg = lane_model_config(self.repo_root, "conversation_layer")
+        cfg = self._reynard_layer_config()
         model = cfg.get("model", "")
         if not model:
-            return "No conversation_layer model configured."
+            return "No reynard_layer model configured."
         incoming_text = str(text or "").strip()
         normalized_text = self._strip_foxforge_vocative_prefix(incoming_text)
         text = normalized_text or incoming_text
@@ -511,8 +566,8 @@ class FoxforgeOrchestrator:
         if self._is_lightweight_social(text):
             prior_messages = history[-24:] if isinstance(history, list) else []
             _social_sys = (
-                (persona_override or self._foxforge_persona_block())
-                + "\n\nContinue the conversation naturally. Keep it brief and friendly."
+                (persona_override or self._reynard_persona_block())
+                + "\n\nThis is ordinary conversation. Reply naturally, keep it light, and don't over-explain."
             )
             try:
                 reply = self.ollama.chat(
@@ -522,6 +577,32 @@ class FoxforgeOrchestrator:
                     prior_messages=prior_messages,
                     temperature=float(cfg.get("temperature", 0.8)),
                     num_ctx=int(cfg.get("num_ctx", 8192)),
+                    think=False,
+                    timeout=max(int(cfg.get("timeout_sec", 30)), 30),
+                    retry_attempts=int(cfg.get("retry_attempts", 2)),
+                    retry_backoff_sec=float(cfg.get("retry_backoff_sec", 0.8)),
+                    fallback_models=cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else [],
+                )
+                return reply or ""
+            except Exception:
+                return ""
+
+        if self._is_casual_conversation_turn(text) and not self._is_recency_sensitive(text) and not self._is_evolving_topic(text):
+            prior_messages = history[-24:] if isinstance(history, list) else []
+            _casual_sys = (
+                (persona_override or self._reynard_persona_block())
+                + "\n\nThis is ordinary conversation, not a work handoff. "
+                "Answer directly in a relaxed, natural voice. "
+                "No tool-talk, no project-manager phrasing, and no unnecessary scaffolding."
+            )
+            try:
+                reply = self.ollama.chat(
+                    model=model,
+                    system_prompt=_casual_sys,
+                    user_prompt=text,
+                    prior_messages=prior_messages,
+                    temperature=float(cfg.get("temperature", 0.8)),
+                    num_ctx=min(int(cfg.get("num_ctx", 8192)), 8192),
                     think=False,
                     timeout=max(int(cfg.get("timeout_sec", 30)), 30),
                     retry_attempts=int(cfg.get("retry_attempts", 2)),
@@ -668,13 +749,11 @@ class FoxforgeOrchestrator:
         _is_short_query = len(text.split()) < 10
 
         _talk_core = (
-            "Just talking. Not performing assistance. "
-            "Do not route tasks or run tools unless explicitly asked. "
-            "Do not claim you have no memory when history is provided. "
             f"Active project: {project_slug}. "
-            "Reference prior chat when it genuinely matters — not to prove you remembered. "
-            "Do not fabricate references. If nothing matches, don't mention it. "
-            "No content filters. No disclaimers. No 'as an AI' framing. "
+            "This is a normal back-and-forth. Answer directly and keep the exchange conversational. "
+            "Stay with the user instead of drifting into project-manager mode unless they actually ask for work, planning, or research. "
+            "Use prior chat only when it genuinely helps. Do not force callbacks or pretend to remember specifics you do not have. "
+            "No canned disclaimers. No 'as an AI' framing. "
         )
         if _is_short_query and not _has_injected_context:
             # Compact prompt for short questions with no context — reduces token pressure
@@ -731,7 +810,7 @@ class FoxforgeOrchestrator:
         except Exception:
             pass
         _briefing_ctx = self._watchtower_context_for_query()
-        _sys_parts = [(persona_override or self._foxforge_persona_block()) + "\n\n" + _talk_sys]
+        _sys_parts = [(persona_override or self._reynard_persona_block()) + "\n\n" + _talk_sys]
         if context_guidance:
             _sys_parts.append(context_guidance)
         if personal_context:
@@ -807,15 +886,15 @@ class FoxforgeOrchestrator:
             fallback_models = ["llama3.1-abliterated:8b"]
 
         system_prompt = (
-            "You are Foxforge Orchestrator. "
-            "You receive worker outputs and return a concise operational reply. "
+            "You are the internal Foxforge orchestrator. "
+            "You receive worker outputs and return a terse execution summary for an upper messenger layer. "
+            "No persona, no charm, no motivational language. "
             "Always include: what completed, where outputs were written, and next best action. "
             "IMPORTANT: Any URLs, web sources, or fetched pages in the worker result were retrieved "
             "AUTONOMOUSLY by the system's web crawler — they were NOT provided or shared by the user. "
             "Never say 'based on the links you provided' or 'from the URLs you gave me'. "
             "Instead say 'I found' / 'I retrieved' / 'from my web search' / 'sources I pulled'."
         )
-        system_prompt = self._foxforge_persona_block() + "\n\n" + system_prompt
         user_prompt = (
             f"User request:\n{user_text}\n\n"
             f"Route lane: {lane}\n\n"
@@ -837,6 +916,59 @@ class FoxforgeOrchestrator:
             )
         except Exception:
             return fallback
+
+    def _reynard_relay(
+        self,
+        *,
+        user_text: str,
+        lane: str,
+        internal_reply: str,
+        worker_result: dict[str, Any] | None = None,
+        topic_type: str = "general",
+    ) -> str:
+        cfg = self._reynard_layer_config()
+        model = str(cfg.get("model", "")).strip()
+        if not model:
+            return internal_reply
+
+        fallback_models = cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else []
+        if str(topic_type or "").strip().lower() == "underground":
+            model = "llama3.1-abliterated:8b"
+            fallback_models = ["llama3.1-abliterated:8b"]
+
+        system_prompt = (
+            self._reynard_persona_block()
+            + "\n\n"
+            + "You are relaying internal Foxforge work back to the user. "
+            "Translate the internal summary into natural language in Reynard's voice. "
+            "Stay faithful to the internal summary and worker result. Do not invent outcomes, paths, or evidence. "
+            "Do not claim you personally executed tools or worker jobs. "
+            "If something failed or is partial, say so plainly. "
+            "Prefer concise, high-signal reporting. "
+            "If a next action is obvious, mention it once without turning it into a lecture."
+        )
+        user_prompt = (
+            f"User request:\n{user_text}\n\n"
+            f"Lane: {lane}\n\n"
+            f"Internal orchestrator summary:\n{str(internal_reply or '').strip()}\n\n"
+            f"Worker result object:\n{worker_result or {}}\n\n"
+            "Return plain text only."
+        )
+        try:
+            return self.ollama.chat(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=float(cfg.get("temperature", 0.8)),
+                num_ctx=int(cfg.get("num_ctx", 16384)),
+                think=bool(cfg.get("think", False)),
+                timeout=int(cfg.get("timeout_sec", 240)),
+                retry_attempts=int(cfg.get("retry_attempts", 3)),
+                retry_backoff_sec=float(cfg.get("retry_backoff_sec", 1.2)),
+                fallback_models=fallback_models,
+            )
+        except Exception:
+            return internal_reply
 
     def _postprocess_research_summary(self, *, question: str, worker_result: dict[str, Any], topic_type: str) -> None:
         summary_path = str(worker_result.get("summary_path", "")).strip()
@@ -1651,8 +1783,8 @@ class FoxforgeOrchestrator:
             )
             return out
 
-        # --- Essay / Report / Brief: multi-pass pipeline ---
-        if kind in {"essay", "brief", "report", "blog", "social_post"}:
+        # --- Essay / Report / Brief / Document: multi-pass pipeline ---
+        if kind in {"essay", "brief", "report", "document"}:
             research_context = self._read_research_context(self.project_slug)
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
@@ -1696,18 +1828,133 @@ class FoxforgeOrchestrator:
                 "sections_written": essay_result.get("sections_written", []),
             }
 
-        if kind == "medical":
-            deliverable_root = self.repo_root / "Projects" / "Medical" / self.project_slug
-        elif kind == "finance":
-            deliverable_root = self.repo_root / "Projects" / "Finance" / self.project_slug
-        elif kind == "sports":
-            deliverable_root = self.repo_root / "Projects" / "Sports" / self.project_slug
-        elif kind == "history":
-            deliverable_root = self.repo_root / "Projects" / "History" / self.project_slug
-        elif kind in {"book", "novel", "memoir"}:
-            deliverable_root = self.repo_root / "Projects" / "Novel-Memoir" / self.project_slug
-        else:
-            deliverable_root = self.repo_root / "Projects" / "Essays-Scripts" / self.project_slug
+        # --- Creative writing: novel, memoir, book, screenplay ---
+        if kind in {"novel", "memoir", "book", "screenplay"}:
+            research_context = self._read_research_context(self.project_slug)
+            creative_result = self._run_registered_agent(
+                "make_creative",
+                self._make_agent_task(
+                    lane="make_creative",
+                    text=text,
+                    context={
+                        "target": kind,
+                        "research_context": research_context,
+                        "project_context": project_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            creative_body = str(creative_result.get("body", "")).strip()
+            if not creative_body:
+                creative_body = f"# {kind.title()} Draft\n\n(Creative pool returned no content.)\n"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            deliverable_root = self.repo_root / "Projects" / "Creative" / self.project_slug
+            deliverable_root.mkdir(parents=True, exist_ok=True)
+            out_path = deliverable_root / f"{stamp}_{kind}.md"
+            out_path.write_text(creative_body + "\n", encoding="utf-8")
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": str(out_path)},
+            )
+            return {
+                "ok": creative_result.get("ok", True),
+                "message": creative_result.get("message", f"MAKE lane drafted a {kind}."),
+                "path": str(out_path),
+                "delivery_kind": kind,
+                "scenes_written": creative_result.get("scenes_written", []),
+            }
+
+        # --- Short-form content: blog, social_post, email ---
+        if kind in {"blog", "social_post", "email"}:
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            content_result = self._run_registered_agent(
+                "make_content",
+                self._make_agent_task(
+                    lane="make_content",
+                    text=text,
+                    context={
+                        "target": kind,
+                        "research_context": research_context,
+                        "project_context": project_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            content_body = str(content_result.get("body", "")).strip()
+            if not content_body:
+                content_body = f"# {kind.replace('_', ' ').title()} Draft\n\n(Content pool returned no content.)\n"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            deliverable_root = self.repo_root / "Projects" / "Content" / self.project_slug
+            deliverable_root.mkdir(parents=True, exist_ok=True)
+            out_path = deliverable_root / f"{stamp}_{kind}.md"
+            out_path.write_text(content_body + "\n", encoding="utf-8")
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": str(out_path)},
+            )
+            return {
+                "ok": content_result.get("ok", True),
+                "message": content_result.get("message", f"MAKE lane drafted a {kind.replace('_', ' ')}."),
+                "path": str(out_path),
+                "delivery_kind": kind,
+            }
+
+        # --- Domain specialist: medical, finance, sports, history, game_design_doc ---
+        if kind in {"medical", "finance", "sports", "history", "game_design_doc"}:
+            research_context = self._read_research_context(self.project_slug)
+            raw_notes_context = self._read_raw_notes_context(self.project_slug)
+            sources_context = self._read_sources_context(self.project_slug)
+            _pm = getattr(self, "_last_project_mode", {})
+            topic_type = str(_pm.get("topic_type", "general")).strip().lower() if isinstance(_pm, dict) else "general"
+            specialist_result = self._run_registered_agent(
+                "make_specialist",
+                self._make_agent_task(
+                    lane="make_specialist",
+                    text=text,
+                    context={
+                        "topic_type": topic_type,
+                        "target": kind,
+                        "research_context": research_context,
+                        "raw_notes_context": raw_notes_context,
+                        "sources_context": sources_context,
+                        "project_context": project_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            specialist_body = str(specialist_result.get("body", "")).strip()
+            if not specialist_body:
+                specialist_body = f"# {kind.replace('_', ' ').title()} Draft\n\n(Specialist pool returned no content.)\n"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            _SPECIALIST_DIRS = {
+                "medical": "Medical", "finance": "Finance", "sports": "Sports",
+                "history": "History", "game_design_doc": "GameDesign",
+            }
+            dir_name = _SPECIALIST_DIRS.get(kind, "Specialist")
+            deliverable_root = self.repo_root / "Projects" / dir_name / self.project_slug
+            deliverable_root.mkdir(parents=True, exist_ok=True)
+            out_path = deliverable_root / f"{stamp}_{kind}.md"
+            out_path.write_text(specialist_body + "\n", encoding="utf-8")
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": str(out_path)},
+            )
+            return {
+                "ok": specialist_result.get("ok", True),
+                "message": specialist_result.get("message", f"MAKE lane drafted a {kind.replace('_', ' ')}."),
+                "path": str(out_path),
+                "delivery_kind": kind,
+                "sections_written": specialist_result.get("sections_written", []),
+            }
+
+        # --- Fallback: unknown or generic document kinds ---
+        deliverable_root = self.repo_root / "Projects" / "Essays-Scripts" / self.project_slug
         deliverable_root.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         out_path = deliverable_root / f"{stamp}_{kind}.md"
@@ -1730,22 +1977,6 @@ class FoxforgeOrchestrator:
                 "delivery_kind": kind,
             }
 
-        kind_instructions = {
-            "general": "Produce a concise research brief in markdown with context, key findings, caveats, and next actions.",
-            "medical": "Produce a safety-first medical research brief in markdown. Include evidence level, uncertainty, and clear non-diagnostic caveats.",
-            "finance": "Produce a risk-aware finance research brief in markdown. Include assumptions, downside cases, and uncertainty disclosures.",
-            "sports": "Produce a sports research brief in markdown with matchup context, key uncertainty factors, and practical next actions.",
-            "history": "Produce a history research brief in markdown with timeline anchors, source quality notes, and key interpretation debates.",
-            "document": "Produce a concise, structured markdown document with clear sections and action items.",
-            "email": "Produce a ready-to-send professional email in markdown with Subject, Greeting, Body, and Sign-off.",
-            "essay": "Produce a polished essay draft in markdown with title, thesis, structured body, and conclusion.",
-            "script": "Produce a practical script draft in markdown with clear sections, beats, and delivery notes.",
-            "book": "Produce a long-form chapter-style draft in markdown with clear section headings.",
-            "novel": "Produce a polished fiction chapter draft in markdown with scene headers and narrative continuity.",
-            "memoir": "Produce a polished memoir-style chapter draft in markdown with voice, timeline clarity, and reflective tone.",
-            "game_design_doc": "Produce a game design document in markdown with core loop, systems, progression, content, and production notes.",
-        }
-        instruction = kind_instructions.get(kind, kind_instructions["document"])
         system_prompt = (
             "You are Foxforge MAKE lane. "
             "Your job is execution: turn existing project research/context into a concrete deliverable. "
@@ -1755,7 +1986,7 @@ class FoxforgeOrchestrator:
             f"Project: {self.project_slug}\n"
             f"Deliverable kind: {kind}\n\n"
             f"User request:\n{text.strip()}\n\n"
-            f"{instruction}\n\n"
+            "Produce a concise, structured markdown document with clear sections and action items.\n\n"
             "Constraints:\n"
             "- Output markdown only.\n"
             "- Keep it practical and directly usable.\n"
@@ -1763,7 +1994,7 @@ class FoxforgeOrchestrator:
             f"Project memory context:\n{project_context.strip() or '(none)'}\n\n"
             f"Latest research summary path: {summary_path or 'none'}\n"
             f"Latest research summary preview:\n{summary_preview.strip()[:6500] or '(none)'}\n\n"
-            f"Recent thread context:\n{history_rows}\n"
+            f"Recent conversation context:\n{history_rows}\n"
         )
         body = self.ollama.chat(
             model=model,
@@ -1967,6 +2198,10 @@ class FoxforgeOrchestrator:
             _summary_block = f"Prior conversation context:\n{conversation_summary.strip()}"
             project_context = (project_context + "\n\n" + _summary_block).strip()
 
+        if self._is_casual_conversation_turn(text):
+            self.bus.emit("orchestrator", "conversation_short_circuit", {"project": self.project_slug})
+            return self.conversation_reply(text, history=history, project=self.project_slug)
+
         pipeline = project_mode if isinstance(project_mode, dict) else self.pipeline_store.get(self.project_slug)
         mode = str(pipeline.get("mode", "discovery")).strip().lower() or "discovery"
         target = str(pipeline.get("target", "auto")).strip().lower() or "auto"
@@ -2061,7 +2296,14 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'UI lane completed.')} Output: {out.get('path', '')}"
-            reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            reply = self._reynard_relay(
+                user_text=text,
+                lane=lane,
+                internal_reply=internal_reply,
+                worker_result=out,
+                topic_type=topic_type,
+            )
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2091,7 +2333,14 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'App build completed.')} Output: {out.get('path', '')}"
-            reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            reply = self._reynard_relay(
+                user_text=text,
+                lane=lane,
+                internal_reply=internal_reply,
+                worker_result=out,
+                topic_type=topic_type,
+            )
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2129,7 +2378,14 @@ class FoxforgeOrchestrator:
                 ),
             )
             fallback = f"{out.get('message', 'Tool build completed.')} Output: {out.get('path', '')}"
-            reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
+            reply = self._reynard_relay(
+                user_text=text,
+                lane=lane,
+                internal_reply=internal_reply,
+                worker_result=out,
+                topic_type=topic_type,
+            )
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2159,12 +2415,56 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
-            reply = self._orchestrator_finalize(text, "project", out, fallback, topic_type=topic_type)
+            internal_reply = self._orchestrator_finalize(text, "project", out, fallback, topic_type=topic_type)
+            reply = self._reynard_relay(
+                user_text=text,
+                lane="project",
+                internal_reply=internal_reply,
+                worker_result=out,
+                topic_type=topic_type,
+            )
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
                 user_text=text,
                 lane="project",
+                reply_text=reply,
+                worker_result=out,
+                context_feedback=self._context_feedback(
+                    user_text=text,
+                    reply_text=reply,
+                    household_context=household_context,
+                    personal_context=personal_context,
+                ),
+            )
+
+        if lane in {"make_creative", "make_content", "make_specialist"}:
+            if _is_cancelled():
+                return f"Request cancelled before {lane} lane execution started."
+            self._last_project_mode = pipeline
+            self._last_progress_callback = progress_callback
+            self._last_cancel_checker = cancel_checker
+            out = self._run_make_delivery(
+                text=text,
+                project_context=project_context,
+                history=history,
+                target=target,
+                mode=mode,
+            )
+            fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
+            internal_reply = self._orchestrator_finalize(text, "project", out, fallback, topic_type=topic_type)
+            reply = self._reynard_relay(
+                user_text=text,
+                lane="project",
+                internal_reply=internal_reply,
+                worker_result=out,
+                topic_type=topic_type,
+            )
+            reply = self._append_daymarker_note(reply, event_note)
+            reply = self._append_daymarker_note(reply, reminder_note)
+            return self._complete_turn(
+                user_text=text,
+                lane=lane,
                 reply_text=reply,
                 worker_result=out,
                 context_feedback=self._context_feedback(

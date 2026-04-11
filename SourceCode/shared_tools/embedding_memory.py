@@ -10,7 +10,7 @@ from typing import Any
 _TOKEN_RE = re.compile(r'[a-z0-9]{3,}')
 _STOP = {'the','and','for','with','from','that','this','have','into','what','when','where','who','your','about'}
 
-_EMBED_MODEL = "mxbai-embed-large"
+_EMBED_MODEL = "qwen3-embedding:4b"
 _VECTOR_THRESHOLD = 0.45
 _BOW_THRESHOLD = 0.05
 
@@ -55,7 +55,7 @@ def _split_sections(text: str) -> list[str]:
 
 
 class EmbeddingMemory:
-    """Local retrieval helper. Uses mxbai-embed-large vectors when available,
+    """Local retrieval helper. Uses qwen3-embedding:4b vectors when available,
     silently falls back to bag-of-words cosine if Ollama/model is unavailable.
     """
 

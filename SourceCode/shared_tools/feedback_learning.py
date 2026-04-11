@@ -276,7 +276,7 @@ class FeedbackLearningEngine:
         """Return True if guidance is semantically similar (>0.90 cosine) to an existing active lesson."""
         try:
             client = OllamaClient()
-            new_vec = client.embed("mxbai-embed-large", guidance[:2000])
+            new_vec = client.embed("qwen3-embedding:4b", guidance[:2000])
         except Exception:
             return False
         try:
@@ -291,7 +291,7 @@ class FeedbackLearningEngine:
             if not existing:
                 continue
             try:
-                ev = client.embed("mxbai-embed-large", existing[:2000])
+                ev = client.embed("qwen3-embedding:4b", existing[:2000])
                 dot = sum(x * y for x, y in zip(new_vec, ev))
                 na = math.sqrt(sum(x * x for x in new_vec))
                 nb = math.sqrt(sum(x * x for x in ev))

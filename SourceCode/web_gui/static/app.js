@@ -2200,7 +2200,7 @@ const app = window.Vue.createApp({
         return "Learned guidance with confidence, status, and source context.";
       }
       if (this.panelKey === "handoffs") {
-        return "Thread handoff queue and ingest status.";
+        return "Project handoff queue and ingest status.";
       }
       if (this.panelKey === "outbox") {
         return "Response files waiting for ingest or already processed.";
@@ -2209,7 +2209,7 @@ const app = window.Vue.createApp({
         return "Per-project Fieldbook progress, artifacts, and routed lanes.";
       }
       if (this.panelKey === "project_detail") {
-        return "Project-scoped Fieldbook artifacts, recent events, and handoff threads.";
+        return "Project-scoped Fieldbook artifacts, recent events, and handoff tasks.";
       }
       if (this.panelKey === "content") {
         return "Project file browser with collapsible folders and click-to-preview.";
@@ -4002,7 +4002,7 @@ const app = window.Vue.createApp({
         return;
       }
       if (this.topicPickerMode === "create") {
-        await this.startThreadFromTopic(topic);
+        await this.startProjectFromTopic(topic);
       } else {
         await this.setTopicActive(topic);
       }
@@ -4015,7 +4015,7 @@ const app = window.Vue.createApp({
       this.undergroundWarningPendingTopic = null;
       if (!topic) return;
       if (this.topicPickerMode === "create") {
-        await this.startThreadFromTopic(topic);
+        await this.startProjectFromTopic(topic);
       } else {
         await this.setTopicActive(topic);
       }
@@ -4056,14 +4056,14 @@ const app = window.Vue.createApp({
     },
 
 
-    async startThreadFromTopic(topic) {
+    async startProjectFromTopic(topic) {
       if (!topic) return;
       const slug = normalizeProjectSlug(topic.slug || topic.name || "general");
       const topicId = normalizeTopicId(topic.id || "general");
-      await this.createConversation("thread", { project: slug, topicId, activateApp: true });
+      await this.createConversation("project", { project: slug, topicId, activateApp: true });
     },
 
-    beginThreadCreation() {
+    beginProjectCreation() {
       this.openTopicPickerModal("create");
     },
 
@@ -4870,13 +4870,17 @@ const app = window.Vue.createApp({
           await this.refreshPanelBadges();
         } catch (_err) {}
       } catch (err) {
-        this.imageToolError = String(err.message || err);
-        // Reopen modal so the user can see the error and retry
-        this.imageToolPromptModalOpen = true;
-        this.updateBodyClasses();
+        if (this.isLikelyNetworkDropError(err)) {
+          // Browser killed the long-running fetch — ComfyUI is still generating server-side.
+          // Keep the thinking bubble alive; recoverMessageRequest will pick up the result.
+        } else {
+          this.imageToolError = String(err.message || err);
+          this.imageToolPromptModalOpen = true;
+          this.updateBodyClasses();
+          this.setConversationSending(conversationId, false);
+        }
       } finally {
         this.imageToolBusy = false;
-        this.setConversationSending(conversationId, false);
         if (String(this.activeConversationId || "").trim() === conversationId) {
           this.$nextTick(() => this.scrollMessages());
         }
@@ -4915,8 +4919,11 @@ const app = window.Vue.createApp({
           this.$nextTick(() => this.scrollMessages());
         }
         try { await this.refreshConversations(); } catch (_e) {}
+        this.setConversationSending(conversationId, false);
       } catch (err) {
-        if (!this.isLikelyNetworkDropError(err)) {
+        if (this.isLikelyNetworkDropError(err)) {
+          // Keep thinking bubble alive — recoverMessageRequest will pick up the result.
+        } else {
           alert(`BG+ failed: ${err.message || err}`);
           this.setConversationSending(conversationId, false);
         }
@@ -7325,7 +7332,7 @@ const app = window.Vue.createApp({
       if (!id) {
         return;
       }
-      const confirmed = window.confirm("Delete this conversation thread?");
+      const confirmed = window.confirm("Delete this project?");
       if (!confirmed) {
         return;
       }

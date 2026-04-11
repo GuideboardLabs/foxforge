@@ -32,7 +32,7 @@
 
                 <div class="new-chat-actions">
                     <button class="new-chat-btn" type="button" @click="createConversation('general')">+ Chat</button>
-                    <button class="new-chat-btn new-general-btn" type="button" @click="beginThreadCreation()">+ Project</button>
+                    <button class="new-chat-btn new-general-btn" type="button" @click="beginProjectCreation()">+ Project</button>
                 </div>
 
                 <div class="conversation-list">
@@ -40,7 +40,7 @@
                         <button type="button" class="conv-open-btn" @click="openConversation(conv.id)">
               <h3 class="conv-title">[[ conv.title || 'New Chat' ]]</h3>
               <span class="panel-badge" v-if="conv.unread_count">[[ conv.unread_count ]]</span>
-              <p class="conv-project-tag">topic: [[ (conv.topic_id || (normalizeProjectSlug(conv.project || activeProject) === 'general' ? 'general' : 'unbound')) ]]</p>
+              <p class="conv-project-tag">[[ conv.path || conv.project || 'general' ]]</p>
               <p class="conv-preview">[[ conv.last_preview || '' ]]</p>
             </button>
                         <button type="button" class="conv-delete-btn" aria-label="Delete conversation" @click="deleteConversation(conv.id)">&times;</button>
@@ -290,7 +290,7 @@
                                 </div>
                                 <div v-else class="home-last-body">
                                     <h4>No conversations yet</h4>
-                                    <p>Start a new thread and pick up from here anytime.</p>
+                                    <p>Start a new project and pick up from here anytime.</p>
                                     <button class="home-last-open-btn" type="button" @click="createConversation()">Start Conversation</button>
                                 </div>
                             </article>
@@ -639,7 +639,22 @@
                     <button type="button" class="image-tool-close" @click="closeImageToolStyleModal">&times;</button>
                 </header>
                 <p class="image-tool-subtitle">Pick a style to open prompt entry.</p>
-                <div class="image-tool-section-label">Pony XL</div>
+                <div class="image-tool-section-label">Juggernaut XL</div>
+                <div class="image-tool-style-grid">
+                    <button
+                        v-for="style in imageToolStyleButtons.filter(s => s.modelFamily === 'xl_standard')"
+                        :key="style.id"
+                        type="button"
+                        class="image-tool-style-btn"
+                        :class="{'is-disabled': style.disabled}"
+                        :disabled="style.disabled"
+                        @click="selectImageToolStyle(style)"
+                    >
+                        <span class="image-tool-style-title">[[ style.label ]]</span>
+                        <span v-if="style.disabled && style.installHint" class="image-tool-style-hint">[[ style.installHint ]]</span>
+                    </button>
+                </div>
+                <div class="image-tool-section-label" style="margin-top:14px;">Pony XL</div>
                 <div class="image-tool-style-grid">
                     <button
                         v-for="style in imageToolStyleButtons.filter(s => s.modelFamily === 'xl')"
@@ -657,7 +672,7 @@
                 <div class="image-tool-section-label image-tool-section-label--legacy" style="margin-top:14px;">Classic SD</div>
                 <div class="image-tool-style-grid">
                     <button
-                        v-for="style in imageToolStyleButtons.filter(s => s.modelFamily !== 'xl')"
+                        v-for="style in imageToolStyleButtons.filter(s => s.modelFamily !== 'xl' && s.modelFamily !== 'xl_standard')"
                         :key="style.id"
                         type="button"
                         class="image-tool-style-btn image-tool-style-btn--legacy"
@@ -1038,10 +1053,10 @@
     <!-- Topic Picker Modal -->
     <div class="modal-form-overlay" :aria-hidden="topicPickerOpen ? 'false' : 'true'" v-show="topicPickerOpen">
         <div class="modal-form-backdrop" @click="closeTopicPickerModal"></div>
-        <section class="modal-form-modal topic-picker-modal" role="dialog" aria-modal="true" :aria-label="topicPickerMode === 'create' ? 'Create Thread' : 'Set Topic'">
+        <section class="modal-form-modal topic-picker-modal" role="dialog" aria-modal="true" :aria-label="topicPickerMode === 'create' ? 'Create Project' : 'Set Topic'">
             <header class="modal-form-header">
                 <div>
-                    <h3>[[ topicPickerMode === "create" ? "Create Thread" : "Set Topic" ]]</h3>
+                    <h3>[[ topicPickerMode === "create" ? "Create Project" : "Set Topic" ]]</h3>
                     <p>[[ topicPickerMode === "create" ? "Choose a topic for the new conversation." : "Select a named knowledge domain for this conversation." ]]</p>
                 </div>
                 <button type="button" class="modal-form-close" @click="closeTopicPickerModal">&times;</button>
@@ -1949,7 +1964,7 @@
                       </div>
                       <div class="watch-row-actions">
                         <button class="panel-action-btn is-small" type="button" @click="openTopicDetail(topic)">Detail</button>
-                        <button class="panel-action-btn is-small" type="button" @click="confirmTopicSelection(topic)">Start Thread</button>
+                        <button class="panel-action-btn is-small" type="button" @click="confirmTopicSelection(topic)">Start Project</button>
                         <button class="panel-action-btn is-small is-danger" type="button" @click="deleteTopic(topic.id)">Delete</button>
                       </div>
                     </div>
@@ -2150,7 +2165,7 @@
 
                 <template v-else-if="panelKey === 'handoffs'">
               <header class="panel-card-head">
-                <h4>Handoff thread</h4>
+                <h4>Handoff task</h4>
                 <p>[[ formatDate(row.created_at) ]]</p>
               </header>
               <div class="panel-card-meta">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,11 @@ def _clean_selected_loras(value: Any) -> list[str]:
         if len(out) >= 32:
             break
     return out
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^\w\s-]", "", text.lower().strip())
+    return re.sub(r"[\s_-]+", "_", slug).strip("_")[:60]
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -111,6 +117,7 @@ class ConversationStore:
     def _decorate(cls, data: dict[str, Any]) -> dict[str, Any]:
         if not str(data.get("topic_id", "")).strip():
             data["topic_id"] = "general" if str(data.get("project", "general")).strip() == "general" else ""
+        data["path"] = str(data.get("path", "")).strip()
         data["image_style"] = _clean_image_style(data.get("image_style", "realistic"))
         data["selected_loras"] = _clean_selected_loras(data.get("selected_loras", []))
         if data["selected_loras"] and data["image_style"] == "realistic":
@@ -121,7 +128,29 @@ class ConversationStore:
         data["has_unread"] = unread_count > 0
         return data
 
-    def create(self, title: str = "New Chat", project: str = "general", topic_id: str = "general") -> dict[str, Any]:
+    def _generate_path(self, topic_slug: str, title: str) -> str:
+        if not topic_slug or topic_slug == "general":
+            return ""
+        title_slug = _slugify(title) or "untitled"
+        base = f"/{topic_slug}/{title_slug}"
+        existing: set[str] = set()
+        for path in self.root.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                p = str(data.get("path", "")).strip()
+                if p:
+                    existing.add(p)
+            except (json.JSONDecodeError, OSError):
+                continue
+        if base not in existing:
+            return base
+        for i in range(2, 100):
+            candidate = f"{base}_{i}"
+            if candidate not in existing:
+                return candidate
+        return f"{base}_{uuid.uuid4().hex[:6]}"
+
+    def create(self, title: str = "New Chat", project: str = "general", topic_id: str = "general", path: str = "") -> dict[str, Any]:
         with self.lock:
             now = _now_iso()
             conversation_id = uuid.uuid4().hex[:12]
@@ -130,6 +159,7 @@ class ConversationStore:
                 "title": _clean_title(title),
                 "project": _clean_project(project),
                 "topic_id": _clean_topic_id(topic_id),
+                "path": str(path).strip(),
                 "created_at": now,
                 "updated_at": now,
                 "summary": "",
@@ -164,6 +194,16 @@ class ConversationStore:
             if data is None:
                 return None
             data["project"] = _clean_project(project)
+            data["updated_at"] = _now_iso()
+            self._save(data)
+            return self._decorate(data)
+
+    def set_path(self, conversation_id: str, path: str) -> dict[str, Any] | None:
+        with self.lock:
+            data = self._load(conversation_id)
+            if data is None:
+                return None
+            data["path"] = str(path).strip()
             data["updated_at"] = _now_iso()
             self._save(data)
             return self._decorate(data)
@@ -340,6 +380,7 @@ class ConversationStore:
                         "title": data.get("title", "New Chat"),
                         "project": data.get("project", "general"),
                         "topic_id": data.get("topic_id", "general" if str(data.get("project", "general")).strip() == "general" else ""),
+                        "path": str(data.get("path", "")).strip(),
                         "created_at": data.get("created_at", ""),
                         "updated_at": data.get("updated_at", ""),
                         "message_count": len(messages),

@@ -254,6 +254,330 @@
       "default_negative_prompt": "score_4, ugly, bad hand, bad feet"
     },
     {
+      "id": "unfinished_anime",
+      "label": "Unfinished Anime",
+      "kind": "lora",
+      "model_family": "xl",
+      "lora_candidates": [
+        "AnimeOriginalArtStyleShadow_PONYXL_d4a1-000010.safetensors"
+      ],
+      "defaults": {
+        "workflow": "sdxl_clipskip2_vae",
+        "steps": 28,
+        "width": 832,
+        "height": 1216,
+        "cfg": 6.0,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "score_4, score_5, source_furry, source_pony, source_cartoon, worst quality, low quality, photorealistic, 3d render, nsfw"
+    },
+    {
+      "id": "pastels",
+      "label": "Pastels",
+      "kind": "lora",
+      "model_family": "xl",
+      "lora_candidates": [
+        "ncpy13 style.safetensors"
+      ],
+      "defaults": {
+        "workflow": "sdxl_clipskip2_vae",
+        "steps": 30,
+        "width": 832,
+        "height": 1216,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "normal",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "worst quality, low quality, normal quality, blurry, noisy, photorealistic, 3d render, harsh lighting, oversaturated"
+    },
+    {
+      "id": "illustration",
+      "label": "Illustration",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "chahua.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 31,
+        "width": 832,
+        "height": 1216,
+        "cfg": 7.0,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "lora_strength_model": 0.9,
+        "lora_strength_clip": 0.9,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "(worst quality:2), (low quality:2), (normal quality:2), lowres, bad anatomy, bad hands, ((monochrome)), ((grayscale)), nsfw"
+    },
+    {
+      "id": "foxel",
+      "label": "Foxel",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "VoxelXL_v1.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 20,
+        "width": 832,
+        "height": 832,
+        "cfg": 8.0,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "karras",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "ugly, deformed, distorted, flat, 2d, painting, sketch, photorealistic, blurry"
+    },
+    {
+      "id": "storyboard",
+      "label": "Storyboard",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "storyboard sketch.safetensors",
+        "Storyboard_sketch.safetensors",
+        "storyboard_sketch.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 20,
+        "width": 1216,
+        "height": 832,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "karras",
+        "lora_strength_model": 0.8,
+        "lora_strength_clip": 0.8,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "color, photorealistic, smooth shading, painting, digital art, 3d render, polished, clean"
+    },
+    {
+      "id": "fs1",
+      "label": "FS1",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "ps1_style_SDXL_v2.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 30,
+        "width": 832,
+        "height": 832,
+        "cfg": 7.0,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "high resolution, photorealistic, smooth textures, modern graphics, 4k, 8k, detailed, sharp, anti-aliased"
+    },
+    {
+      "id": "lo_fi",
+      "label": "Lo-Fi",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "Dreamyvibes artstyle SDXL - Trigger with dreamyvibes artstyle.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 30,
+        "width": 832,
+        "height": 1216,
+        "cfg": 6.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "ugly, deformed, watermark, text, blurry, bad anatomy, nsfw"
+    },
+    {
+      "id": "sketch_book",
+      "label": "Sketch Book",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "sketch_it.safetensors",
+        "my_sketching_style (1).safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 20,
+        "width": 768,
+        "height": 768,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "lora_strength_model": 1.2,
+        "lora_strength_clip": 1.2,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "color, colors, colorful, photo, photograph, painting, digital art"
+    },
+    {
+      "id": "shirt_designs",
+      "label": "Shirt Designs",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "TShirtDesignRedmondV2-Tshirtdesign-TshirtDesignAF.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 30,
+        "width": 768,
+        "height": 768,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "karras",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "bad art, ugly, deformed, watermark, duplicated, photograph, realistic, 3d render"
+    },
+    {
+      "id": "wallace_vomit",
+      "label": "Wallace & Vomit",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "CLAYMATE_V2.03_.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 24,
+        "width": 768,
+        "height": 768,
+        "cfg": 10.0,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "normal",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "painting, flat, 2d, digital art, illustration, drawing"
+    },
+    {
+      "id": "trainer",
+      "label": "Trainer",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "pk_trainer_xl_v1.safetensors",
+        "pk_trainer_xl_v1-1.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 20,
+        "width": 768,
+        "height": 768,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": false
+      },
+      "default_negative_prompt": ""
+    },
+    {
+      "id": "ms_fainx",
+      "label": "MS Fainx",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "SDXL_MSPaint_Portrait.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 30,
+        "width": 768,
+        "height": 768,
+        "cfg": 6.0,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "normal",
+        "lora_strength_model": 0.9,
+        "lora_strength_clip": 0.9,
+        "refine_prompt": false
+      },
+      "default_negative_prompt": ""
+    },
+    {
+      "id": "parchment",
+      "label": "Parchment",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "ParchartXL_CODA.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 28,
+        "width": 832,
+        "height": 1216,
+        "cfg": 4.7,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "karras",
+        "lora_strength_model": 1.0,
+        "lora_strength_clip": 1.0,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "lowres, worst quality, low quality, blurry, bad anatomy, deformed, ugly, text, watermark, signature, nsfw, modern digital art"
+    },
+    {
+      "id": "foxjourney",
+      "label": "Foxjourney",
+      "kind": "lora",
+      "model_family": "xl_standard",
+      "lora_candidates": [
+        "MJ52.safetensors"
+      ],
+      "defaults": {
+        "checkpoint_name": "JuggernautXL_Ragnarok_ByRunDiffusion.safetensors",
+        "workflow": "sdxl_standard",
+        "steps": 50,
+        "width": 832,
+        "height": 1216,
+        "cfg": 4.0,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "karras",
+        "lora_strength_model": 0.7,
+        "lora_strength_clip": 0.7,
+        "refine_prompt": true
+      },
+      "default_negative_prompt": "lowres, worst quality, low quality, blurry, bad anatomy, bad hands, extra fingers, missing fingers, deformed, ugly, text, watermark, signature, nsfw"
+    },
+    {
       "id": "foxo_slyesium",
       "label": "Foxo Slyesium",
       "kind": "lora",

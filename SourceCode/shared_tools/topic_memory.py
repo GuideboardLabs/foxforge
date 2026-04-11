@@ -229,10 +229,10 @@ class TopicMemory:
             # Semantic dedup fallback — catches paraphrase duplicates Jaccard missed
             if ollama_client is not None:
                 try:
-                    new_vec = ollama_client.embed("mxbai-embed-large", claim[:2000])
+                    new_vec = ollama_client.embed("qwen3-embedding:4b", claim[:2000])
                     for existing in topic.get("facts", []):
                         existing_claim = str(existing.get("claim", ""))
-                        existing_vec = ollama_client.embed("mxbai-embed-large", existing_claim[:2000])
+                        existing_vec = ollama_client.embed("qwen3-embedding:4b", existing_claim[:2000])
                         if _vec_cosine(new_vec, existing_vec) >= 0.88:
                             if confidence > float(existing.get("confidence", 0.0)):
                                 existing["confidence"] = round(confidence, 4)
@@ -452,13 +452,13 @@ class TopicMemory:
     # ── Private helpers ───────────────────────────────────────────────────
 
     def _try_embed(self, text: str) -> list[float] | None:
-        """Embed text with mxbai-embed-large. Returns None on any failure. Session-cached."""
+        """Embed text with qwen3-embedding:4b. Returns None on any failure. Session-cached."""
         cached = self._embed_cache.get(text)
         if cached is not None:
             return cached
         try:
             from shared_tools.ollama_client import OllamaClient
-            vec = OllamaClient().embed("mxbai-embed-large", text)
+            vec = OllamaClient().embed("qwen3-embedding:4b", text)
             self._embed_cache[text] = vec
             return vec
         except Exception:

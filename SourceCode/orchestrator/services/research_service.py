@@ -117,6 +117,7 @@ class ResearchService:
             host,
             text=text,
             lane="project",
+            topic_type=topic_type,
             out=out,
             fallback=fallback,
             web_note=web_note,
@@ -151,6 +152,13 @@ class ResearchService:
             reply,
             sources=sources,
             conflict_summary=web_details.get("conflict_summary", {}),
+        )
+        reply = host._reynard_relay(
+            user_text=text,
+            lane=lane,
+            internal_reply=reply,
+            worker_result=out,
+            topic_type=topic_type,
         )
         artifacts = host._format_research_artifacts_block(out)
         if perf is not None:
@@ -206,6 +214,7 @@ class ResearchService:
             host,
             text=text,
             lane=lane,
+            topic_type=topic_type,
             out=out,
             fallback=fallback,
             web_note=web_note,
@@ -269,6 +278,7 @@ class ResearchService:
         *,
         text: str,
         lane: str,
+        topic_type: str,
         out: dict[str, Any],
         fallback: str,
         web_note: str,
@@ -278,7 +288,14 @@ class ResearchService:
     ) -> str:
         if web_note:
             fallback = f"{fallback}\n{web_note}"
-        reply = host._orchestrator_finalize(text, lane, out, fallback)
+        internal_reply = host._orchestrator_finalize(text, lane, out, fallback)
+        reply = host._reynard_relay(
+            user_text=text,
+            lane=lane,
+            internal_reply=internal_reply,
+            worker_result=out,
+            topic_type=topic_type,
+        )
         if web_note and web_note not in reply:
             reply = f"{reply}\n{web_note}"
         if queue_proposals:

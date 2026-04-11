@@ -99,7 +99,14 @@ def bg_retitle(conversation_id: str, store: ConversationStore, root: Path) -> No
             retry_attempts=1,
         )
         if result:
-            store.rename(conversation_id, result.strip()[:64])
+            new_title = result.strip()[:64]
+            store.rename(conversation_id, new_title)
+            updated = store.get(conversation_id)
+            if updated and str(updated.get("topic_id", "")).strip() not in ("", "general"):
+                project_slug = str(updated.get("project", "")).strip()
+                if project_slug and project_slug != "general":
+                    new_path = store._generate_path(project_slug, new_title)
+                    store.set_path(conversation_id, new_path)
     except Exception:
         LOGGER.exception("Background conversation retitle failed for %s.", conversation_id)
 

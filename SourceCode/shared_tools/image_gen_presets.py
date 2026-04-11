@@ -107,7 +107,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any] | None:
     model_family = str(row.get("model_family", "")).strip().lower()
     if model_family in {"sdxl"}:
         model_family = "xl"
-    if model_family not in {"", "sd15", "xl"}:
+    if model_family not in {"", "sd15", "xl", "xl_standard"}:
         model_family = ""
     normalized = {
         "id": preset_id,

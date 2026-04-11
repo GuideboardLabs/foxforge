@@ -1904,6 +1904,8 @@ body.sidebar-collapsed .sidebar {
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .msg-source-label {
@@ -1918,6 +1920,16 @@ body.sidebar-collapsed .sidebar {
     display: inline-flex;
     align-items: center;
     padding-left: 2px;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+
+.msg-source-stack::-webkit-scrollbar {
+    display: none;
 }
 
 .msg-source-bubble {
@@ -2334,9 +2346,16 @@ body.sidebar-collapsed .sidebar {
 }
 
 .composer-main-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 10px;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+}
+
+.composer-main-row > * {
     min-width: 0;
 }
 
@@ -3049,6 +3068,7 @@ body.sidebar-collapsed .sidebar {
     color: var(--ink-0);
     padding: 12px;
     font: inherit;
+    min-width: 0;
 }
 
 .composer textarea:focus {
@@ -7007,7 +7027,10 @@ body.panel-modal-open .panel-overlay {
     display: none;
     align-items: center;
     justify-content: center;
-    padding: 22px;
+    padding-top: max(22px, env(safe-area-inset-top, 0px));
+    padding-right: max(22px, env(safe-area-inset-right, 0px));
+    padding-bottom: max(22px, env(safe-area-inset-bottom, 0px));
+    padding-left: max(22px, env(safe-area-inset-left, 0px));
 }
 
 body.md-modal-open .md-overlay {
@@ -7022,7 +7045,8 @@ body.md-modal-open .md-overlay {
 
 .md-modal {
     position: relative;
-    width: min(980px, 92vw);
+    width: min(980px, calc(100vw - 44px));
+    max-width: calc(100vw - 44px);
     max-height: min(88vh, 960px);
     border-radius: 14px;
     border: 1px solid var(--palette-aqua);
@@ -7031,6 +7055,7 @@ body.md-modal-open .md-overlay {
     overflow: hidden;
     display: grid;
     grid-template-rows: auto 1fr;
+    min-width: 0;
 }
 
 .md-modal-header {
@@ -7041,6 +7066,12 @@ body.md-modal-open .md-overlay {
     padding: 14px 16px 12px;
     border-bottom: 1px solid var(--palette-navy);
     background: linear-gradient(180deg, var(--palette-navy), var(--palette-navy));
+    min-width: 0;
+}
+
+.md-title-wrap {
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
 .md-title-wrap h3 {
@@ -7052,7 +7083,8 @@ body.md-modal-open .md-overlay {
     margin: 4px 0 0;
     color: var(--ink-2);
     font-size: 0.76rem;
-    word-break: break-all;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .md-close-btn {
@@ -7065,6 +7097,7 @@ body.md-modal-open .md-overlay {
     font-weight: 700;
     cursor: pointer;
     flex: 0 0 auto;
+    margin-left: auto;
 }
 
 .md-close-btn:hover {
@@ -7080,6 +7113,10 @@ body.md-modal-open .md-overlay {
     overflow-wrap: break-word;
     word-break: break-word;
     min-width: 0;
+}
+
+.md-modal-content > * {
+    max-width: 100%;
 }
 
 .md-modal-content p,
@@ -8170,7 +8207,10 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
         display: block;
     }
     .md-overlay {
-        padding: 10px;
+        padding-top: max(10px, env(safe-area-inset-top, 0px));
+        padding-right: max(10px, env(safe-area-inset-right, 0px));
+        padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+        padding-left: max(10px, env(safe-area-inset-left, 0px));
     }
     .actions-overlay {
         padding: 10px;
@@ -8250,6 +8290,7 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
     }
     .md-modal {
         width: 100%;
+        max-width: 100%;
         max-height: 90vh;
     }
     .waypoint-overlay {
@@ -9887,7 +9928,18 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
         padding: 10px 11px;
     }
 
-.foraging-pill {
+    .md-modal {
+        width: calc(100vw - 20px);
+        max-width: calc(100vw - 20px);
+    }
+
+    .md-modal-header,
+    .md-modal-content {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .foraging-pill {
         max-width: none;
     }
 }

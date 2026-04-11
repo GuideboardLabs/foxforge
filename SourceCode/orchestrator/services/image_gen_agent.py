@@ -300,6 +300,7 @@ class ImageGenAgent(BaseAgentExecutor):
         cfg_realistic = lane_model_config(task.repo_root, "image_generation")
         cfg_sd15 = lane_model_config(task.repo_root, "image_generation_sd15")
         cfg_xl = lane_model_config(task.repo_root, "image_generation_xl")
+        cfg_xl_standard = lane_model_config(task.repo_root, "image_generation_xl_standard")
         cfg_compose = lane_model_config(task.repo_root, "image_generation_compose")
 
         positive_prompt: str = str(task.context.get("positive_prompt") or task.prompt).strip()
@@ -317,10 +318,13 @@ class ImageGenAgent(BaseAgentExecutor):
             model_family_override = "xl"
         if not model_family_override and workflow_override.strip().lower().startswith("sdxl"):
             model_family_override = "xl"
-        use_xl = bool(use_lora_pipeline and model_family_override == "xl")
+        use_xl = bool(use_lora_pipeline and model_family_override in {"xl", "xl_standard"})
 
         if use_lora_pipeline and use_xl:
-            cfg = dict(cfg_xl or {})
+            if model_family_override == "xl_standard":
+                cfg = dict(cfg_xl_standard or cfg_xl or {})
+            else:
+                cfg = dict(cfg_xl or {})
             if not cfg:
                 cfg = {
                     "base_url": cfg_sd15.get("base_url", cfg_realistic.get("base_url", "http://127.0.0.1:8188")),

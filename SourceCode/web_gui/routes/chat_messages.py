@@ -327,8 +327,10 @@ def _refine_negative_prompt(
     extras.extend([f"missing condition: {item}" for item in required_conditions if str(item).strip()])
 
     preset_key = str(preset_id or "").strip().lower()
-    _pony_presets = {"and_the_hound", "borderfox", "uwu_figurine", "painterly", "realism", "fixel"}
+    _pony_presets = {"and_the_hound", "borderfox", "uwu_figurine", "painterly", "realism", "fixel", "pastels", "unfinished_anime"}
     _strict_animal_presets = {"and_the_hound", "fixel"}
+    # Presets that must never produce furry/pony/cartoon source output regardless of subject
+    _antifurry_presets = {"pastels", "unfinished_anime"}
     if preset_key in _pony_presets and _pony_is_human_subject(text):
         extras.extend(_PONY_HYBRID_NEGATIVES)
     elif preset_key in _strict_animal_presets and bool(_PONY_ANIMAL_RE.search(text)):
@@ -336,6 +338,8 @@ def _refine_negative_prompt(
         extras.extend(_PONY_HYBRID_NEGATIVES)
         extras.extend(["humanoid", "bipedal", "standing upright", "human hands", "human feet", "clothed animal"])
         extras.extend(_PONY_ANIMAL_NSFW_NEGATIVES)
+    if preset_key in _antifurry_presets:
+        extras.extend(_PONY_SOURCE_ANTIFURRY_NEGATIVES)
     return _merge_negative_prompt_terms(negative_prompt, extras)
 
 
@@ -360,6 +364,12 @@ _PONY_ANIMAL_NSFW_NEGATIVES = [
     "breasts", "large breasts", "huge breasts", "big breasts", "cleavage", "nipples",
     "anthro female", "anthro male", "sexy pose", "pinup",
     "rating:explicit", "rating:questionable",
+]
+# Pony source-tag negatives — suppress furry/pony/cartoon training data bias entirely
+_PONY_SOURCE_ANTIFURRY_NEGATIVES = [
+    "source_furry", "source_pony", "source_cartoon",
+    "furry", "anthro", "kemono", "animal ears", "animal tail", "fur", "pony",
+    "score_4", "score_5",
 ]
 
 
@@ -708,6 +718,183 @@ def _refine_image_prompt(
                 extras.extend(["solo", "looking at viewer", "upper body"])
         extras.extend(scene_extras)
         return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "sketch_book":
+        extras = ["black and white drawing", "on white paper", "pencil sketch", "fine linework", "hand drawn"]
+        if subject == "scene":
+            extras.extend(["architectural detail", "cross-hatching", "ink wash"])
+        elif subject == "character":
+            extras.extend(["figure study", "expressive lines"])
+        elif subject == "object":
+            extras.extend(["still life sketch", "clean outlines"])
+        extras.extend(scene_extras)
+        return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "shirt_designs":
+        extras = ["T shirt design", "TshirtDesignAF", "bold lineart", "fabric texture", "flat design"]
+        if subject == "scene":
+            extras.extend(["landscape background", "dynamic perspective"])
+        elif subject == "character":
+            extras.extend(["character illustration", "dynamic pose"])
+        elif subject == "object":
+            extras.extend(["centered object", "clean composition"])
+        extras.extend(scene_extras)
+        return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "wallace_vomit":
+        extras = ["claymation", "stopmotion", "clay texture", "3d clay render", "soft lighting"]
+        if subject == "character":
+            extras.extend(["clay figure", "expressive face", "tactile surface"])
+        elif subject == "scene":
+            extras.extend(["miniature set", "handcrafted environment"])
+        extras.extend(scene_extras)
+        return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "ms_fainx":
+        # Ensure trigger word is present; otherwise pass through untouched
+        trigger = "MSPaint Portrait"
+        if trigger.lower() not in text.lower():
+            return f"{trigger} of {text}"
+        return text
+
+    if preset_key == "parchment":
+        extras = [
+            "on parchment",
+            "illustrated",
+            "annotated",
+            "ink and pigment",
+            "aged texture",
+            "detailed linework",
+            "dramatic composition",
+        ]
+        if subject == "scene" or not subject:
+            extras.extend(["wide establishing view", "atmospheric depth"])
+        elif subject == "character":
+            extras.extend(["silhouette", "expressive pose", "dramatic light"])
+        extras.extend(scene_extras)
+        return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "foxjourney":
+        extras = [
+            "highly detailed",
+            "intricate",
+            "sharp focus",
+            "dynamic lighting",
+            "epic composition",
+            "vibrant colors",
+            "masterpiece",
+            "professional digital art",
+        ]
+        if subject == "character":
+            extras.extend(["beautiful", "expressive face", "elegant", "detailed portrait"])
+        elif subject == "scene":
+            extras.extend(["cinematic", "atmospheric", "rich environment", "ambient light"])
+        extras.extend(scene_extras)
+        return f"{text}, {', '.join(extras)}"
+
+    if preset_key == "unfinished_anime":
+        trigger = "oamhfs"
+        quality_tags = "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up, source_anime, screenshots"
+        extras = ["anime style", "hand-drawn linework", "expressive shading", "sketch quality", "cel shaded"]
+        if subject == "character":
+            extras.extend(["detailed face", "expressive eyes", "dynamic pose", "monochrome"])
+        elif subject == "scene":
+            extras.extend(["anime background", "detailed environment", "cinematic framing"])
+        elif subject == "object":
+            extras.extend(["simple background", "centered", "clean lines"])
+        extras.extend(scene_extras)
+        has_trigger = trigger.lower() in text.lower()
+        body = f"{text}, {', '.join(extras)}"
+        return f"{quality_tags}, {trigger}, {body}" if not has_trigger else f"{quality_tags}, {body}"
+
+    if preset_key == "pastels":
+        trigger_phrase = "ncpy13 style pastels drawing"
+        quality_tags = "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up"
+        extras = ["pastel colors", "soft chalk texture", "dark background", "glowing light", "painterly"]
+        if subject == "scene":
+            extras.extend(["atmospheric depth", "ambient light", "rich environment"])
+        elif subject == "character":
+            extras.extend(["expressive", "detailed face", "soft shading"])
+        elif subject == "object":
+            extras.extend(["centered composition", "vivid colors"])
+        extras.extend(scene_extras)
+        has_trigger = trigger_phrase.lower() in text.lower()
+        body = f"{text}, {', '.join(extras)}, {quality_tags}"
+        return f"{trigger_phrase}, {body}" if not has_trigger else body
+
+    if preset_key == "illustration":
+        # "ch" is the LoRA trigger; inject it if absent
+        trigger = "ch"
+        has_trigger = bool(re.search(r'\bch\b', text))
+        extras = ["flat illustration", "storybook style", "colorful", "clean linework", "simple background", "graphic art"]
+        if subject == "scene":
+            extras.extend(["scenery", "outdoors", "sky", "cloud", "sun"])
+        elif subject == "character":
+            extras.extend(["solo", "expressive", "stylized figure"])
+        elif subject == "object":
+            extras.extend(["centered", "decorative", "white background"])
+        extras.extend(scene_extras)
+        body = f"{text}, {', '.join(extras)}"
+        return f"{trigger}, {body}" if not has_trigger else body
+
+    if preset_key == "foxel":
+        extras = ["voxel style", "voxel art", "isometric blocks", "3d pixel art", "cubic geometry", "bright colors", "game asset", "toy-like", "clean render"]
+        if subject == "character":
+            extras.extend(["action figure", "blocky figure", "centered composition"])
+        elif subject == "scene":
+            extras.extend(["voxel environment", "isometric view", "miniature world"])
+        elif subject == "object":
+            extras.extend(["voxel model", "centered", "simple background"])
+        extras.extend(scene_extras)
+        trigger = "voxel style"
+        prefix = trigger if trigger.lower() not in text.lower() else ""
+        body = f"{text}, {', '.join(extras)}"
+        return f"{prefix}, {body}" if prefix else body
+
+    if preset_key == "storyboard":
+        trigger = "storyboard sketch of"
+        # Trigger is a prefix phrase — strip any existing variant then prepend cleanly
+        stripped = text
+        for variant in ("storyboard sketch of ", "storyboard sketch "):
+            if stripped.lower().startswith(variant):
+                stripped = stripped[len(variant):]
+                break
+        extras = ["storyboard sketch", "black and white", "rough pencil lines", "dynamic composition", "cinematic framing", "action lines"]
+        if subject == "character":
+            extras.extend(["dramatic pose", "foreshortening", "motion blur", "dutch angle"])
+        elif subject == "scene":
+            extras.extend(["establishing shot", "wide angle", "environmental detail"])
+        elif subject == "object":
+            extras.extend(["centered composition", "bold outlines"])
+        extras.extend(scene_extras)
+        return f"{trigger} {stripped}, {', '.join(extras)}"
+
+    if preset_key == "fs1":
+        trigger = "ps1 style"
+        extras = ["game screenshot", "computer generated image", "low poly", "pixelated", "retro 3d", "ps1 graphics", "low resolution render", "n64 style"]
+        if subject == "character":
+            extras.extend(["blocky character model", "limited texture detail"])
+        elif subject == "scene":
+            extras.extend(["early 3d environment", "foggy draw distance"])
+        elif subject == "object":
+            extras.extend(["low poly model", "flat textures"])
+        prefix = f"({trigger})" if trigger.lower() not in text.lower() else ""
+        body = f"{text}, {', '.join(extras)}"
+        return f"{prefix}, {body}" if prefix else body
+
+    if preset_key == "lo_fi":
+        trigger = "dreamyvibes artstyle"
+        prefix = trigger if trigger.lower() not in text.lower() else ""
+        extras = ["dreamy", "soft pastel colors", "atmospheric", "cozy mood", "painterly", "lo-fi aesthetic"]
+        if subject == "scene":
+            extras.extend(["ambient light", "quiet atmosphere", "depth of field"])
+        elif subject == "character":
+            extras.extend(["gentle expression", "soft focus", "warm tones"])
+        elif subject == "object":
+            extras.extend(["still life", "soft shadows", "intimate scale"])
+        extras.extend(scene_extras)
+        body = f"{text}, {', '.join(extras)}"
+        return f"{prefix}, {body}" if prefix else body
 
     extras: list[str] = []
     if image_style == "realistic":

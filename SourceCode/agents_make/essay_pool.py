@@ -3,13 +3,13 @@
 Pipeline:
     1. Outline       — qwen2.5:7b reads research context + request, produces
                         section-by-section thesis map.
-    2. Section write — dolphin3:8b writes sections in parallel (max 3 workers,
+    2. Section write — qwen3:8b writes sections in parallel (max 3 workers,
                         ~400 words each), each receiving its specific thesis
                         + research context so it stays grounded.
-    3. Critic        — deepseek-r1:8b (or dolphin3 for underground) reads all
+    3. Critic        — deepseek-r1:8b reads all
                         sections and flags gaps, repetition, unsupported claims,
                         thesis drift. Skipped for "brief" target.
-    4. Revision      — dolphin3:8b applies critic notes to flagged sections.
+    4. Revision      — qwen3:8b applies critic notes to flagged sections.
                         Skipped for "brief" target.
     5. Compositor    — qwen2.5:7b assembles final document: title, smooth
                         transitions, consistent voice, final conclusion.
@@ -138,6 +138,15 @@ _SECTIONS_GENERAL = [
     ("Conclusion",                  "Synthesis and the most important takeaway for someone who needs to act on this."),
 ]
 
+_SECTIONS_PARENTING = [
+    ("Overview & Context",              "What this developmental topic is, the age/stage it applies to, and why it matters for this child's specific situation."),
+    ("What the Research Says",          "Evidence-based findings, with study quality noted (evidence tier + publication year). Flag where research samples are limited (e.g., predominantly male ASD studies, clinical vs. community populations)."),
+    ("Neurodiversity-Affirming Lens",   "Strengths-based and identity-affirming perspectives. Include autistic self-advocate viewpoints where available. Note where mainstream clinical framing diverges from affirming frameworks and what that means practically."),
+    ("Practical Strategies",            "Concrete, actionable approaches for home, school, and therapy settings. Distinguish well-supported approaches from anecdotal ones. Include low-cost and high-access options."),
+    ("Working With Professionals",      "What to ask pediatricians, therapists, and school teams specifically. What to advocate for. Questions to bring to the next appointment."),
+    ("Limitations & Open Questions",    "Research gaps, areas of active debate, and where lived experience and community knowledge outpaces the clinical literature."),
+]
+
 _SECTIONS_BRIEF = [
     ("Executive Summary",   "Bottom line: the most important finding or position in 2–3 sentences."),
     ("Key Findings",        "The 3–5 most significant findings from research, each with a confidence note."),
@@ -168,6 +177,7 @@ _SECTION_MAP: dict[str, list[tuple[str, str]]] = {
     "underground":    _SECTIONS_UNDERGROUND,
     "technical":      _SECTIONS_TECHNICAL,
     "math":           _SECTIONS_MATH,
+    "parenting":      _SECTIONS_PARENTING,
     "general":        _SECTIONS_GENERAL,
     "current_events": _SECTIONS_GENERAL,
     "blog":           _SECTIONS_BLOG,
@@ -187,7 +197,7 @@ def _sections_for(topic_type: str, target: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 _MODEL_OUTLINE    = "qwen2.5:7b"
-_MODEL_WRITER     = "dolphin3:8b"
+_MODEL_WRITER     = "qwen3:8b"
 _MODEL_CRITIC     = "deepseek-r1:8b"
 _MODEL_COMPOSITOR = "qwen2.5:7b"
 

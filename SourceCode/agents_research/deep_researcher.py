@@ -52,6 +52,7 @@ DEFAULT_DIRECTIVES = {persona: directive for persona, directive in RESEARCH_PERS
 ANALYSIS_PROFILE_TECHNICAL      = "technical_analysis"
 ANALYSIS_PROFILE_GENERAL        = "general_analysis"
 ANALYSIS_PROFILE_MEDICAL        = "medical_analysis"
+ANALYSIS_PROFILE_PARENTING      = "parenting_analysis"
 ANALYSIS_PROFILE_FINANCE        = "finance_analysis"
 ANALYSIS_PROFILE_SPORTS         = "sports_analysis"
 ANALYSIS_PROFILE_HISTORY        = "history_analysis"
@@ -71,7 +72,7 @@ LEGAL_ANALYSIS_DIRECTIVE = (
     "Flag where professional legal counsel is required."
 )
 STATISTICAL_ANALYSIS_MODEL = "deepseek-r1:8b"
-LEGAL_ANALYSIS_MODEL = "dolphin3:8b"
+LEGAL_ANALYSIS_MODEL = "qwen3:14b"
 
 TOPIC_TYPE_TO_PROFILE: dict[str, str] = {
     "sports":         ANALYSIS_PROFILE_SPORTS,
@@ -95,7 +96,7 @@ TOPIC_TYPE_TO_PROFILE: dict[str, str] = {
     "books":          ANALYSIS_PROFILE_GENERAL,
     "real_estate":    ANALYSIS_PROFILE_FINANCE,
     "automotive":     ANALYSIS_PROFILE_TECHNICAL,
-    "parenting":      ANALYSIS_PROFILE_GENERAL,
+    "parenting":      ANALYSIS_PROFILE_PARENTING,
     "tv_shows":       ANALYSIS_PROFILE_CURRENT_EVENTS,
     "movies":         ANALYSIS_PROFILE_CURRENT_EVENTS,
     "music":          ANALYSIS_PROFILE_CURRENT_EVENTS,
@@ -127,7 +128,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         return [
             {
                 "persona": "sports_context_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on current schedules, rosters, recent form, rankings, and event context. "
                     "For combat sports: confirm weight class, title type (divisional vs symbolic belt such as BMF), "
@@ -144,7 +145,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "sports_risk_analyst",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on injury reports, availability uncertainty, current momentum, venue/officiating factors, "
                     "and what could shift the expected outcome."
@@ -179,7 +180,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "technical_market_analyst",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on ecosystem maturity, adoption trends, community support, and competitive alternatives."
                 ),
@@ -193,7 +194,8 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "model": "deepseek-r1:8b",
                 "directive": (
                     "Focus on peer-reviewed evidence, trial data, systematic reviews. Note study quality, sample sizes, recency. "
-                    "Tag by evidence tier: RCT > observational > case study > expert opinion."
+                    "Tag by evidence tier: RCT > observational > case study > expert opinion. "
+                    "For every statistic or prevalence figure, include the publication year and flag if data is older than 3 years."
                 ),
             },
             {
@@ -201,7 +203,8 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "model": "deepseek-r1:8b",
                 "directive": (
                     "Cross-check against current clinical guidelines (WHO, CDC, NIH, specialty societies). "
-                    "Flag guideline versions and revision dates. Note evidence-guideline divergences."
+                    "Explicitly state the guideline version year (e.g., 'CDC 2023'). Flag when the most recent guideline is more than 3 years old. "
+                    "Note evidence-guideline divergences and any guidelines under active revision."
                 ),
             },
             {
@@ -225,6 +228,53 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "role": "advisory",
             },
         ]
+    if profile == ANALYSIS_PROFILE_PARENTING:
+        return [
+            {
+                "persona": "developmental_evidence_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "Focus on peer-reviewed developmental psychology, pediatric research, and educational studies. "
+                    "Tag evidence tier (RCT > observational > case study > expert opinion) and include publication years. "
+                    "Flag any prevalence statistics with their source year — developmental norms shift over time. "
+                    "For neurodiverse populations (autism, ADHD, sensory processing differences), note when study samples "
+                    "are representative vs. skewed (e.g., predominantly male samples, clinical vs. community populations)."
+                ),
+            },
+            {
+                "persona": "clinical_guideline_verifier",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "Cross-check against current pediatric and developmental guidelines (AAP, CDC, AOTA, ASHA, DSM-5-TR). "
+                    "Explicitly state guideline version years. Flag guidelines older than 3 years. "
+                    "Note where guidelines are being revised or where evidence and current practice diverge."
+                ),
+            },
+            {
+                "persona": "neurodiversity_perspective_researcher",
+                "model": "qwen3:14b",
+                "directive": (
+                    "Actively seek neurodiversity-affirming frameworks, perspectives, and research. "
+                    "This means: (1) Look for research and guidance written from a strengths-based or identity-affirming lens, not deficit-only. "
+                    "(2) Identify where the primary literature reflects a predominantly neurotypical or pathology framing and flag it. "
+                    "(3) Seek out autistic self-advocate perspectives, disability justice viewpoints, and culturally responsive approaches. "
+                    "(4) Flag where interventions have been critiqued by the autistic community vs. endorsed. "
+                    "(5) Look for intersectional considerations: how do gender, race, culture, and socioeconomic status affect diagnosis rates, "
+                    "access to support, and outcomes for neurodiverse children?"
+                ),
+            },
+            {
+                "persona": "practical_family_advisor",
+                "model": "qwen3:8b",
+                "directive": (
+                    "Focus on actionable, practical strategies families can use. Prioritize approaches that have real-world parent/caregiver evidence. "
+                    "Identify what school systems, therapists, and pediatricians can be asked for specifically. "
+                    "Flag cost, accessibility, and availability barriers. "
+                    "Note where online communities (e.g., autistic-led spaces, parent support groups) offer supplementary lived-experience knowledge "
+                    "beyond what appears in clinical literature."
+                ),
+            },
+        ]
     if profile == ANALYSIS_PROFILE_FINANCE:
         return [
             {
@@ -237,7 +287,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "fundamentals_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on valuation multiples, earnings/revenue trends, balance sheet health, competitive positioning."
                 ),
@@ -267,7 +317,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         return [
             {
                 "persona": "history_timeline_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on chronology, causal chains, periodization with explicit date anchors. "
                     "Identify pivotal turning points and distinguish immediate causes from structural forces."
@@ -283,7 +333,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "history_comparative_analyst",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on parallels with other periods or regions. What does this resemble? "
                     "What's different? What precedents exist and how reliable are they?"
@@ -316,7 +366,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "science_application_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on real-world applications, technology readiness level, practical implications, "
                     "and how this science connects to existing technologies or societal challenges."
@@ -360,7 +410,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         return [
             {
                 "persona": "policy_and_governance_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on what the policy, law, or governance structure actually says: text, legislative history, "
                     "implementation status, what it requires or prohibits. Stick to documented facts."
@@ -368,7 +418,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "stakeholder_and_power_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on key political actors, stated and actual interests, funding sources, alliances, "
                     "and how power dynamics shape outcomes."
@@ -393,7 +443,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         return [
             {
                 "persona": "breaking_developments_researcher",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus EXCLUSIVELY on confirmed recent developments from web sources. "
                     "Every claim must cite a specific source URL. Timeline developments with dates. "
@@ -411,7 +461,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "context_and_trajectory_analyst",
-                "model": "dolphin3:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on why this story is developing, what precedes it, and where key signals indicate it's heading. "
                     "Track narrative arc and inflection points."
@@ -464,7 +514,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
     return [
         {
             "persona": "context_and_background_researcher",
-            "model": "dolphin3:8b",
+            "model": "qwen3:8b",
             "directive": (
                 "Focus on background context, key actors, historical origins, and why this topic exists. "
                 "Establish essential who/what/when/where."
@@ -480,7 +530,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         },
         {
             "persona": "implications_researcher",
-            "model": "dolphin3:8b",
+            "model": "qwen3:8b",
             "directive": (
                 "Focus on second-order effects, downstream consequences, stakeholder impacts, "
                 "and what matters most for someone who needs to act on this."
