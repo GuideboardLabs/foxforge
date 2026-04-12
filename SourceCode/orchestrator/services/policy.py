@@ -7,7 +7,9 @@ from typing import Any
 
 
 _LIVE_TOKENS = {
-    "today", "tonight", "live", "weigh-in", "weighin", "start time", "what time", "stream", "watch", "odds", "line", "favorite", "underdog"
+    "today", "tonight", "live", "weigh-in", "weighin", "start time", "what time", "stream", "watch", "odds", "line", "favorite", "underdog",
+    "upcoming", "next event", "fight card", "card", "schedule", "scheduled", "bout", "next fight", "next ufc", "next ppv",
+    "when is", "event date", "fight night", "main event", "co-main", "prelims", "early prelims",
 }
 _WORKSPACE_TOKENS = {
     "file", "repo", "repository", "patch", "refactor", "function", "class", "code", "workspace", "bug", "python", "javascript", "typescript"

@@ -58,6 +58,7 @@ from web_gui.routes import (
     create_chat_blueprint,
     create_family_blueprint,
     create_jobs_blueprint,
+    create_library_blueprint,
     create_personal_memory_blueprint,
     create_projects_blueprint,
     create_system_blueprint,
@@ -215,6 +216,8 @@ def create_app() -> Flask:
     app.register_blueprint(create_chat_blueprint(ctx))
 
     app.register_blueprint(create_jobs_blueprint(ctx))
+
+    app.register_blueprint(create_library_blueprint(ctx))
 
     app.register_blueprint(create_watchtower_blueprint(ctx))
 

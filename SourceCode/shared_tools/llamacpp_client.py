@@ -56,6 +56,7 @@ class LlamaCppClient:
         temperature: float = 0.3,
         num_ctx: int = 8192,
         think: bool | None = None,
+        num_predict: int | None = None,
         timeout: int = 300,
         retry_attempts: int = 1,
         retry_backoff_sec: float = 1.25,
@@ -73,10 +74,20 @@ class LlamaCppClient:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_prompt})
 
+        try:
+            predict = int(num_predict) if num_predict is not None else -1
+        except (TypeError, ValueError):
+            predict = -1
+        if predict <= 0:
+            # OpenAI-compatible llama.cpp endpoints often default to low max_tokens if omitted.
+            # Force a high generation ceiling to avoid clipped replies.
+            predict = max(2048, min(int(num_ctx or 8192), 8192))
+
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": predict,
             "stream": False,
         }
 

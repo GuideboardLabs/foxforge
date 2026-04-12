@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 import re
 import threading
 from datetime import datetime, timezone
@@ -23,6 +24,9 @@ from web_gui.utils.history_builders import (
 
 if TYPE_CHECKING:
     from web_gui.app_context import AppContext
+
+
+LOGGER = logging.getLogger(__name__)
 
 _IMAGE_GEN_DIRECT_RE = re.compile(r"\b(/imagine|text[- ]?to[- ]?image|t2i|recreate)\b", re.IGNORECASE)
 _IMAGE_REF_TOKEN_RE = re.compile(r"\{image\s*\d+\}", re.IGNORECASE)
@@ -60,6 +64,7 @@ _SETTING_ENTITY_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_TRAILING_ASSISTANT_RULE_RE = re.compile(r"(?:\n\s*\*\*\*\s*)+\Z", re.MULTILINE)
 
 
 def _is_image_gen_request(text: str) -> bool:
@@ -73,6 +78,13 @@ def _is_image_gen_request(text: str) -> bool:
     if _IMAGE_GEN_OF_RE.search(low):
         return True
     return bool(_IMAGE_GEN_VERB_RE.search(low) and _IMAGE_GEN_NOUN_RE.search(low))
+
+
+def _strip_trailing_assistant_rule(text: str) -> str:
+    raw = str(text or "").rstrip()
+    if not raw:
+        return ""
+    return _TRAILING_ASSISTANT_RULE_RE.sub("", raw).rstrip()
 
 
 def _normalize_lora_selection(raw: Any) -> list[str]:
@@ -1072,6 +1084,45 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         if user_msg is None:
             abort(404, description="Conversation not found")
 
+        doc_attachments_for_library = [
+            dict(row)
+            for row in attachments
+            if str(row.get("type", "")).strip().lower() == "document" and str(row.get("filename", "")).strip()
+        ]
+        if doc_attachments_for_library:
+            repo_root = ctx.repo_root_for_profile(profile)
+            conversation_topic_id = str(convo.get("topic_id", "")).strip()
+            conversation_project_slug = _normalize_project_slug(convo.get("project"))
+
+            def _enqueue_library_intake() -> None:
+                try:
+                    service = ctx.library_service_for(profile)
+                    attach_dir = ctx.attachment_dir_for(profile, conversation_id)
+                    for row in doc_attachments_for_library:
+                        source_file = attach_dir / str(row.get("filename", "")).strip()
+                        if not source_file.exists():
+                            continue
+                        item = service.intake_file(
+                            source_file,
+                            source_name=str(row.get("name", "")).strip() or source_file.name,
+                            mime=str(row.get("mime", "")).strip().lower(),
+                            source_kind="general",
+                            title="",
+                            topic_id=conversation_topic_id if conversation_topic_id not in {"", "general"} else "",
+                            project_slug=conversation_project_slug if conversation_project_slug != "general" else "",
+                            source_origin="chat_upload",
+                            conversation_id=conversation_id,
+                        )
+                        service.enqueue_ingest(str(item.get("id", "")).strip())
+                except Exception:
+                    LOGGER.exception("Library auto-intake failed for conversation %s in %s.", conversation_id, repo_root)
+
+            threading.Thread(
+                target=_enqueue_library_intake,
+                daemon=True,
+                name=f"foxforge-library-chat-{conversation_id[:8]}",
+            ).start()
+
         def _cancel_requested() -> bool:
             return ctx.job_manager.is_cancel_requested(profile, request_id)
 
@@ -1322,6 +1373,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         if attachment_notes:
             notes_block = "\n".join([f"- {item}" for item in attachment_notes])
             reply_text = f"{reply_text}\n\nAttachment notes:\n{notes_block}"
+
+        reply_text = _strip_trailing_assistant_rule(reply_text)
 
         if project_update:
             store.set_project(conversation_id, project=project_update)

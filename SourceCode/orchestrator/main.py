@@ -27,6 +27,7 @@ from shared_tools.model_routing import load_model_routing, lane_model_config
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.answer_composer import compose_research_summary, evaluate_answer_confidence
 from shared_tools.fact_cards import render_fact_card_markdown
+from shared_tools.fact_policy import classify_fact_volatility, detect_topic_type
 from shared_tools.perf_trace import PerfTrace
 from orchestrator.services import OrchestratorInfraRuntime, ResearchService, TurnPlanner, WorkerResult
 from orchestrator.services.agent_contracts import AgentTask
@@ -108,6 +109,16 @@ _BUILD_INTENT_TERMS = frozenset({
 })
 
 _APP_TARGETS = frozenset({"app", "web_app", "standalone_app", "dashboard", "landing_page", "api"})
+
+_LIVE_VERIFICATION_MARKERS = frozenset({
+    "today", "tonight", "right now", "live", "latest", "current", "recent",
+    "upcoming", "next", "this weekend", "this week", "breaking",
+    "odds", "line", "spread", "moneyline", "favorite",
+    "score", "result", "winner", "standings", "ranking", "bracket", "playoff",
+    "fight card", "main card", "prelims", "co-main", "main event", "weigh-in",
+    "kickoff", "tipoff", "broadcast", "stream", "airing", "start time",
+    "who is on", "who's on", "when is", "what time", "scheduled",
+})
 _TOOL_TARGETS = frozenset({"tool", "script"})
 _CREATIVE_TARGETS = frozenset({"novel", "memoir", "book", "screenplay"})
 _CONTENT_TARGETS = frozenset({"blog", "social_post", "email"})
@@ -203,6 +214,10 @@ class FoxforgeOrchestrator:
     @property
     def embedding_memory(self):
         return self._infra.embedding_memory
+
+    @property
+    def library_service(self):
+        return self._infra.library_service
 
     @property
     def watchtower(self):
@@ -613,6 +628,7 @@ class FoxforgeOrchestrator:
             except Exception:
                 return ""
 
+        prior_messages = history[-24:] if isinstance(history, list) else []
         web_note = ""
         web_context = ""
         web_topic_type = "general"
@@ -622,19 +638,27 @@ class FoxforgeOrchestrator:
                 web_topic_type = str(mode_info.get("topic_type", "general")).strip().lower() or "general"
         except Exception:
             web_topic_type = "general"
-        try:
-            # Talk mode stays conversational, but recency/source-sensitive prompts
-            # can still get live web grounding before final response generation.
-            web_note, web_context, _ = self._prepare_web_context(text=text, lane="project", topic_type=web_topic_type)
-        except Exception:
-            web_note = ""
-            web_context = ""
         recency_sensitive = self._is_recency_sensitive(text)
         evolving_topic = self._is_evolving_topic(text)
-        prior_messages = history[-24:] if isinstance(history, list) else []
         if not recency_sensitive and prior_messages:
             if self._is_recency_sensitive_from_history(prior_messages):
                 recency_sensitive = True
+        live_query_text = self._contextual_live_query(text, prior_messages)
+        must_verify_live = self._requires_live_verification(live_query_text, web_topic_type)
+        if must_verify_live:
+            recency_sensitive = True
+        try:
+            # Talk mode stays conversational, but recency/source-sensitive prompts
+            # can still get live web grounding before final response generation.
+            web_note, web_context, _ = self._prepare_web_context(
+                text=live_query_text if must_verify_live else text,
+                lane="project",
+                topic_type=web_topic_type,
+                force=must_verify_live,
+            )
+        except Exception:
+            web_note = ""
+            web_context = ""
         _context_analysis, household_context, personal_context, context_guidance = self._context_bundle_for_query(
             text,
             household_chars=1100,
@@ -642,7 +666,16 @@ class FoxforgeOrchestrator:
         )
         # ── user_prompt: inject web context with mode-appropriate framing ──
         user_prompt = text
-        if evolving_topic and web_context.strip():
+        if must_verify_live and web_context.strip():
+            user_prompt = (
+                f"{text}\n\n"
+                "Live verification context (system-retrieved):\n"
+                f"{web_context.strip()}\n\n"
+                "Use the live context above for all current facts. "
+                "If a requested detail is missing, unclear, or conflicting in the live context, say you could not verify it. "
+                "Do not fill gaps from memory, prior patterns, or likely trends."
+            )
+        elif evolving_topic and web_context.strip():
             # Mode B: Evolving Knowledge — blend training + web
             user_prompt = (
                 f"{text}\n\n"
@@ -672,6 +705,14 @@ class FoxforgeOrchestrator:
                 "your training cutoff (e.g. 'as of my last update...'). "
                 "Offer to run a live search to verify the answer is still current.]"
             )
+        elif must_verify_live:
+            response = (
+                "I can't verify that current information reliably from training data alone, so I won't guess.\n\n"
+                "I need live web sources to answer that safely. If you want, I can run a live forage/search and give you a sourced answer."
+            )
+            response = self._append_daymarker_note(response, web_note)
+            response = self._append_daymarker_note(response, event_note)
+            return self._append_daymarker_note(response, reminder_note)
         elif recency_sensitive:
             user_prompt = (
                 f"{text}\n\n"
@@ -682,7 +723,15 @@ class FoxforgeOrchestrator:
                 "After answering, briefly offer to run a live search for current information.]"
             )
         # ── RECENCY / FRESHNESS rule injected into system prompt ──
-        if recency_sensitive and web_context.strip():
+        if must_verify_live and web_context.strip():
+            _recency_rule = (
+                "LIVE VERIFICATION RULE: This request depends on current facts. "
+                "Use only the live web context for those facts. "
+                "If a requested detail is not clearly supported by the live context, explicitly say you could not verify it. "
+                "Do not infer, estimate, or guess from memory, trends, prior cards, likely schedules, or partial matches. "
+                "When possible, cite the source URLs or domains that support the verified details."
+            )
+        elif recency_sensitive and web_context.strip():
             _recency_rule = (
                 "RECENCY RULE: This question requires current information. "
                 "You have live web context — cite specific source URLs from it for any current facts. "
@@ -729,6 +778,15 @@ class FoxforgeOrchestrator:
             _topic_ctx = self.topic_memory.get_context_for_query(text)
         except Exception:
             pass
+        _library_ctx = ""
+        try:
+            _library_ctx = self.library_service.context_text(
+                text,
+                project_slug=project_slug,
+                limit=2,
+            )
+        except Exception:
+            pass
         _general_ctx = ""
         try:
             _pool_query = text
@@ -744,7 +802,7 @@ class FoxforgeOrchestrator:
         # ── Tiered system prompt: core always, extended only for substantive turns ──
         _has_injected_context = bool(
             household_context.strip() or personal_context.strip()
-            or web_context.strip() or _recency_rule
+            or web_context.strip() or _recency_rule or _library_ctx.strip()
         )
         _is_short_query = len(text.split()) < 10
 
@@ -819,6 +877,8 @@ class FoxforgeOrchestrator:
             _sys_parts.append(household_context)
         if _topic_ctx:
             _sys_parts.append(_topic_ctx)
+        if _library_ctx:
+            _sys_parts.append(_library_ctx)
         if _general_ctx:
             _sys_parts.append(_general_ctx)
         if _talk_guidance:
@@ -887,9 +947,10 @@ class FoxforgeOrchestrator:
 
         system_prompt = (
             "You are the internal Foxforge orchestrator. "
-            "You receive worker outputs and return a terse execution summary for an upper messenger layer. "
+            "You receive worker outputs and return a faithful execution summary for an upper messenger layer. "
             "No persona, no charm, no motivational language. "
             "Always include: what completed, where outputs were written, and next best action. "
+            "Do not arbitrarily compress or shorten content; include all materially relevant details. "
             "IMPORTANT: Any URLs, web sources, or fetched pages in the worker result were retrieved "
             "AUTONOMOUSLY by the system's web crawler — they were NOT provided or shared by the user. "
             "Never say 'based on the links you provided' or 'from the URLs you gave me'. "
@@ -899,7 +960,7 @@ class FoxforgeOrchestrator:
             f"User request:\n{user_text}\n\n"
             f"Route lane: {lane}\n\n"
             f"Worker result object:\n{worker_result}\n\n"
-            "Return plain text, 3-6 lines."
+            "Return plain text. Be complete and include all materially relevant findings."
         )
         try:
             return self.ollama.chat(
@@ -944,7 +1005,7 @@ class FoxforgeOrchestrator:
             "Stay faithful to the internal summary and worker result. Do not invent outcomes, paths, or evidence. "
             "Do not claim you personally executed tools or worker jobs. "
             "If something failed or is partial, say so plainly. "
-            "Prefer concise, high-signal reporting. "
+            "Prioritize clarity and completeness; be concise only when it does not omit important details. "
             "If a next action is obvious, mention it once without turning it into a lecture."
         )
         user_prompt = (
@@ -1041,6 +1102,16 @@ class FoxforgeOrchestrator:
             _lr_topic_ctx = self.topic_memory.get_context_for_query(question)
             if _lr_topic_ctx:
                 context_bits.insert(0, _lr_topic_ctx)
+        except Exception:
+            pass
+        try:
+            _lr_library_ctx = self.library_service.context_text(
+                question,
+                project_slug=self.project_slug,
+                limit=2,
+            )
+            if _lr_library_ctx:
+                context_bits.append(_lr_library_ctx)
         except Exception:
             pass
         retrieved = self.embedding_memory.context_text(self.project_slug, question, limit=2)
@@ -1356,6 +1427,44 @@ class FoxforgeOrchestrator:
     def _is_evolving_topic(self, text: str) -> bool:
         return is_evolving_topic(text)
 
+    def _requires_live_verification(self, text: str, topic_type: str = "general") -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        low = raw.lower()
+        if self._is_recency_sensitive(raw):
+            return True
+        resolved_type = detect_topic_type(raw, topic_type)
+        volatility = classify_fact_volatility(raw, topic_type, raw)
+        if resolved_type in {"combat_sports", "sports_event"}:
+            if any(marker in low for marker in _LIVE_VERIFICATION_MARKERS):
+                return True
+            if any(token in low for token in {"card", "bout", "matchup", "opponent", "fight", "vs", "versus"}):
+                return True
+        if volatility == "volatile":
+            return bool(self._is_recency_sensitive(raw) or resolved_type in {"current_events", "combat_sports", "sports_event"})
+        return False
+
+    @staticmethod
+    def _contextual_live_query(text: str, prior_messages: list[dict[str, str]] | None = None) -> str:
+        base = str(text or "").strip()
+        rows = prior_messages if isinstance(prior_messages, list) else []
+        if not base or not rows:
+            return base
+        recent_users: list[str] = []
+        for row in rows[-8:]:
+            if str(row.get("role", "")).strip().lower() != "user":
+                continue
+            content = str(row.get("content", "")).strip()
+            if content:
+                recent_users.append(content)
+        if not recent_users:
+            return base
+        if len(base.split()) >= 12:
+            return base
+        combined = " ".join(recent_users[-2:] + [base]).strip()
+        return combined[:500]
+
     def _extract_rejected_tool(self, text: str) -> str:
         return extract_rejected_tool(text)
 
@@ -1407,7 +1516,7 @@ class FoxforgeOrchestrator:
             return ""
         return body[: max(500, min(limit, 30000))]
 
-    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general") -> tuple[str, str, dict[str, Any]]:
+    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general", force: bool = False) -> tuple[str, str, dict[str, Any]]:
         mode = self.web_engine.get_mode()
         lane_key = lane.strip().lower()
         normalized_topic_type = str(topic_type or "").strip().lower() or "general"
@@ -1433,7 +1542,9 @@ class FoxforgeOrchestrator:
             "crawl_failures": 0,
             "sources": [],
         }
-        if mode == "off" or not self._should_offer_web(text, lane_key):
+        if mode == "off":
+            return "", "", details
+        if not force and not self._should_offer_web(text, lane_key):
             return "", "", details
 
         reason = "Live web refresh for source citations and recency checks."
@@ -2188,6 +2299,12 @@ class FoxforgeOrchestrator:
         retrieved_context = self.embedding_memory.context_text(self.project_slug, text, limit=2)
         if retrieved_context:
             project_context = (project_context + "\n\n" + retrieved_context).strip()
+        try:
+            library_context = self.library_service.context_text(text, project_slug=self.project_slug, limit=2)
+            if library_context:
+                project_context = (project_context + "\n\n" + library_context).strip()
+        except Exception:
+            pass
         # Watchtower appended at the END of context so it receives recency attention
         # from the model (time-sensitive briefings should be read close to the user message).
         _briefing_context = self._watchtower_context_for_query()

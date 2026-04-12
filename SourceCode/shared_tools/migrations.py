@@ -395,6 +395,94 @@ def _migration_016_bot_user_mappings(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_017_library_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS library_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'general',
+            mime TEXT NOT NULL DEFAULT '',
+            ext TEXT NOT NULL DEFAULT '',
+            file_size INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            markdown_path TEXT NOT NULL DEFAULT '',
+            summary_path TEXT NOT NULL DEFAULT '',
+            topic_id TEXT NOT NULL DEFAULT '',
+            project_slug TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'queued',
+            error_text TEXT NOT NULL DEFAULT '',
+            source_origin TEXT NOT NULL DEFAULT 'manual_upload',
+            conversation_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            ingested_at TEXT NOT NULL DEFAULT ''
+        );
+        """.strip()
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_library_items_status_created "
+        "ON library_items(status, created_at DESC);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_library_items_hash "
+        "ON library_items(content_hash, updated_at DESC);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_library_items_topic_project "
+        "ON library_items(topic_id, project_slug, updated_at DESC);"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS library_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            heading TEXT NOT NULL DEFAULT '',
+            chunk_text TEXT NOT NULL DEFAULT '',
+            embedding_json TEXT NOT NULL DEFAULT '',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            char_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(item_id) REFERENCES library_items(id) ON DELETE CASCADE
+        );
+        """.strip()
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_library_chunks_item "
+        "ON library_chunks(item_id, chunk_index ASC);"
+    )
+
+
+def _migration_018_web_cache_chunks(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS web_cache_chunks (
+            id TEXT PRIMARY KEY,
+            project TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            domain TEXT NOT NULL DEFAULT '',
+            snippet TEXT NOT NULL DEFAULT '',
+            source_score REAL NOT NULL DEFAULT 0.0,
+            source_tier TEXT NOT NULL DEFAULT 'tier3',
+            crawled_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """.strip()
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_web_cache_chunks_project_expires "
+        "ON web_cache_chunks(project, expires_at DESC);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_web_cache_chunks_url "
+        "ON web_cache_chunks(url, crawled_at DESC);"
+    )
+
+
 MIGRATIONS: Sequence[Migration] = (
     Migration(version=1, name="baseline_app_meta", apply=_migration_001_baseline),
     Migration(version=2, name="lessons_table", apply=_migration_002_lessons),
@@ -409,6 +497,8 @@ MIGRATIONS: Sequence[Migration] = (
     Migration(version=14, name="domain_reputation_table", apply=_migration_014_domain_reputation),
     Migration(version=15, name="forage_cards_table", apply=_migration_015_forage_cards),
     Migration(version=16, name="bot_user_mappings_table", apply=_migration_016_bot_user_mappings),
+    Migration(version=17, name="library_tables", apply=_migration_017_library_tables),
+    Migration(version=18, name="web_cache_chunks", apply=_migration_018_web_cache_chunks),
 )
 
 

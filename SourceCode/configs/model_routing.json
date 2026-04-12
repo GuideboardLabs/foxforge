@@ -11,7 +11,7 @@
   "reynard_layer": {
     "purpose": "User-facing messenger layer above the internal orchestrator",
     "provider": "ollama",
-    "model": "llama3.1-abliterated:8b",
+    "model": "huihui_ai/qwen3.5-abliterated:9b",
     "temperature": 0.9,
     "num_ctx": 16384,
     "timeout_sec": 240,
@@ -26,7 +26,7 @@
   "conversation_layer": {
     "purpose": "Legacy direct uncensored conversational fallback",
     "provider": "ollama",
-    "model": "llama3.1-abliterated:8b",
+    "model": "huihui_ai/qwen3.5-abliterated:9b",
     "temperature": 0.8,
     "num_ctx": 16384,
     "timeout_sec": 240,

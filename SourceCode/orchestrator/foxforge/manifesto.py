@@ -21,7 +21,11 @@ def load_manifesto_text(
                Mutated in place on cache miss.
         max_chars: Maximum characters to return.
     """
-    path = manifesto_path or (repo_root / "Runtime" / "config" / "foxforge_manifesto.md")
+    if manifesto_path:
+        path = manifesto_path
+    else:
+        bonfire = repo_root / "Runtime" / "config" / "BONFIRE.md"
+        path = bonfire if bonfire.exists() else (repo_root / "Runtime" / "config" / "foxforge_manifesto.md")
     try:
         stat = Path(path).stat()
     except OSError:

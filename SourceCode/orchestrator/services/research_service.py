@@ -84,7 +84,7 @@ class ResearchService:
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before project-research execution started."
-        web_note, web_context, web_details = host._prepare_web_context(text=text, lane="project", topic_type=topic_type)
+        web_note, web_context, web_details = host._prepare_web_context(text=text, lane="project", topic_type=topic_type, force=True)
         self._emit_web_progress(progress_callback, web_details)
         out = self._run_research_pool(
             text=text,
@@ -184,7 +184,7 @@ class ResearchService:
         reminder_note: str = "",
         event_note: str = "",
     ) -> str:
-        web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type)
+        web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type, force=True)
         self._emit_web_progress(progress_callback, web_details)
         out = self._run_research_pool(
             text=text,

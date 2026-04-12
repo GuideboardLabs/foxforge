@@ -15,6 +15,7 @@ from shared_tools.project_pipeline import ProjectPipelineStore
 from shared_tools.self_reflection import SelfReflectionEngine
 from shared_tools.topic_memory import TopicMemory
 from shared_tools.general_knowledge_pool import GeneralKnowledgePool
+from shared_tools.library_service import LibraryService
 from shared_tools.watchtower import WatchtowerEngine
 from shared_tools.web_research import WebResearchEngine
 from shared_tools.workspace_tools import WorkspaceTools
@@ -142,6 +143,7 @@ class OrchestratorInfraRuntime:
         registry.register("personal_memory", self.personal_memory, description="Personal context memory")
         registry.register("workspace_tools", self.workspace_tools, description="Workspace helper toolkit")
         registry.register("embedding_memory", self.embedding_memory, description="Embedding-backed memory")
+        registry.register("library_service", self.library_service, description="Library retrieval service")
         if bus is not None:
             registry.register("bus", bus, description="Activity bus")
         return registry
@@ -157,6 +159,12 @@ class OrchestratorInfraRuntime:
         if "general_pool" not in self._cache:
             self._cache["general_pool"] = GeneralKnowledgePool(self.repo_root)
         return self._cache["general_pool"]
+
+    @property
+    def library_service(self) -> LibraryService:
+        if "library_service" not in self._cache:
+            self._cache["library_service"] = LibraryService(self.repo_root)
+        return self._cache["library_service"]
 
     @property
     def watchtower(self) -> WatchtowerEngine:

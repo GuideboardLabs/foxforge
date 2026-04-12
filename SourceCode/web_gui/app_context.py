@@ -10,6 +10,7 @@ from flask import abort, session
 
 from shared_tools.conversation_store import ConversationStore
 from shared_tools.family_auth import FamilyAuthStore
+from shared_tools.library_service import LibraryService
 from shared_tools.project_pipeline import ProjectPipelineStore
 from shared_tools.web_push import (
     get_user_settings as get_web_push_user_settings,
@@ -124,6 +125,9 @@ class AppContext:
 
     def pipeline_for(self, profile: dict[str, Any]) -> ProjectPipelineStore:
         return ProjectPipelineStore(self.repo_root_for_profile(profile))
+
+    def library_service_for(self, profile: dict[str, Any]) -> LibraryService:
+        return LibraryService(self.repo_root_for_profile(profile))
 
     # ------------------------------------------------------------------
     # Cache

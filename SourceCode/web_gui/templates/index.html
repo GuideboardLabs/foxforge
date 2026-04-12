@@ -112,6 +112,17 @@
                 [[ panelBadgeValue(panelStatus.topics_with_research) ]]
               </span>
             </button>
+                            <button class="panel-btn panel-btn-library" type="button" @click="openSystemPanel('library')">
+              <span class="panel-btn-main">
+                <span class="junction-icon junction-icon-library" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v18H7.5A2.5 2.5 0 0 0 5 22V4.5zm12.2 13.7V3.8H7.5a.7.7 0 0 0-.7.7v14.13c.23-.07.46-.1.7-.1h9.7zM9 7h6.5v1.5H9V7zm0 3h6.5v1.5H9V10zm0 3h4.8v1.5H9V13z"/></svg>
+                </span>
+                <span class="panel-btn-label">Library</span>
+              </span>
+              <span class="panel-badge" v-if="panelBadgeValue(panelStatus.library_items_pending)">
+                [[ panelBadgeValue(panelStatus.library_items_pending) ]]
+              </span>
+            </button>
                             <button class="panel-btn panel-btn-briefings" type="button" @click="openSystemPanel('briefings')">
               <span class="panel-btn-main">
                 <span class="junction-icon junction-icon-briefings" aria-hidden="true">
@@ -270,6 +281,10 @@
                     <span>Guideposts</span>
                     <strong>[[ Number(lessonsUnreadCount || 0) ]]</strong>
                   </button>
+                                    <button class="home-junction-btn" type="button" @click="openSystemPanel('library')">
+                    <span>Library</span>
+                    <strong>[[ Number(panelStatus.library_items_pending || panelStatus.library_items_total || 0) ]]</strong>
+                  </button>
                                     <button class="home-junction-btn" type="button" @click="openSystemPanel('briefings')">
                     <span>Briefings</span>
                     <strong>[[ Number(panelStatus.briefings_unread || 0) ]]</strong>
@@ -316,25 +331,8 @@
                 <span></span>
                 <span></span>
               </button>
-                            <div class="chat-title-wrap">
-                                <h2>[[ activeTitle ]]</h2>
-                                <p>
-                                    The Junction - artifact: [[ activeProject ]] · topic: [[ activeTopicId || 'general' ]]
-                                    <span class="project-mode-pill" :class="`is-${projectPipeline.mode || 'discovery'}`">
-                    [[ projectModeLabel ]]
-                  </span>
-                                </p>
-                            </div>
                         </div>
                         <div class="chat-header-right">
-                            <div class="foraging-pill" :class="{
-                  'is-paused': panelStatus.foraging_paused,
-                  'is-active': (panelStatus.foraging_active_jobs || 0) > 0,
-                  'is-yielding': panelStatus.foraging_yielding
-                }" :title="foragingStatusTitle">
-                                <span class="foraging-dot"></span>
-                                <span>[[ foragingStatusShort ]]</span>
-                            </div>
                             <div class="composer-mode-segment" role="tablist" aria-label="Composer mode">
                                 <button class="composer-mode-btn" type="button" :class="{ 'is-active': inputMode === 'talk' }" @click="setComposerMode('talk')" title="Talk" aria-label="Talk">
                   <span class="composer-mode-icon composer-mode-icon-aa" aria-hidden="true">Aa</span>
@@ -349,17 +347,6 @@
                   <span class="composer-mode-label">Create</span>
                 </button>
                             </div>
-                            <button
-                                v-if="inputMode === 'make'"
-                                class="chat-menu-btn create-target-btn"
-                                type="button"
-                                @click="setProjectBuildTarget"
-                                :title="`Set delivery target (current: ${makeTargetLabel})`"
-                                aria-label="Set delivery target"
-                            >
-                                <span class="create-target-prefix">Target</span>
-                                <span class="create-target-value">[[ makeTargetLabel ]]</span>
-                            </button>
                             <button
                                 class="chat-menu-btn image-tool-launch-btn"
                                 type="button"
@@ -622,7 +609,6 @@
                                 <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
                             </button>
                             <button class="composer-send-btn" type="submit" :disabled="activeConversationSending || (!draft.trim() && !(composerImages || []).length)" aria-label="Send">
-                              &#x2191;
                               <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false" style="flex-shrink:0"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                             </button>
                         </div>
@@ -1076,6 +1062,67 @@
                 <div class="modal-form-actions">
                     <button type="button" class="modal-form-btn" @click="closeTopicPickerModal">Cancel</button>
                     <button type="button" class="modal-form-btn" @click="goToTopicsPanel">Create New Topic &rarr;</button>
+                </div>
+            </section>
+        </section>
+    </div>
+
+    <div class="modal-form-overlay" :aria-hidden="libraryIntakeOpen ? 'false' : 'true'" v-show="libraryIntakeOpen">
+        <div class="modal-form-backdrop" @click="closeLibraryIntakeModal"></div>
+        <section class="modal-form-modal" role="dialog" aria-modal="true" aria-label="Add Library item">
+            <header class="modal-form-header">
+                <div>
+                    <h3>Add to Library</h3>
+                    <p>Upload private source material and turn it into reusable local context.</p>
+                </div>
+                <button type="button" class="modal-form-close" @click="closeLibraryIntakeModal">&times;</button>
+            </header>
+            <section class="modal-form-body modal-form">
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Documents</span>
+                    <input ref="libraryFileInput" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.csv" @change="onLibraryFilesSelected" />
+                </label>
+                <div v-if="libraryIntakeFiles.length" class="topic-card" style="margin-bottom:12px;">
+                    <div class="topic-card-head">
+                        <span class="topic-card-name">Selected files</span>
+                        <span class="topic-active-pill">[[ libraryIntakeFiles.length ]]</span>
+                    </div>
+                    <p class="topic-card-desc">[[ libraryIntakeFiles.map(file => file.name).join(', ') ]]</p>
+                </div>
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Title override (optional)</span>
+                    <input v-model="libraryIntakeTitle" type="text" placeholder="Recommended for single-file intake only" />
+                </label>
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Document kind</span>
+                    <select v-model="libraryIntakeSourceKind">
+                        <option value="general">General</option>
+                        <option value="book">Book</option>
+                        <option value="review">Review</option>
+                        <option value="reference">Reference</option>
+                        <option value="notes">Notes</option>
+                    </select>
+                </label>
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Topic link (optional)</span>
+                    <select v-model="libraryIntakeTopicId">
+                        <option value="">No topic link</option>
+                        <option v-for="topic in libraryTopicOptions" :key="'library_topic_' + topic.id" :value="topic.id">[[ topic.name ]]</option>
+                    </select>
+                </label>
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Project link (optional)</span>
+                    <select v-model="libraryIntakeProjectSlug">
+                        <option value="">No project link</option>
+                        <option v-for="project in libraryProjectOptions" :key="'library_project_' + project" :value="project">[[ project ]]</option>
+                    </select>
+                </label>
+                <p v-if="libraryIntakeError" class="danger-zone-modal-warning">[[ libraryIntakeError ]]</p>
+                <div class="modal-form-actions">
+                    <button type="button" class="modal-form-btn" @click="closeLibraryIntakeModal">Cancel</button>
+                    <button type="button" class="modal-form-btn is-primary" :disabled="libraryIntakeSubmitting || !libraryIntakeFiles.length" @click="submitLibraryIntake">
+                        [[ libraryIntakeSubmitting ? 'Uploading...' : 'Ingest to Library' ]]
+                    </button>
                 </div>
             </section>
         </section>
@@ -1583,6 +1630,132 @@
                     </div>
                   </div>
                   <div v-if="!briefingRows.length" class="panel-empty">No matching briefings yet. Run a watch or adjust filters.</div>
+                </template>
+
+                <template v-else-if="panelKey === 'library'">
+                  <div class="watch-row-actions" style="margin-bottom:12px;">
+                    <button class="panel-action-btn" type="button" @click="openLibraryIntakeModal">Add Library Item</button>
+                  </div>
+                  <div class="second-brain-stat-grid" style="margin-bottom:12px;">
+                    <article class="second-brain-stat-card">
+                      <strong>[[ Number(libraryPanelContext.counts?.total || 0) ]]</strong>
+                      <span>Total items</span>
+                    </article>
+                    <article class="second-brain-stat-card">
+                      <strong>[[ Number(libraryPanelContext.counts?.pending || 0) ]]</strong>
+                      <span>Pending</span>
+                    </article>
+                    <article class="second-brain-stat-card">
+                      <strong>[[ Number(libraryPanelContext.counts?.ready || 0) ]]</strong>
+                      <span>Ready</span>
+                    </article>
+                    <article class="second-brain-stat-card">
+                      <strong>[[ Number(libraryPanelContext.counts?.failed || 0) ]]</strong>
+                      <span>Failed</span>
+                    </article>
+                  </div>
+                  <div class="briefings-toolbar">
+                    <div class="briefings-filter-row">
+                      <select class="watch-input" v-model="libraryFilter.status">
+                        <option value="all">All statuses</option>
+                        <option value="queued">Queued</option>
+                        <option value="extracting">Extracting</option>
+                        <option value="matching_topic">Matching topic</option>
+                        <option value="chunking">Chunking</option>
+                        <option value="embedding">Embedding</option>
+                        <option value="summarizing">Summarizing</option>
+                        <option value="ready">Ready</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                      <select class="watch-input" v-model="libraryFilter.kind">
+                        <option value="all">All kinds</option>
+                        <option value="general">General</option>
+                        <option value="book">Book</option>
+                        <option value="review">Review</option>
+                        <option value="reference">Reference</option>
+                        <option value="notes">Notes</option>
+                      </select>
+                      <select class="watch-input" v-model="libraryFilter.topic_id">
+                        <option value="">All topics</option>
+                        <option v-for="topic in libraryTopicOptions" :key="'library_filter_topic_' + topic.id" :value="topic.id">[[ topic.name ]]</option>
+                      </select>
+                      <select class="watch-input" v-model="libraryFilter.project_slug">
+                        <option value="">All projects</option>
+                        <option v-for="project in libraryProjectOptions" :key="'library_filter_project_' + project" :value="project">[[ project ]]</option>
+                      </select>
+                    </div>
+                    <input class="input-field" v-model="libraryFilter.search" placeholder="Filter by title or file..." />
+                  </div>
+                  <div v-if="filteredLibraryItems.length">
+                    <div class="topic-card" v-for="item in filteredLibraryItems" :key="item.id">
+                      <div class="topic-card-head">
+                        <span class="topic-type-badge" :class="'is-' + (item.source_kind || 'general')">[[ item.source_kind || 'general' ]]</span>
+                        <span class="topic-card-name">[[ item.title || item.source_name ]]</span>
+                        <span class="topic-active-pill">[[ item.status ]]</span>
+                      </div>
+                      <p class="topic-card-desc">[[ item.source_name ]]</p>
+                      <div class="topic-card-meta">
+                        <span v-if="item.project_slug">project: [[ item.project_slug ]]</span>
+                        <span v-if="item.topic_id">topic linked</span>
+                        <span>chunks: [[ Number(item.chunk_count || 0) ]]</span>
+                      </div>
+                      <div class="watch-row-actions">
+                        <button class="panel-action-btn is-small" type="button" @click="openLibraryDetail(item)">Detail</button>
+                        <button class="panel-action-btn is-small" type="button" @click="openLibraryMarkdown(item)" :disabled="!item.markdown_path">Markdown</button>
+                        <button class="panel-action-btn is-small" type="button" @click="openLibrarySource(item)">Source</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="panel-empty">No Library items match the current filters.</div>
+                </template>
+
+                <template v-else-if="panelKey === 'library_detail'">
+                  <button class="panel-action-btn is-small" type="button" style="margin-bottom:12px;" @click="openSystemPanel('library')">&larr; All Library Items</button>
+                  <div v-if="libraryDetailItem" class="topic-card">
+                    <div class="topic-card-head">
+                      <span class="topic-type-badge" :class="'is-' + (libraryDetailItem.source_kind || 'general')">[[ libraryDetailItem.source_kind || 'general' ]]</span>
+                      <span class="topic-card-name">[[ libraryDetailItem.title || libraryDetailItem.source_name ]]</span>
+                      <span class="topic-active-pill">[[ libraryDetailItem.status ]]</span>
+                    </div>
+                    <div class="life-admin-form-grid" style="margin-top:12px;">
+                      <input v-model="libraryDetailItem.title" class="watch-input" type="text" placeholder="Title" />
+                      <select v-model="libraryDetailItem.source_kind" class="watch-input">
+                        <option value="general">General</option>
+                        <option value="book">Book</option>
+                        <option value="review">Review</option>
+                        <option value="reference">Reference</option>
+                        <option value="notes">Notes</option>
+                      </select>
+                      <select v-model="libraryDetailItem.topic_id" class="watch-input">
+                        <option value="">No topic link</option>
+                        <option v-for="topic in libraryTopicOptions" :key="'library_detail_topic_' + topic.id" :value="topic.id">[[ topic.name ]]</option>
+                      </select>
+                      <select v-model="libraryDetailItem.project_slug" class="watch-input">
+                        <option value="">No project link</option>
+                        <option v-for="project in libraryProjectOptions" :key="'library_detail_project_' + project" :value="project">[[ project ]]</option>
+                      </select>
+                    </div>
+                    <div class="panel-card-meta" style="margin-top:8px;">
+                      <span>Source: [[ libraryDetailItem.source_name ]]</span>
+                      <span>MIME: [[ libraryDetailItem.mime || 'n/a' ]]</span>
+                      <span>Size: [[ formatFileSize(libraryDetailItem.file_size) ]]</span>
+                    </div>
+                    <div class="panel-card-meta">
+                      <span>Created: [[ formatDate(libraryDetailItem.created_at) || 'n/a' ]]</span>
+                      <span>Updated: [[ formatDate(libraryDetailItem.updated_at) || 'n/a' ]]</span>
+                      <span>Chunks: [[ Number(libraryDetailItem.chunk_count || 0) ]]</span>
+                    </div>
+                    <p v-if="libraryDetailItem.error_text" class="danger-zone-modal-warning" style="margin-top:10px;">[[ libraryDetailItem.error_text ]]</p>
+                    <div class="watch-row-actions" style="margin-top:12px;">
+                      <button class="panel-action-btn is-small" type="button" @click="saveLibraryDetail">Save</button>
+                      <button class="panel-action-btn is-small" type="button" :disabled="!libraryDetailItem.markdown_path" @click="openLibraryMarkdown()">Open Markdown</button>
+                      <button class="panel-action-btn is-small" type="button" @click="openLibrarySource()">Open Source</button>
+                      <button class="panel-action-btn is-small is-danger" type="button" @click="deleteLibraryDetail">Delete</button>
+                    </div>
+                  </div>
+                  <div v-if="libraryDetailItem && libraryDetailItem._summary_html" class="briefing-content" v-html="libraryDetailItem._summary_html" style="margin-top:12px;"></div>
+                  <div v-else-if="libraryDetailItem" class="panel-empty">Summary not ready yet for this Library item.</div>
+                  <div v-else class="panel-empty">Library detail unavailable.</div>
                 </template>
 
                 <template v-else-if="panelKey === 'second-brain'">
@@ -2113,7 +2286,7 @@
 
                 <div v-else-if="!(panelData || []).length" class="panel-empty">No items found for this panel.</div>
 
-                <template v-if="!['watchtower','briefings','life-admin','second-brain','topics','topic_detail','system'].includes(panelKey)">
+                <template v-if="!['watchtower','briefings','library','library_detail','life-admin','second-brain','topics','topic_detail','system'].includes(panelKey)">
                 <article v-for="(row, idx) in panelRows" :key="row.id || row.created_at || idx" class="panel-card" :class="{ 'is-unread': panelKey === 'reflections' && !reflectionIsRead(row) }">
                     <template v-if="panelKey === 'reflections'">
               <header class="panel-card-head">

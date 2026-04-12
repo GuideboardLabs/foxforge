@@ -761,8 +761,12 @@ function collapsePlainUrlsToDomains(text) {
   });
 }
 
+function stripTrailingAssistantRule(text) {
+  return String(text || "").replace(/(?:\n\s*\*\*\*\s*)+$/g, "").trimEnd();
+}
+
 function normalizeTalkDisplayMarkdown(text) {
-  const trimmed = stripTrailingSourceSection(String(text || ""));
+  const trimmed = stripTrailingSourceSection(stripTrailingAssistantRule(String(text || "")));
   const noMarkdownLinks = collapseMarkdownLinksToLabels(trimmed);
   return collapsePlainUrlsToDomains(noMarkdownLinks).trim();
 }
@@ -1121,6 +1125,7 @@ const app = window.Vue.createApp({
       _voiceRecognition: null,
       sendingByConversation: {},
       sendingJobStage: {},
+      assistantTypingByMessage: {},
       quickActionBusy: {},
       completedWaypointActions: {},
       chatMenuOpen: false,
@@ -1149,6 +1154,8 @@ const app = window.Vue.createApp({
         action_proposals_pending: 0,
         watchtower_active: 0,
         topics_with_research: 0,
+        library_items_total: 0,
+        library_items_pending: 0,
       },
       watchtowerForm: { topic: "", profile: "general", schedule: "daily", schedule_hour: 7 },
       briefingsFilter: { mode: "unread", search: "" },
@@ -1182,6 +1189,22 @@ const app = window.Vue.createApp({
       pendingActionsLoading: false,
       panelKey: "",
       panelData: [],
+      libraryIntakeOpen: false,
+      libraryIntakeSubmitting: false,
+      libraryIntakeFiles: [],
+      libraryIntakeTitle: "",
+      libraryIntakeSourceKind: "general",
+      libraryIntakeTopicId: "",
+      libraryIntakeProjectSlug: "",
+      libraryIntakeError: "",
+      libraryFilter: {
+        search: "",
+        status: "all",
+        kind: "all",
+        topic_id: "",
+        project_slug: "",
+      },
+      libraryDetailItem: null,
       contentTreeRoot: "",
       contentTreeNodes: [],
       contentTreeNodeCount: 0,
@@ -1848,6 +1871,7 @@ const app = window.Vue.createApp({
         this.panelStatus?.foraging_active_jobs,
         this.reflectionsUnreadCount,
         this.lessonsUnreadCount,
+        this.panelStatus?.library_items_pending,
         this.panelStatus?.topics_with_research,
         this.panelStatus?.briefings_unread,
         this.panelStatus?.watchtower_active,
@@ -1871,6 +1895,7 @@ const app = window.Vue.createApp({
         this.waypointContactModalOpen ||
         this.projectPickerOpen ||
         this.projectTargetModalOpen ||
+        this.libraryIntakeOpen ||
         this.topicPickerOpen ||
         this.familyProfileModalOpen ||
         this.waypointMemberEditorOpen ||
@@ -2024,6 +2049,49 @@ const app = window.Vue.createApp({
           String(t.type || "").toLowerCase().includes(q)
       );
     },
+    libraryPanelContext() {
+      return this.panelData && typeof this.panelData === "object" && !Array.isArray(this.panelData)
+        ? this.panelData
+        : { items: [], counts: {}, topics: [], projects: [] };
+    },
+    libraryTopicOptions() {
+      return Array.isArray(this.libraryPanelContext.topics) ? this.libraryPanelContext.topics : [];
+    },
+    libraryProjectOptions() {
+      return Array.isArray(this.libraryPanelContext.projects) ? this.libraryPanelContext.projects : [];
+    },
+    filteredLibraryItems() {
+      const ctx = this.libraryPanelContext;
+      const rows = Array.isArray(ctx.items) ? ctx.items.slice() : [];
+      const q = String(this.libraryFilter.search || "").trim().toLowerCase();
+      const wantedStatus = String(this.libraryFilter.status || "all").trim().toLowerCase();
+      const wantedKind = String(this.libraryFilter.kind || "all").trim().toLowerCase();
+      const wantedTopic = String(this.libraryFilter.topic_id || "").trim();
+      const wantedProject = String(this.libraryFilter.project_slug || "").trim().toLowerCase();
+      return rows.filter((row) => {
+        const title = String(row?.title || row?.source_name || "").toLowerCase();
+        const kind = String(row?.source_kind || "").trim().toLowerCase();
+        const status = String(row?.status || "").trim().toLowerCase();
+        const topicId = String(row?.topic_id || "").trim();
+        const projectSlug = String(row?.project_slug || "").trim().toLowerCase();
+        if (q && !title.includes(q) && !String(row?.source_name || "").toLowerCase().includes(q)) {
+          return false;
+        }
+        if (wantedStatus !== "all" && status !== wantedStatus) {
+          return false;
+        }
+        if (wantedKind !== "all" && kind !== wantedKind) {
+          return false;
+        }
+        if (wantedTopic && topicId !== wantedTopic) {
+          return false;
+        }
+        if (wantedProject && projectSlug !== wantedProject) {
+          return false;
+        }
+        return true;
+      });
+    },
     taskReminderPreviewDateLabel() {
       const dateText = String(this.taskReminderDialog?.date || "").trim();
       const timeText = normalizeTimeText(this.taskReminderDialog?.time || "");
@@ -2172,6 +2240,12 @@ const app = window.Vue.createApp({
       if (this.panelKey === "briefings") {
         return "Briefings";
       }
+      if (this.panelKey === "library") {
+        return "Library";
+      }
+      if (this.panelKey === "library_detail") {
+        return this.libraryDetailItem ? `Library: ${this.libraryDetailItem.title || this.libraryDetailItem.source_name}` : "Library Detail";
+      }
       if (this.panelKey === "life-admin") {
         return "Life Admin";
       }
@@ -2219,6 +2293,12 @@ const app = window.Vue.createApp({
       }
       if (this.panelKey === "briefings") {
         return "Actionable briefings with confidence, risks, and next steps.";
+      }
+      if (this.panelKey === "library") {
+        return "Private source documents, ingestion status, and reusable knowledge.";
+      }
+      if (this.panelKey === "library_detail") {
+        return "Document metadata, summary, markdown preview, and source links.";
       }
       if (this.panelKey === "forage-cards") {
         return "Saved research cards from completed Forage runs. Pin to keep.";
@@ -3176,6 +3256,7 @@ const app = window.Vue.createApp({
           this.webPushModalOpen ||
           this.projectPickerOpen ||
           this.projectTargetModalOpen ||
+          this.libraryIntakeOpen ||
           this.waypointMemberEditorOpen ||
           this.waypointTaskModalOpen ||
           this.waypointEventModalOpen ||
@@ -4145,8 +4226,152 @@ const app = window.Vue.createApp({
       return stripTalkPrefix(content);
     },
 
+    assistantDisplayRaw(msg) {
+      const cleaned = stripTrailingAssistantRule(String(msg?.content || ""))
+        .replace(/\n?\[FORAGE:\s*"[^"]*"\]/gi, "")
+        .replace(/\n?\[ADD_TASK:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_EVENT:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_SHOPPING:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_ROUTINE:[^\]]*\]/gi, "")
+        .trimEnd();
+      const id = String(msg?.id || "").trim();
+      if (!id) {
+        return cleaned;
+      }
+      const typing = this.assistantTypingByMessage && this.assistantTypingByMessage[id];
+      if (!typing || typeof typing.text !== "string") {
+        return cleaned;
+      }
+      if (typing.text !== cleaned) {
+        this.stopAssistantTypewriter(id);
+        return cleaned;
+      }
+      const shown = Math.max(0, Math.min(Number(typing.shown || 0), typing.text.length));
+      return typing.text.slice(0, shown);
+    },
+
+    isAssistantTypewriting(msg) {
+      const id = String(msg?.id || "").trim();
+      if (!id) {
+        return false;
+      }
+      const typing = this.assistantTypingByMessage && this.assistantTypingByMessage[id];
+      if (!typing || typeof typing.text !== "string") {
+        return false;
+      }
+      return Number(typing.shown || 0) < typing.text.length;
+    },
+
+    stopAssistantTypewriter(messageId) {
+      const id = String(messageId || "").trim();
+      if (!id) {
+        return;
+      }
+      if (this._assistantTypingTimers && this._assistantTypingTimers[id]) {
+        window.clearTimeout(this._assistantTypingTimers[id]);
+        delete this._assistantTypingTimers[id];
+      }
+      if (this.assistantTypingByMessage && this.assistantTypingByMessage[id]) {
+        const next = Object.assign({}, this.assistantTypingByMessage);
+        delete next[id];
+        this.assistantTypingByMessage = next;
+      }
+    },
+
+    stopAllAssistantTypewriters() {
+      if (this._assistantTypingTimers) {
+        for (const timer of Object.values(this._assistantTypingTimers)) {
+          window.clearTimeout(timer);
+        }
+      }
+      this._assistantTypingTimers = {};
+      this.assistantTypingByMessage = {};
+    },
+
+    startAssistantTypewriterForMessage(msg) {
+      const id = String(msg?.id || "").trim();
+      if (!id) {
+        return;
+      }
+      const full = String(msg?.content || "")
+        .replace(/\n?\[FORAGE:\s*"[^"]*"\]/gi, "")
+        .replace(/\n?\[ADD_TASK:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_EVENT:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_SHOPPING:[^\]]*\]/gi, "")
+        .replace(/\n?\[ADD_ROUTINE:[^\]]*\]/gi, "")
+        .trimEnd();
+      if (!full) {
+        this.stopAssistantTypewriter(id);
+        return;
+      }
+      if (!this._assistantTypingTimers) {
+        this._assistantTypingTimers = {};
+      }
+      this.stopAssistantTypewriter(id);
+      this.assistantTypingByMessage = Object.assign({}, this.assistantTypingByMessage, {
+        [id]: { text: full, shown: 0 },
+      });
+      const total = full.length;
+      const step = total > 6000 ? 34 : total > 3200 ? 22 : total > 1800 ? 14 : total > 900 ? 9 : 5;
+      const delayMs = total > 3200 ? 10 : 14;
+      let lastScrollTs = 0;
+      const tick = () => {
+        const row = this.assistantTypingByMessage && this.assistantTypingByMessage[id];
+        if (!row || row.text !== full) {
+          this.stopAssistantTypewriter(id);
+          return;
+        }
+        const current = Number(row.shown || 0);
+        if (current >= total) {
+          this.stopAssistantTypewriter(id);
+          this.$nextTick(() => this.scrollMessages());
+          return;
+        }
+        const nextShown = Math.min(total, current + step);
+        this.assistantTypingByMessage = Object.assign({}, this.assistantTypingByMessage, {
+          [id]: { text: full, shown: nextShown },
+        });
+        const now = Date.now();
+        if (now - lastScrollTs > 90) {
+          lastScrollTs = now;
+          this.$nextTick(() => this.scrollMessages());
+        }
+        if (nextShown >= total) {
+          this.stopAssistantTypewriter(id);
+          this.$nextTick(() => this.scrollMessages());
+          return;
+        }
+        this._assistantTypingTimers[id] = window.setTimeout(tick, delayMs);
+      };
+      this._assistantTypingTimers[id] = window.setTimeout(tick, delayMs);
+    },
+
+    findLatestAssistantMessageForRequest(messages, requestId) {
+      const rows = Array.isArray(messages) ? messages : [];
+      const rid = String(requestId || "").trim();
+      for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const row = rows[i];
+        if (String(row?.role || "").trim().toLowerCase() !== "assistant") {
+          continue;
+        }
+        if (!rid || String(row?.request_id || "").trim() === rid) {
+          return row;
+        }
+      }
+      return null;
+    },
+
+    startAssistantTypewriterFromConversation(conversation, requestId = "") {
+      const rows = Array.isArray(conversation?.messages) ? conversation.messages : [];
+      const target = this.findLatestAssistantMessageForRequest(rows, requestId);
+      if (!target) {
+        return;
+      }
+      this.startAssistantTypewriterForMessage(target);
+    },
+
     assistantContent(msg) {
-      const raw = String(msg?.content || "");
+      const raw = this.assistantDisplayRaw(msg);
       const mode = String(msg?.mode || "").trim().toLowerCase();
       const isTalkLike = mode === "talk" || (!mode && !Boolean(msg?.foraging));
       const cacheKey = `${isTalkLike ? "talk" : "std"}|${raw.length}|${raw.slice(0, 180)}|${raw.slice(-96)}`;
@@ -4156,15 +4381,11 @@ const app = window.Vue.createApp({
           return cached.html;
         }
       }
-      const displayRaw = raw
-        .replace(/\n?\[FORAGE:\s*"[^"]*"\]/gi, "")
-        .replace(/\n?\[ADD_TASK:[^\]]*\]/gi, "")
-        .replace(/\n?\[ADD_EVENT:[^\]]*\]/gi, "")
-        .replace(/\n?\[ADD_SHOPPING:[^\]]*\]/gi, "")
-        .replace(/\n?\[ADD_ROUTINE:[^\]]*\]/gi, "")
-        .trimEnd();
-      const text = isTalkLike ? normalizeTalkDisplayMarkdown(displayRaw) : displayRaw;
-      const html = markdownToHtml(decorateAssistantMarkdown(text));
+      const text = isTalkLike ? normalizeTalkDisplayMarkdown(raw) : raw;
+      const htmlBase = markdownToHtml(decorateAssistantMarkdown(text));
+      const html = this.isAssistantTypewriting(msg)
+        ? `${htmlBase}<span class="msg-type-cursor" aria-hidden="true"></span>`
+        : htmlBase;
       if (msg && typeof msg === "object") {
         ASSISTANT_HTML_CACHE.set(msg, { key: cacheKey, html });
       }
@@ -5482,6 +5703,7 @@ const app = window.Vue.createApp({
     async copyMsgToClipboard(msg) {
       let text = String(msg?.content || "").trim();
       if (String(msg?.role || "").trim().toLowerCase() === "assistant") {
+        text = stripTrailingAssistantRule(text);
         const mode = String(msg?.mode || "").trim().toLowerCase();
         const isTalkLike = mode === "talk" || (!mode && !Boolean(msg?.foraging));
         if (isTalkLike) {
@@ -6154,15 +6376,16 @@ const app = window.Vue.createApp({
             const hasAssistantReply = convo.messages.some(
               (row) => String(row?.role || "").trim().toLowerCase() === "assistant" && String(row?.request_id || "").trim() === rid
             );
-            if (hasAssistantReply) {
-              if (String(this.activeConversationId || "").trim() === convoId) {
-                this.activeConversation = convo;
-                this.activeConversationId = convo.id;
-                this.setActiveProject(convo.project || this.activeProject);
-              }
-              try {
-                await this.refreshConversations();
-              } catch (_refreshErr) {}
+              if (hasAssistantReply) {
+                if (String(this.activeConversationId || "").trim() === convoId) {
+                  this.activeConversation = convo;
+                  this.activeConversationId = convo.id;
+                  this.setActiveProject(convo.project || this.activeProject);
+                  this.startAssistantTypewriterFromConversation(convo, rid);
+                }
+                try {
+                  await this.refreshConversations();
+                } catch (_refreshErr) {}
               try {
                 await this.refreshPanelBadges();
               } catch (_refreshErr) {}
@@ -6258,6 +6481,8 @@ const app = window.Vue.createApp({
           watchtower_active: Number(payload.watchtower_active || 0),
           topics_with_research: Number(payload.topics_with_research || 0),
           forage_cards_pinned: Number(payload.forage_cards_pinned || 0),
+          library_items_total: Number(payload.library_items_total || 0),
+          library_items_pending: Number(payload.library_items_pending || 0),
         };
         await this.refreshLessonsUnreadCount();
         await this.refreshReflectionsUnreadCount();
@@ -6281,8 +6506,10 @@ const app = window.Vue.createApp({
           foraging_active_jobs: 0,
           foraging_yielding: false,
           briefings_unread: 0,
-            watchtower_active: 0,
+          watchtower_active: 0,
           topics_with_research: 0,
+          library_items_total: 0,
+          library_items_pending: 0,
         };
         this.lessonsUnreadCount = 0;
         this.reflectionsUnreadCount = 0;
@@ -6344,6 +6571,7 @@ const app = window.Vue.createApp({
       this.panelKey = "";
       this.panelData = [];
       this.projectDetail = null;
+      this.libraryDetailItem = null;
       this.updateBodyClasses();
     },
 
@@ -6367,6 +6595,7 @@ const app = window.Vue.createApp({
       this.closeEmailSettingsModal();
       this.closeProjectPickerModal();
       this.closeProjectBuildTargetModal();
+      this.closeLibraryIntakeModal();
       this.closeWaypointMemberEditor();
       this.closeTopicPickerModal();
       this.closeResetModal();
@@ -7010,6 +7239,25 @@ const app = window.Vue.createApp({
             : [];
           return;
         }
+        if (this.panelKey === "library") {
+          const payload = await this.apiGet("/api/panel/library?limit=150");
+          this.panelData = payload && typeof payload === "object" ? payload : { items: [], counts: {}, topics: [], projects: [] };
+          return;
+        }
+        if (this.panelKey === "library_detail") {
+          const itemId = String(this.libraryDetailItem?.id || "").trim();
+          if (!itemId) {
+            this.libraryDetailItem = null;
+            this.panelData = {};
+            return;
+          }
+          const payload = await this.apiGet(`/api/library/${encodeURIComponent(itemId)}`);
+          this.libraryDetailItem = payload?.item
+            ? { ...payload.item, _summary_html: markdownToHtml(String(payload.item.summary_markdown || "")) }
+            : null;
+          this.panelData = payload?.item || {};
+          return;
+        }
         if (this.panelKey === "forage-cards") {
           const payload = await this.apiGet("/api/forage-cards?limit=50");
           this.panelData = Array.isArray(payload.cards) ? payload.cards : [];
@@ -7055,7 +7303,7 @@ const app = window.Vue.createApp({
 
     async openSystemPanel(panelKey) {
       const key = String(panelKey || "").trim().toLowerCase();
-      if (!["foraging", "reflections", "lessons", "handoffs", "outbox", "projects", "project_detail", "content", "watchtower", "briefings", "forage-cards", "life-admin", "second-brain", "topics", "topic_detail", "system"].includes(key)) {
+      if (!["foraging", "reflections", "lessons", "handoffs", "outbox", "projects", "project_detail", "content", "watchtower", "briefings", "library", "library_detail", "forage-cards", "life-admin", "second-brain", "topics", "topic_detail", "system"].includes(key)) {
         return;
       }
       this.chatMenuOpen = false;
@@ -7075,6 +7323,158 @@ const app = window.Vue.createApp({
         this.panelData = [];
         window.alert(`Panel load failed: ${String(err.message || err)}`);
       }
+    },
+
+    openLibraryIntakeModal() {
+      this.chatMenuOpen = false;
+      this.libraryIntakeOpen = true;
+      this.libraryIntakeSubmitting = false;
+      this.libraryIntakeError = "";
+      this.libraryIntakeFiles = [];
+      this.libraryIntakeTitle = "";
+      this.libraryIntakeSourceKind = "general";
+      this.libraryIntakeTopicId = String(this.activeTopicId || "").trim() === "general" ? "" : String(this.activeTopicId || "").trim();
+      this.libraryIntakeProjectSlug = normalizeProjectSlug(this.activeProject) === "general" ? "" : normalizeProjectSlug(this.activeProject);
+      this.updateBodyClasses();
+    },
+
+    closeLibraryIntakeModal() {
+      this.libraryIntakeOpen = false;
+      this.libraryIntakeSubmitting = false;
+      this.libraryIntakeError = "";
+      this.libraryIntakeFiles = [];
+      if (this.$refs.libraryFileInput) {
+        this.$refs.libraryFileInput.value = "";
+      }
+      this.updateBodyClasses();
+    },
+
+    onLibraryFilesSelected(event) {
+      const files = Array.from(event?.target?.files || []);
+      this.libraryIntakeFiles = files;
+      this.libraryIntakeError = "";
+    },
+
+    async submitLibraryIntake() {
+      if (this.libraryIntakeSubmitting) {
+        return;
+      }
+      const files = Array.isArray(this.libraryIntakeFiles) ? this.libraryIntakeFiles : [];
+      if (!files.length) {
+        this.libraryIntakeError = "Choose at least one document.";
+        return;
+      }
+      this.libraryIntakeSubmitting = true;
+      this.libraryIntakeError = "";
+      try {
+        const formData = new FormData();
+        formData.append("source_kind", String(this.libraryIntakeSourceKind || "general").trim() || "general");
+        if (String(this.libraryIntakeTitle || "").trim()) {
+          formData.append("title", String(this.libraryIntakeTitle || "").trim());
+        }
+        if (String(this.libraryIntakeTopicId || "").trim()) {
+          formData.append("topic_id", String(this.libraryIntakeTopicId || "").trim());
+        }
+        if (String(this.libraryIntakeProjectSlug || "").trim()) {
+          formData.append("project_slug", normalizeProjectSlug(this.libraryIntakeProjectSlug));
+        }
+        for (const file of files) {
+          formData.append("files", file, file.name || "document");
+        }
+        const payload = await this.apiPostForm("/api/library/intake", formData);
+        const errors = Array.isArray(payload?.errors) ? payload.errors.filter(Boolean) : [];
+        const imported = Array.isArray(payload?.items) ? payload.items.length : 0;
+        if (errors.length && !imported) {
+          this.libraryIntakeError = errors.join("\n");
+          return;
+        }
+        if (errors.length) {
+          window.alert(`Imported ${imported} item(s). Some files were skipped:\n\n${errors.join("\n")}`);
+        }
+        this.closeLibraryIntakeModal();
+        if (this.panelKey === "library") {
+          await this.refreshSystemPanel();
+        }
+        await this.refreshPanelBadges();
+      } catch (err) {
+        this.libraryIntakeError = String(err.message || err);
+      } finally {
+        this.libraryIntakeSubmitting = false;
+      }
+    },
+
+    async openLibraryDetail(row) {
+      const itemId = String(row?.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      this.libraryDetailItem = { ...(row || {}) };
+      await this.openSystemPanel("library_detail");
+    },
+
+    async saveLibraryDetail() {
+      const itemId = String(this.libraryDetailItem?.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      try {
+        const payload = await this.apiPatch(`/api/library/${encodeURIComponent(itemId)}`, {
+          title: String(this.libraryDetailItem?.title || "").trim(),
+          source_kind: String(this.libraryDetailItem?.source_kind || "general").trim(),
+          topic_id: String(this.libraryDetailItem?.topic_id || "").trim(),
+          project_slug: String(this.libraryDetailItem?.project_slug || "").trim(),
+        });
+        this.libraryDetailItem = payload?.item
+          ? { ...payload.item, _summary_html: markdownToHtml(String(payload.item.summary_markdown || "")) }
+          : this.libraryDetailItem;
+        this.panelData = this.libraryDetailItem || {};
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert("Save failed: " + String(err.message || err));
+      }
+    },
+
+    async deleteLibraryDetail() {
+      const itemId = String(this.libraryDetailItem?.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      if (!window.confirm("Delete this Library item?")) {
+        return;
+      }
+      try {
+        await this.apiDelete(`/api/library/${encodeURIComponent(itemId)}`);
+        this.libraryDetailItem = null;
+        await this.openSystemPanel("library");
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert("Delete failed: " + String(err.message || err));
+      }
+    },
+
+    async openLibraryMarkdown(row = null) {
+      const itemId = String((row || this.libraryDetailItem)?.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      try {
+        const payload = await this.apiGet(`/api/library/${encodeURIComponent(itemId)}/markdown`);
+        this.mdTitle = String((row || this.libraryDetailItem)?.title || payload?.name || "Library Markdown");
+        this.mdPath = String(payload?.path || "");
+        this.mdHtml = markdownToHtml(String(payload?.content || ""));
+        this.mdOverlayOpen = true;
+        this.updateBodyClasses();
+      } catch (err) {
+        window.alert("Could not load markdown: " + String(err.message || err));
+      }
+    },
+
+    openLibrarySource(row = null) {
+      const itemId = String((row || this.libraryDetailItem)?.id || "").trim();
+      if (!itemId) {
+        return;
+      }
+      window.open(`/api/library/${encodeURIComponent(itemId)}/source`, "_blank", "noopener");
     },
 
     async openForageCardSummary(row) {
@@ -8000,6 +8400,7 @@ const app = window.Vue.createApp({
             this.syncImageGenPrefsFromConversation(convo);
             this.setActiveProject(convo.project || this.activeProject);
             this.activeTopicId = normalizeTopicId(convo.topic_id || this.activeTopicId);
+            this.startAssistantTypewriterFromConversation(convo, requestId);
             // TTS: speak the last assistant reply
             try {
               const msgs = Array.isArray(convo.messages) ? convo.messages : [];
@@ -10883,6 +11284,7 @@ const app = window.Vue.createApp({
       window.clearTimeout(this._imageToolDefaultSaveTimer);
       this._imageToolDefaultSaveTimer = null;
     }
+    this.stopAllAssistantTypewriters();
   },
 });
 

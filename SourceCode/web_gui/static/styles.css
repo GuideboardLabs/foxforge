@@ -1851,6 +1851,29 @@ body.sidebar-collapsed .sidebar {
     padding: 0;
 }
 
+.msg-type-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: -0.12em;
+    background: currentColor;
+    border-radius: 1px;
+    opacity: 0.78;
+    animation: msg-type-cursor-blink 0.9s steps(1, end) infinite;
+}
+
+@keyframes msg-type-cursor-blink {
+    0%,
+    49% {
+        opacity: 0.78;
+    }
+    50%,
+    100% {
+        opacity: 0.12;
+    }
+}
+
 .foraging-msg-tag {
     display: inline-flex;
     align-items: center;
@@ -11591,4 +11614,875 @@ body.day .composer-reply-label {
 .msg-highlight-flash {
     animation: msg-highlight 1.4s ease forwards;
     border-radius: inherit;
+}
+
+/* ── Mobile containment hardening ─────────────────────────────── */
+html,
+body,
+#app,
+.app-shell,
+.chat-main,
+.app-view,
+.chat-view,
+.chat-header,
+.messages,
+.composer {
+    max-width: 100%;
+}
+
+.chat-main,
+.app-view,
+.chat-view,
+.messages,
+.composer {
+    overflow-x: hidden;
+}
+
+.chat-header {
+    overflow: visible;
+}
+
+.chat-header-left,
+.chat-header-right,
+.chat-title-wrap,
+.messages > *,
+.msg,
+.msg-content,
+.msg-content > *,
+.msg-actions,
+.msg-footer,
+.msg-source-row,
+.msg-source-stack,
+.msg-attachments,
+.msg-attachment-card,
+.msg-reply-quote,
+.msg-reply-quote-text,
+.composer-main-row,
+.composer-input-wrap,
+.composer-attachments,
+.composer-attachment-item,
+.composer-attachment-item.is-doc,
+.composer-doc-preview,
+.composer-reply-preview,
+.composer-reply-body,
+.composer-reply-excerpt {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.messages > * {
+    width: 100%;
+}
+
+.msg {
+    width: fit-content;
+    max-width: min(760px, 100%);
+}
+
+.msg.user {
+    margin-left: auto;
+}
+
+.msg.assistant {
+    margin-right: auto;
+}
+
+.msg-content,
+.msg-content p,
+.msg-content li,
+.msg-content blockquote,
+.msg-content h1,
+.msg-content h2,
+.msg-content h3,
+.msg-content h4,
+.msg-content h5,
+.msg-content h6,
+.msg-content a {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.msg-content pre,
+.msg-content pre code {
+    max-width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.msg-footer {
+    flex-wrap: wrap;
+}
+
+.msg-web-stack > span,
+.msg-attachment-card span,
+.composer-doc-name {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.composer textarea {
+    overflow-x: hidden;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.composer-placeholder-overlay {
+    max-width: calc(100% - 26px);
+    white-space: normal;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.msg-reply-quote,
+.composer-reply-preview {
+    overflow: hidden;
+}
+
+.msg-reply-quote-text,
+.composer-reply-excerpt {
+    white-space: normal;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+@media (max-width: 720px) {
+    .composer-main-row {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+    }
+
+    .composer-add-menu-wrap,
+    .composer-voice-btn,
+    .composer .composer-send-btn {
+        flex: 0 0 auto;
+    }
+
+    .composer-input-wrap {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .messages {
+        padding-left: max(8px, env(safe-area-inset-left, 0px));
+        padding-right: max(8px, env(safe-area-inset-right, 0px));
+    }
+
+    .msg {
+        max-width: calc(100% - 2px);
+    }
+
+    .composer-attachments {
+        gap: 6px;
+    }
+
+    .composer-attachment-item.is-doc {
+        max-width: min(150px, calc(50vw - 18px));
+    }
+}
+
+@media (max-width: 430px) {
+    .chat-header {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+
+    .chat-header-left,
+    .chat-header-right {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .chat-header-right {
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        row-gap: 6px;
+        gap: 4px;
+    }
+
+    .composer-mode-segment {
+        min-width: 98px;
+    }
+
+    .composer-mode-btn {
+        width: 28px;
+        height: 28px;
+    }
+
+    .chat-menu-btn,
+    .image-tool-launch-btn,
+    .menu-toggle {
+        width: 36px;
+        min-width: 36px;
+        height: 36px;
+    }
+
+    .composer {
+        padding-left: max(6px, env(safe-area-inset-left, 0px));
+        padding-right: max(6px, env(safe-area-inset-right, 0px));
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .composer-main-row {
+        gap: 5px;
+    }
+
+    .composer .composer-attach-btn,
+    .composer-voice-btn,
+    .composer .composer-send-btn {
+        width: 40px;
+        min-width: 40px;
+        height: 40px;
+        min-height: 40px;
+        flex: 0 0 40px;
+    }
+
+    .composer textarea {
+        min-height: 40px;
+        padding: 10px 11px;
+    }
+
+    .composer-placeholder-overlay {
+        left: 11px;
+        right: 11px;
+        top: 10px;
+        font-size: 0.9rem;
+    }
+
+    .composer-reply-preview {
+        gap: 6px;
+        padding-left: 10px;
+        padding-right: 8px;
+    }
+}
+
+/* ── Unified Control System ───────────────────────────────────── */
+:root {
+    --ui-control-height: 40px;
+    --ui-control-height-sm: 34px;
+    --ui-control-radius: 12px;
+    --ui-control-radius-sm: 10px;
+    --ui-control-pad-x: 12px;
+    --ui-control-pad-y: 10px;
+    --ui-control-font: 0.84rem;
+    --ui-control-bg-dark: rgba(18, 24, 34, 0.9);
+    --ui-control-bg-light: rgba(245, 248, 252, 0.94);
+    --ui-control-border-dark: rgba(106, 148, 255, 0.22);
+    --ui-control-border-light: rgba(116, 136, 173, 0.26);
+    --ui-control-shadow-dark: 0 10px 28px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    --ui-control-shadow-light: 0 10px 24px rgba(61, 79, 102, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    --ui-control-focus: 0 0 0 3px rgba(79, 140, 255, 0.18);
+    --ui-modal-radius: 18px;
+    --ui-modal-border-dark: rgba(104, 145, 255, 0.24);
+    --ui-modal-border-light: rgba(108, 129, 164, 0.22);
+    --ui-modal-shadow-dark: 0 28px 72px rgba(0, 0, 0, 0.44);
+    --ui-modal-shadow-light: 0 24px 56px rgba(71, 88, 114, 0.16);
+}
+
+body.dark {
+    --ui-control-bg: var(--ui-control-bg-dark);
+    --ui-control-border: var(--ui-control-border-dark);
+    --ui-control-shadow: var(--ui-control-shadow-dark);
+    --ui-modal-border: var(--ui-modal-border-dark);
+    --ui-modal-shadow: var(--ui-modal-shadow-dark);
+    --ui-surface-elevated: linear-gradient(180deg, rgba(22, 28, 40, 0.98), rgba(14, 19, 28, 0.98));
+    --ui-surface-panel: linear-gradient(180deg, rgba(16, 22, 31, 0.98), rgba(12, 17, 25, 0.98));
+    --ui-field-text: #e9eef9;
+    --ui-muted-text: #aab6cf;
+}
+
+body.day {
+    --ui-control-bg: var(--ui-control-bg-light);
+    --ui-control-border: var(--ui-control-border-light);
+    --ui-control-shadow: var(--ui-control-shadow-light);
+    --ui-modal-border: var(--ui-modal-border-light);
+    --ui-modal-shadow: var(--ui-modal-shadow-light);
+    --ui-surface-elevated: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 247, 251, 0.98));
+    --ui-surface-panel: linear-gradient(180deg, rgba(248, 250, 253, 0.98), rgba(239, 244, 249, 0.98));
+    --ui-field-text: #243143;
+    --ui-muted-text: #627186;
+}
+
+.watch-input,
+.system-setting-input,
+.modal-form input,
+.modal-form select,
+.modal-form textarea,
+.family-profile-form input,
+.family-profile-form select,
+.family-profile-form textarea,
+.family-profile-delete-zone input,
+.image-tool-label input,
+.image-tool-label textarea,
+.waypoint-builder-field input,
+.waypoint-builder-field select,
+.waypoint-builder-field textarea,
+.composer textarea,
+.waypoint-composer textarea,
+.home-weather-input,
+.auth-gate-form input {
+    width: 100%;
+    min-width: 0;
+    min-height: var(--ui-control-height) !important;
+    padding: var(--ui-control-pad-y) var(--ui-control-pad-x) !important;
+    border-radius: var(--ui-control-radius) !important;
+    border: 1px solid var(--ui-control-border) !important;
+    background: var(--ui-control-bg) !important;
+    color: var(--ui-field-text) !important;
+    box-shadow: var(--ui-control-shadow) !important;
+    font: inherit;
+    font-size: var(--ui-control-font) !important;
+    line-height: 1.35;
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.watch-input:focus,
+.system-setting-input:focus,
+.modal-form input:focus,
+.modal-form select:focus,
+.modal-form textarea:focus,
+.family-profile-form input:focus,
+.family-profile-form select:focus,
+.family-profile-form textarea:focus,
+.family-profile-delete-zone input:focus,
+.image-tool-label input:focus,
+.image-tool-label textarea:focus,
+.waypoint-builder-field input:focus,
+.waypoint-builder-field select:focus,
+.waypoint-builder-field textarea:focus,
+.composer textarea:focus,
+.waypoint-composer textarea:focus,
+.home-weather-input:focus,
+.auth-gate-form input:focus {
+    outline: none !important;
+    border-color: rgba(79, 140, 255, 0.48) !important;
+    box-shadow: var(--ui-control-shadow), var(--ui-control-focus) !important;
+}
+
+.modal-form textarea,
+.family-profile-form textarea,
+.image-tool-label textarea,
+.waypoint-builder-field textarea {
+    min-height: 96px !important;
+}
+
+.modal-form input::placeholder,
+.modal-form textarea::placeholder,
+.family-profile-form input::placeholder,
+.family-profile-form textarea::placeholder,
+.image-tool-label input::placeholder,
+.image-tool-label textarea::placeholder,
+.watch-input::placeholder,
+.system-setting-input::placeholder,
+.composer textarea::placeholder,
+.waypoint-composer textarea::placeholder,
+.home-weather-input::placeholder,
+.auth-gate-form input::placeholder {
+    color: var(--ui-muted-text) !important;
+    opacity: 0.88;
+}
+
+.panel-action-btn,
+.modal-form-btn,
+.family-profile-btn,
+.chat-menu-btn,
+.modal-form-close,
+.family-profile-close,
+.composer button,
+.waypoint-composer .waypoint-send-btn,
+.waypoint-builder-trigger,
+.waypoint-builder-btn,
+.image-tool-close,
+.image-tool-primary-btn,
+.image-tool-secondary-btn,
+.image-tool-style-btn,
+.image-tool-aspect-btn,
+.home-weather-btn,
+.auth-gate-primary,
+.auth-gate-secondary,
+.shopping-action-btn,
+.waypoint-day-action-btn,
+.waypoint-calendar-tool-btn,
+.waypoint-calendar-today-btn {
+    min-height: var(--ui-control-height) !important;
+    border-radius: var(--ui-control-radius) !important;
+    padding: 0 var(--ui-control-pad-x) !important;
+    font: inherit;
+    font-size: 0.82rem !important;
+    font-weight: 600;
+    line-height: 1.2;
+    transition: transform 120ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.panel-action-btn,
+.modal-form-btn,
+.family-profile-btn,
+.chat-menu-btn,
+.modal-form-close,
+.family-profile-close,
+.image-tool-close,
+.image-tool-secondary-btn,
+.image-tool-style-btn,
+.image-tool-aspect-btn,
+.home-weather-btn,
+.auth-gate-secondary,
+.shopping-action-btn,
+.waypoint-builder-trigger,
+.waypoint-builder-btn,
+.waypoint-day-action-btn,
+.waypoint-calendar-tool-btn,
+.waypoint-calendar-today-btn {
+    border: 1px solid var(--ui-control-border) !important;
+    background: var(--ui-control-bg) !important;
+    color: var(--ui-field-text) !important;
+    box-shadow: var(--ui-control-shadow) !important;
+}
+
+.panel-action-btn:hover,
+.modal-form-btn:hover,
+.family-profile-btn:hover,
+.chat-menu-btn:hover,
+.modal-form-close:hover,
+.family-profile-close:hover,
+.image-tool-close:hover,
+.image-tool-secondary-btn:hover,
+.image-tool-style-btn:hover,
+.image-tool-aspect-btn:hover,
+.home-weather-btn:hover,
+.auth-gate-secondary:hover,
+.shopping-action-btn:hover,
+.waypoint-builder-trigger:hover,
+.waypoint-builder-btn:hover,
+.waypoint-day-action-btn:hover,
+.waypoint-calendar-tool-btn:hover,
+.waypoint-calendar-today-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(79, 140, 255, 0.45) !important;
+}
+
+.modal-form-btn.is-primary,
+.family-profile-btn.is-primary,
+.image-tool-primary-btn,
+.auth-gate-primary,
+.composer .composer-send-btn,
+.waypoint-composer .waypoint-send-btn {
+    border: 1px solid rgba(79, 140, 255, 0.2) !important;
+    background: linear-gradient(180deg, #6ea4ff 0%, #4f8cff 100%) !important;
+    color: #ffffff !important;
+    box-shadow: 0 14px 28px rgba(79, 140, 255, 0.26) !important;
+}
+
+.modal-form-btn.is-primary:hover,
+.family-profile-btn.is-primary:hover,
+.image-tool-primary-btn:hover,
+.auth-gate-primary:hover,
+.composer .composer-send-btn:hover:not(:disabled),
+.waypoint-composer .waypoint-send-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 18px 30px rgba(79, 140, 255, 0.32) !important;
+}
+
+.panel-action-btn.is-small,
+.family-profile-btn.is-small,
+.modal-form-btn.is-small {
+    min-height: var(--ui-control-height-sm) !important;
+    border-radius: var(--ui-control-radius-sm) !important;
+    font-size: 0.76rem !important;
+    padding: 0 10px !important;
+}
+
+.chat-menu-btn:not(.create-target-btn),
+.modal-form-close,
+.family-profile-close,
+.image-tool-close,
+.composer .composer-attach-btn,
+.composer .composer-voice-btn,
+.composer .composer-send-btn {
+    width: 40px !important;
+    min-width: 40px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+}
+
+.create-target-btn {
+    width: auto !important;
+    min-width: 64px;
+}
+
+.modal-form-modal,
+.family-profile-modal,
+.image-tool-modal {
+    border-radius: var(--ui-modal-radius) !important;
+    border: 1px solid var(--ui-modal-border) !important;
+    background: var(--ui-surface-elevated) !important;
+    box-shadow: var(--ui-modal-shadow) !important;
+    overflow: hidden;
+}
+
+.modal-form-header,
+.family-profile-header,
+.image-tool-header {
+    padding: 16px 18px 14px !important;
+    border-bottom: 1px solid rgba(79, 140, 255, 0.14) !important;
+    background: var(--ui-surface-panel) !important;
+}
+
+.modal-form-body,
+.family-profile-form {
+    padding: 16px 18px !important;
+}
+
+.modal-form-actions,
+.family-profile-actions,
+.image-tool-actions {
+    gap: 10px !important;
+    flex-wrap: wrap;
+}
+
+.modal-form-label,
+.family-profile-form label > span,
+.family-profile-delete-zone label > span,
+.image-tool-label span,
+.system-setting-row label {
+    color: var(--ui-muted-text) !important;
+    font-size: 0.74rem !important;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.modal-form-header h3,
+.family-profile-header h3,
+.image-tool-header h3 {
+    font-size: 1rem !important;
+    line-height: 1.2;
+}
+
+.modal-form-header p,
+.family-profile-header p,
+.image-tool-subtitle {
+    color: var(--ui-muted-text) !important;
+}
+
+.watch-input,
+.system-setting-input {
+    border-radius: var(--ui-control-radius) !important;
+}
+
+@media (max-width: 720px) {
+    .modal-form-modal,
+    .family-profile-modal,
+    .image-tool-modal {
+        width: min(100vw - 14px, 100%) !important;
+        max-height: min(90vh, 920px) !important;
+        margin-top: max(12px, env(safe-area-inset-top, 0px)) !important;
+    }
+
+    .modal-form-header,
+    .family-profile-header,
+    .image-tool-header,
+    .modal-form-body,
+    .family-profile-form {
+        padding-left: 14px !important;
+        padding-right: 14px !important;
+    }
+
+    .panel-action-btn,
+    .modal-form-btn,
+    .family-profile-btn,
+    .chat-menu-btn,
+    .image-tool-close,
+    .image-tool-primary-btn,
+    .image-tool-secondary-btn,
+    .image-tool-style-btn,
+    .image-tool-aspect-btn,
+    .home-weather-btn,
+    .auth-gate-primary,
+    .auth-gate-secondary,
+    .shopping-action-btn,
+    .waypoint-builder-trigger,
+    .waypoint-builder-btn {
+        min-height: 38px !important;
+    }
+}
+
+@media (max-width: 430px) {
+    .panel-action-btn,
+    .modal-form-btn,
+    .family-profile-btn,
+    .image-tool-primary-btn,
+    .image-tool-secondary-btn,
+    .home-weather-btn,
+    .auth-gate-primary,
+    .auth-gate-secondary {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .modal-form-actions,
+    .family-profile-actions,
+    .image-tool-actions {
+        display: grid !important;
+        grid-template-columns: 1fr;
+    }
+
+    .modal-form-row,
+    .modal-form-row-three {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/* ── Chat Toolbar + Composer Final Alignment ───────────────────── */
+.chat-header {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 8px !important;
+    overflow: visible !important;
+}
+
+.chat-header-left {
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+    gap: 0 !important;
+}
+
+.chat-header-right {
+    margin-left: auto !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    flex-wrap: nowrap !important;
+    flex: 0 0 auto !important;
+    gap: 8px !important;
+    min-width: max-content !important;
+}
+
+.chat-header .chat-title-wrap,
+.chat-header .foraging-pill,
+.chat-header .create-target-btn {
+    display: none !important;
+}
+
+.chat-header .menu-toggle,
+.chat-header .chat-menu-btn,
+.chat-header .image-tool-launch-btn {
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    border-radius: 10px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+}
+
+.chat-header .menu-toggle {
+    border: 1px solid var(--ui-control-border) !important;
+    background: var(--ui-control-bg) !important;
+    color: var(--ui-field-text) !important;
+    box-shadow: var(--ui-control-shadow) !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+}
+
+.chat-header .menu-toggle span {
+    width: 14px !important;
+    height: 2px !important;
+    margin: 0 auto !important;
+    background: currentColor !important;
+    border-radius: 99px !important;
+}
+
+.chat-header .menu-toggle:hover {
+    border-color: rgba(79, 140, 255, 0.45) !important;
+    box-shadow: var(--ui-control-shadow) !important;
+    transform: translateY(-1px);
+}
+
+.chat-header .composer-mode-segment {
+    display: inline-grid !important;
+    grid-template-columns: repeat(3, 36px) !important;
+    align-items: center !important;
+    gap: 2px !important;
+    height: 40px !important;
+    padding: 2px !important;
+    border-radius: 10px !important;
+    flex: 0 0 auto !important;
+}
+
+.chat-header .chat-menu-wrap {
+    display: inline-flex !important;
+    align-items: center !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
+.chat-header .composer-mode-segment,
+.chat-header .chat-menu-btn,
+.chat-header .image-tool-launch-btn {
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
+.chat-header .composer-mode-btn {
+    width: 36px !important;
+    min-width: 36px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    border-radius: 8px !important;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 0 !important;
+}
+
+.chat-header .composer-mode-label {
+    display: none !important;
+}
+
+.composer-main-row {
+    align-items: center !important;
+}
+
+.composer .composer-voice-btn,
+.composer .composer-send-btn {
+    width: 40px !important;
+    min-width: 40px !important;
+    max-width: 40px !important;
+    height: 40px !important;
+    min-height: 40px !important;
+    flex: 0 0 40px !important;
+    padding: 0 !important;
+    border-radius: 10px !important;
+    align-self: center !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    line-height: 1 !important;
+}
+
+.composer .composer-send-btn svg,
+.composer .composer-voice-btn svg {
+    width: 16px !important;
+    height: 16px !important;
+}
+
+@media (max-width: 720px) {
+    .chat-header {
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+    }
+
+    .chat-header-right {
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+    }
+
+    .chat-header .composer-mode-segment {
+        grid-template-columns: repeat(3, 32px) !important;
+        height: 38px !important;
+    }
+
+    .chat-header .composer-mode-btn {
+        width: 32px !important;
+        min-width: 32px !important;
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+}
+
+@media (max-width: 430px) {
+    .chat-header {
+        padding-left: max(6px, env(safe-area-inset-left, 0px)) !important;
+        padding-right: max(6px, env(safe-area-inset-right, 0px)) !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 4px !important;
+        justify-content: flex-start !important;
+    }
+
+    .chat-header-left {
+        width: auto !important;
+        flex: 0 0 auto !important;
+    }
+
+    .chat-header-right {
+        width: auto !important;
+        flex: 0 0 auto !important;
+        margin-left: auto !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        row-gap: 0 !important;
+        gap: 4px !important;
+    }
+
+    .chat-header .menu-toggle,
+    .chat-header .chat-menu-btn,
+    .chat-header .image-tool-launch-btn {
+        width: 36px !important;
+        min-width: 36px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+    }
+
+    .chat-header .composer-mode-segment {
+        grid-template-columns: repeat(3, 28px) !important;
+        height: 34px !important;
+        gap: 1px !important;
+    }
+
+    .chat-header .composer-mode-btn {
+        width: 28px !important;
+        min-width: 28px !important;
+        height: 30px !important;
+        min-height: 30px !important;
+    }
+
+    .composer .composer-voice-btn,
+    .composer .composer-send-btn {
+        width: 38px !important;
+        min-width: 38px !important;
+        max-width: 38px !important;
+        height: 38px !important;
+        min-height: 38px !important;
+        flex: 0 0 38px !important;
+    }
+}
+
+/* Prevent iOS/Safari auto-zoom when focusing text fields */
+@media (max-width: 1024px) {
+    .watch-input,
+    .system-setting-input,
+    .modal-form input,
+    .modal-form textarea,
+    .family-profile-form input,
+    .family-profile-form textarea,
+    .image-tool-label input,
+    .image-tool-label textarea,
+    .waypoint-builder-field input,
+    .waypoint-builder-field textarea,
+    .composer textarea,
+    .waypoint-composer textarea,
+    .home-weather-input,
+    .auth-gate-form input {
+        font-size: 16px !important;
+    }
 }

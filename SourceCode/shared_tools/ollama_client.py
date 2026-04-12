@@ -60,6 +60,7 @@ class OllamaClient:
         temperature: float = 0.3,
         num_ctx: int = 8192,
         think: bool | None = None,
+        num_predict: int | None = -1,
         timeout: int = 300,
         retry_attempts: int = 1,
         retry_backoff_sec: float = 1.25,
@@ -95,6 +96,12 @@ class OllamaClient:
             raise RuntimeError("No model specified.")
 
         errors: list[str] = []
+        try:
+            predict = int(num_predict) if num_predict is not None else -1
+        except (TypeError, ValueError):
+            predict = -1
+        if predict == 0:
+            predict = -1
         for model_name in models:
             payload: dict[str, Any] = {
                 "model": model_name,
@@ -103,6 +110,7 @@ class OllamaClient:
                 "options": {
                     "temperature": temperature,
                     "num_ctx": num_ctx,
+                    "num_predict": predict,
                 },
             }
             if think is not None:

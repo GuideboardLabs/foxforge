@@ -102,6 +102,10 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
                             topics_with_research += 1
             except Exception:
                 topics_with_research = 0
+            try:
+                library_counts = ctx.library_service_for(profile).counts()
+            except Exception:
+                library_counts = {"total": 0, "pending": 0}
             return {
                 "pending_actions": pending_actions_count,
                 "open_reflections": orch.reflection_engine.count_open(),
@@ -129,6 +133,8 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
                 "watchtower_active": watchtower_active,
                 "topics_with_research": topics_with_research,
                 "forage_cards_pinned": ctx.forage_cards_pinned_count(),
+                "library_items_total": int(library_counts.get("total", 0)),
+                "library_items_pending": int(library_counts.get("pending", 0)),
             }
 
         payload = ctx.cache_get(cache_scope, "panel_status", ttl_sec=1.5, build_fn=_build)

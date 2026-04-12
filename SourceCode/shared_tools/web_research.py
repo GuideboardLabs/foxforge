@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
 import re
+import sqlite3
 import time
 from collections import deque
 from html.parser import HTMLParser
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from shared_tools.db import connect as _db_connect_shared
 from shared_tools.file_store import ProjectStore
 from shared_tools.fact_policy import enrich_source_metadata, detect_topic_type, classify_fact_volatility
 from shared_tools.domain_reputation import DomainReputation
@@ -95,6 +98,36 @@ _BOILERPLATE_LOWER = (
 )
 
 
+_NAV_HEADING_RE = re.compile(
+    r"^#+\s*(main navigation|navigation|site navigation|primary navigation|header|footer|menu|breadcrumb|skip to|table of contents|contents)\s*$",
+    re.IGNORECASE,
+)
+_BOILERPLATE_LOWER_EXTENDED = _BOILERPLATE_LOWER + (
+    "skip to main content",
+    "skip to content",
+    "skip to navigation",
+    "back to top",
+    "jump to navigation",
+    "view source",
+    "edit this page",
+    "log in",
+    "create account",
+    "privacy policy",
+    "terms of use",
+    "contact us",
+    "about us",
+    "advertise with us",
+    "subscribe now",
+    "sign in to comment",
+    "enable javascript",
+    "please enable",
+    "get the app",
+    "download the app",
+    "follow us on",
+    "newsletter signup",
+)
+
+
 def _clean_crawl4ai_markdown(text: str) -> str:
     """Strip navigation link menus, cookie banners, and share-button boilerplate from Crawl4AI markdown."""
     if not text:
@@ -102,8 +135,20 @@ def _clean_crawl4ai_markdown(text: str) -> str:
     lines = text.split("\n")
     cleaned: list[str] = []
     nav_run = 0
+    skip_nav_section = False
     for line in lines:
         stripped = line.strip()
+
+        # Detect a navigation heading and skip until next content heading
+        if _NAV_HEADING_RE.match(stripped):
+            skip_nav_section = True
+            continue
+        if skip_nav_section:
+            if re.match(r"^#+\s+\S", stripped) and not _NAV_HEADING_RE.match(stripped):
+                skip_nav_section = False
+            else:
+                continue
+
         # Lines composed entirely of markdown links — navigation menus, breadcrumbs
         if stripped and _MD_LINK_ONLY_RE.match(stripped):
             nav_run += 1
@@ -112,11 +157,18 @@ def _clean_crawl4ai_markdown(text: str) -> str:
             continue
         else:
             nav_run = 0
+
         # Short boilerplate phrases
         low = stripped.lower()
-        if len(stripped) < 130 and any(p in low for p in _BOILERPLATE_LOWER):
+        if len(stripped) < 160 and any(p in low for p in _BOILERPLATE_LOWER_EXTENDED):
             continue
+
+        # Lone image-only lines (![...](...)) with no surrounding text
+        if re.match(r"^!\[[^\]]*\]\([^)]*\)\s*$", stripped):
+            continue
+
         cleaned.append(line)
+
     # Collapse 3+ blank lines → 2
     result: list[str] = []
     blanks = 0
@@ -578,7 +630,40 @@ class WebResearchEngine:
             "auction result",
             "artist statement",
         ),
+        "sports": (
+            "schedule",
+            "results",
+            "standings",
+            "roster",
+            "official announcement",
+        ),
+        "combat_sports": (
+            "fight card",
+            "bout order",
+            "main event",
+            "official announcement",
+        ),
+        "sports_event": (
+            "fight card",
+            "results",
+            "official card",
+            "main event",
+        ),
     }
+
+    # Topics for which a full Wikipedia article is always fetched as a primary source.
+    # Historical topics are excluded — training data is sufficient for stable history.
+    WIKIPEDIA_TOPIC_TYPES: frozenset[str] = frozenset({
+        "sports",
+        "combat_sports",
+        "sports_event",
+        "current_events",
+        "movies",
+        "tv_shows",
+        "music",
+        "gaming",
+        "general",
+    })
 
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
@@ -789,6 +874,19 @@ class WebResearchEngine:
         except (TypeError, ValueError):
             tor_timeout_multiplier = 2.5
         data["tor_timeout_multiplier"] = max(1.0, min(tor_timeout_multiplier, 10.0))
+
+        # Cache / retention settings
+        try:
+            cache_ttl_days = int(data.get("cache_ttl_days", 14))
+        except (TypeError, ValueError):
+            cache_ttl_days = 14
+        data["cache_ttl_days"] = max(1, min(cache_ttl_days, 365))
+
+        try:
+            log_retain_days = int(data.get("log_retain_days", 30))
+        except (TypeError, ValueError):
+            log_retain_days = 30
+        data["log_retain_days"] = max(1, min(log_retain_days, 365))
 
         return data
 
@@ -1170,6 +1268,20 @@ class WebResearchEngine:
             out.append(payload)
         return out[:limit]
 
+    def _merge_query_lists(self, primary: list[str], secondary: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in list(primary) + list(secondary):
+            text = " ".join(str(value or "").split()).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return out
+
     def _resolve_topic_type(self, query: str, topic_type: str) -> str:
         base = str(topic_type or "").strip().lower() or "general"
         mapped_base = self.TOPIC_FAMILY_ALIASES.get(base, base)
@@ -1242,6 +1354,98 @@ class WebResearchEngine:
         _add(f"{base} analysis")
 
         return out[:max_variants]
+
+    def _refine_queries_for_second_pass(
+        self,
+        query: str,
+        settings: dict[str, Any],
+        topic_type: str = "general",
+    ) -> list[str]:
+        base = " ".join(str(query or "").split()).strip()
+        if not base:
+            return []
+        resolved_topic = self._resolve_topic_type(base, topic_type)
+        try:
+            max_variants = int(settings.get("query_refine_variants", 4))
+        except (TypeError, ValueError):
+            max_variants = 4
+        max_variants = max(1, min(max_variants, 6))
+
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def _add(value: str) -> None:
+            text = " ".join(str(value or "").split()).strip()
+            if not text:
+                return
+            key = text.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(text)
+
+        event_match = re.search(
+            r"\b(?:ufc\s*\d+|fight night\s*\d*|bellator\s*\d+|pfl\s*\d+|one championship|boxing)\b",
+            base,
+            flags=re.IGNORECASE,
+        )
+        event_label = event_match.group(0).strip() if event_match else ""
+
+        if resolved_topic == "combat_sports":
+            if event_label:
+                _add(f"full fight card {event_label}")
+                _add(f"{event_label} full fight card")
+                _add(f"{event_label} official card")
+                _add(f"{event_label} main card prelims")
+                _add(f"{event_label} bout order")
+            else:
+                _add(f"{base} full fight card")
+                _add(f"{base} official card")
+                _add(f"{base} main card prelims")
+                _add(f"{base} bout order")
+        elif resolved_topic == "sports_event":
+            _add(f"{base} official schedule")
+            _add(f"{base} official lineup")
+            _add(f"{base} full details")
+            _add(f"{base} official preview")
+        else:
+            _add(f"{base} official")
+            _add(f"{base} full details")
+            _add(f"{base} exact details")
+            _add(f"{base} latest official update")
+
+        return out[:max_variants]
+
+    def _should_run_refined_second_pass(
+        self,
+        *,
+        query: str,
+        resolved_topic: str,
+        seeds: list[dict[str, str]],
+        sources: list[dict[str, Any]],
+        crawled_pages: list[dict[str, Any]],
+    ) -> bool:
+        low = " ".join(str(query or "").split()).strip().lower()
+        if not low:
+            return False
+        tier12 = sum(
+            1
+            for row in sources
+            if str(row.get("source_tier", "tier3")).strip().lower() in {"tier1", "tier2"}
+        )
+        if resolved_topic == "combat_sports":
+            wants_card_detail = any(
+                token in low for token in ("full fight card", "card", "main card", "prelims", "bout order", "who is on")
+            )
+            return wants_card_detail and (len(sources) < 5 or len(crawled_pages) < 4 or tier12 < 2)
+        if resolved_topic == "sports_event":
+            wants_live_detail = any(
+                token in low for token in ("lineup", "schedule", "odds", "spread", "moneyline", "kickoff", "tipoff", "broadcast")
+            )
+            return wants_live_detail and (len(sources) < 4 or len(crawled_pages) < 3 or tier12 < 2)
+        if classify_fact_volatility(query, resolved_topic, query) == "volatile":
+            return len(sources) < 3 and (len(seeds) < 6 or len(crawled_pages) < 2)
+        return False
 
     def _domain_tier(self, host: str) -> tuple[str, float]:
         value = str(host or "").strip().lower()
@@ -2051,6 +2255,234 @@ class WebResearchEngine:
             "links": extractor.links,
         }
 
+    # ------------------------------------------------------------------
+    # Web chunk cache — DB storage / retrieval / purge
+    # ------------------------------------------------------------------
+
+    def _db_connect(self) -> sqlite3.Connection:
+        from shared_tools.migrations import initialize_database
+        initialize_database(self.repo_root)
+        return _db_connect_shared(self.repo_root)
+
+    def _store_web_chunks(self, project: str, sources: list[dict[str, Any]], ttl_days: int = 14) -> None:
+        """Persist crawled source snippets into web_cache_chunks for long-term retrieval."""
+        if not sources:
+            return
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(days=ttl_days)).isoformat()
+        crawled_at = now.isoformat()
+        try:
+            conn = self._db_connect()
+            with conn:
+                for src in sources:
+                    url = str(src.get("url", "")).strip()
+                    snippet = str(src.get("snippet", "")).strip()
+                    if not url or not snippet:
+                        continue
+                    chunk_id = hashlib.sha256(f"{project}:{url}".encode()).hexdigest()[:32]
+                    domain = str(urllib.parse.urlsplit(url).hostname or "").lower().removeprefix("www.")
+                    conn.execute(
+                        """
+                        INSERT INTO web_cache_chunks
+                            (id, project, url, title, domain, snippet, source_score, source_tier, crawled_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            snippet=excluded.snippet,
+                            title=excluded.title,
+                            source_score=excluded.source_score,
+                            source_tier=excluded.source_tier,
+                            crawled_at=excluded.crawled_at,
+                            expires_at=excluded.expires_at
+                        """,
+                        (
+                            chunk_id,
+                            project,
+                            url,
+                            str(src.get("title", "")).strip(),
+                            domain,
+                            snippet,
+                            float(src.get("source_score", 0.0)),
+                            str(src.get("source_tier", "tier3")),
+                            crawled_at,
+                            expires,
+                        ),
+                    )
+        except Exception:
+            pass
+
+    def _purge_expired_web_chunks(self) -> int:
+        """Delete expired rows from web_cache_chunks. Returns count deleted."""
+        try:
+            conn = self._db_connect()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            with conn:
+                cur = conn.execute(
+                    "DELETE FROM web_cache_chunks WHERE expires_at < ?", (now_iso,)
+                )
+                return cur.rowcount or 0
+        except Exception:
+            return 0
+
+    def _purge_old_source_log(self, retain_days: int = 30) -> None:
+        """Remove entries older than retain_days from sources.jsonl."""
+        if not self.sources_log_path.exists():
+            return
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retain_days)).isoformat()
+        try:
+            lines = self.sources_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            kept = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ts = json.loads(line).get("ts", "")
+                    if str(ts) >= cutoff:
+                        kept.append(line)
+                except Exception:
+                    kept.append(line)  # keep unparseable lines
+            self.sources_log_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _query_cached_chunks(self, project: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Retrieve non-expired web chunks for a project from the DB cache."""
+        try:
+            conn = self._db_connect()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            rows = conn.execute(
+                """
+                SELECT url, title, domain, snippet, source_score, source_tier, crawled_at
+                FROM web_cache_chunks
+                WHERE project = ? AND expires_at > ?
+                ORDER BY crawled_at DESC
+                LIMIT ?
+                """,
+                (project, now_iso, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # Wikipedia article fetcher
+    # ------------------------------------------------------------------
+
+    _SPORTS_TOPIC_TYPES: frozenset[str] = frozenset({
+        "sports", "combat_sports", "sports_event", "current_events",
+    })
+
+    def _fetch_wikipedia_extract(self, query: str, text_chars: int = 5000, topic_type: str = "general") -> dict[str, Any] | None:
+        """Fetch the best-matching Wikipedia article for a query via the MediaWiki API.
+
+        For sports/current_events topics, searches with today's full date first so
+        tonight's event ranks above the next scheduled one. Falls back through
+        progressively wider date windows until a result is found.
+        """
+        base_query = " ".join(str(query or "").split()).strip()
+        if not base_query:
+            return None
+
+        now = datetime.now(timezone.utc)
+        today_full = now.strftime("%B %-d %Y")    # "April 11 2026"
+        today_month = now.strftime("%B %Y")        # "April 2026"
+        current_year = str(now.year)              # "2026"
+
+        is_sports = str(topic_type).lower() in self._SPORTS_TOPIC_TYPES
+
+        # Build candidate search queries ordered from most-specific to least
+        if is_sports:
+            search_candidates = [
+                f"{base_query} {today_full}",
+                f"{base_query} {today_month}",
+                f"{base_query} {current_year}",
+                base_query,
+            ]
+        else:
+            search_candidates = [
+                f"{base_query} {current_year}",
+                base_query,
+            ]
+
+        def _wiki_search(q: str) -> list[dict[str, Any]]:
+            url = (
+                "https://en.wikipedia.org/w/api.php"
+                f"?action=query&list=search&srsearch={urllib.parse.quote(q)}"
+                "&format=json&utf8=1&srlimit=5"
+            )
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Foxforge/1.0"})
+                with self._urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8", errors="ignore")).get("query", {}).get("search", [])
+            except Exception:
+                return []
+
+        def _score_hit(hit: dict[str, Any], prefer_date: str) -> float:
+            """Prefer hits whose snippet/title contains today's date string."""
+            combined = (str(hit.get("title", "")) + " " + str(hit.get("snippet", ""))).lower()
+            prefer_low = prefer_date.lower()
+            return 1.0 if prefer_low in combined else 0.0
+
+        hits: list[dict[str, Any]] = []
+        chosen_date_hint = today_full if is_sports else current_year
+
+        for candidate in search_candidates:
+            results = _wiki_search(candidate)
+            if not results:
+                continue
+            if is_sports and candidate.endswith(today_full):
+                # Score results by date proximity — pick the one mentioning today
+                scored = sorted(results, key=lambda h: _score_hit(h, today_full), reverse=True)
+                hits = scored
+            else:
+                hits = results
+            break
+
+        if not hits:
+            return None
+
+        page_id = int(hits[0].get("pageid", 0))
+        page_title = str(hits[0].get("title", "")).strip()
+        if not page_id or not page_title:
+            return None
+
+        # Fetch the full article extract (not just intro) via the extracts prop
+        extract_url = (
+            "https://en.wikipedia.org/w/api.php"
+            f"?action=query&pageids={page_id}"
+            "&prop=extracts&exintro=0&explaintext=1"
+            "&format=json&utf8=1"
+        )
+        try:
+            req3 = urllib.request.Request(
+                url=extract_url,
+                headers={"User-Agent": "Foxforge/1.0 (research assistant; contact: local)"},
+            )
+            with self._urlopen(req3, timeout=12) as resp3:
+                extract_data = json.loads(resp3.read().decode("utf-8", errors="ignore"))
+        except Exception:
+            return None
+
+        pages = extract_data.get("query", {}).get("pages", {})
+        page = pages.get(str(page_id), {})
+        extract = str(page.get("extract", "")).strip()
+        if not extract:
+            return None
+
+        # Trim to text_chars, prefer sentence boundaries
+        if len(extract) > text_chars:
+            cut = extract[:text_chars].rsplit(".", 1)[0].strip()
+            extract = (cut or extract[:text_chars]).strip() + "..."
+
+        wiki_url = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(page_title.replace(' ', '_'))}"
+        return {
+            "url": wiki_url,
+            "title": page_title,
+            "snippet": extract,
+            "depth": 0,
+            "_wikipedia": True,
+        }
+
     def _fetch_page_crawl4ai(self, url: str, settings: dict[str, Any], text_chars: int) -> dict[str, Any]:
         if not bool(settings.get("crawl4ai_enabled", True)):
             raise RuntimeError("crawl4ai disabled")
@@ -2107,9 +2539,26 @@ class WebResearchEngine:
             raise RuntimeError("crawl4ai returned no crawl rows")
 
         first = rows[0] if isinstance(rows[0], dict) else {}
-        title = str(first.get("title", "")).strip()
-        markdown = str(first.get("markdown", "")).strip()
+
+        # crawl4ai >= 0.5 returns markdown as a dict: {raw_markdown, fit_markdown, ...}
+        # Older versions returned it as a plain string. Handle both.
+        _md_raw = first.get("markdown", "")
+        if isinstance(_md_raw, dict):
+            markdown = str(_md_raw.get("fit_markdown", "") or _md_raw.get("raw_markdown", "")).strip()
+            _md_for_links = markdown
+        else:
+            markdown = str(_md_raw).strip()
+            _md_for_links = markdown
+
         text = str(first.get("text", "")).strip()
+
+        # Title: prefer direct field, fall back to metadata dict (crawl4ai >= 0.5).
+        title = str(first.get("title", "")).strip()
+        if not title:
+            _meta = first.get("metadata", {})
+            if isinstance(_meta, dict):
+                title = str(_meta.get("title", "")).strip()
+
         snippet_source = markdown or text
         if not snippet_source:
             # Last fallback for unknown response schemas.
@@ -2119,7 +2568,7 @@ class WebResearchEngine:
         if len(snippet) > text_chars:
             cut = snippet[:text_chars].rsplit(" ", 1)[0].strip()
             snippet = (cut or snippet[:text_chars]).strip() + "..."
-        links = self._extract_urls_from_text(markdown or text, limit=28)
+        links = self._extract_urls_from_text(_md_for_links or text, limit=28)
         return {
             "url": url,
             "title": title or url,
@@ -2241,7 +2690,14 @@ class WebResearchEngine:
             score = min(1.0, score + 0.1)
         return round(score, 3)
 
-    def _crawl_sources(self, seeds: list[dict[str, str]], settings: dict[str, Any], query: str = "") -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    def _crawl_sources(
+        self,
+        seeds: list[dict[str, str]],
+        settings: dict[str, Any],
+        query: str = "",
+        *,
+        exclude_urls: set[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
         depth_limit = int(settings.get("crawl_depth", 2))
         max_pages = int(settings.get("crawl_max_pages", 18))
         links_per_page = int(settings.get("crawl_links_per_page", 8))
@@ -2253,7 +2709,11 @@ class WebResearchEngine:
 
         queue: deque[tuple[str, int, str]] = deque()
         enqueued: set[str] = set()
-        visited: set[str] = set()
+        visited: set[str] = {
+            self._normalize_url(str(url).strip())
+            for url in (exclude_urls or set())
+            if self._normalize_url(str(url).strip())
+        }
         pages: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         gated_links: int = 0
@@ -2465,8 +2925,26 @@ class WebResearchEngine:
         crawled_pages: list[dict[str, Any]] = []
         crawl_failures: list[dict[str, Any]] = []
         crawl_gated_links: int = 0
+        second_pass_used = False
+        second_pass_queries: list[str] = []
+        second_pass_seed_hits: list[dict[str, Any]] = []
+        second_pass_added_seeds = 0
+        second_pass_added_pages = 0
         if crawl_enabled:
             crawled_pages, crawl_failures, crawl_gated_links = self._crawl_sources(seeds, settings, query=query)
+
+        # Wikipedia guaranteed source — fetch via MediaWiki API for eligible topics.
+        # Uses full plaintext article extract (not crawl4ai), so it's always clean.
+        wiki_page: dict[str, Any] | None = None
+        if resolved_topic in self.WIKIPEDIA_TOPIC_TYPES:
+            try:
+                wiki_page = self._fetch_wikipedia_extract(query, text_chars=5000, topic_type=resolved_topic)
+            except Exception:
+                wiki_page = None
+        if wiki_page:
+            # Prepend so Wikipedia is always position-0; deduplication in scoring will
+            # drop it later only if the same URL was already crawled from seeds.
+            crawled_pages.insert(0, wiki_page)
 
         if crawled_pages:
             sources_raw: list[dict[str, Any]] = [
@@ -2518,6 +2996,114 @@ class WebResearchEngine:
             post_filter_tiers[tier] += 1
         source_scoring_summary["post_filter_tier_counts"] = post_filter_tiers
 
+        if self._should_run_refined_second_pass(
+            query=query,
+            resolved_topic=resolved_topic,
+            seeds=seeds,
+            sources=sources,
+            crawled_pages=crawled_pages,
+        ):
+            second_pass_queries = self._refine_queries_for_second_pass(query, settings, topic_type=resolved_topic)
+            if second_pass_queries:
+                existing_seed_urls = {
+                    self._normalize_url(str(row.get("url", "")).strip())
+                    for row in seeds
+                    if self._normalize_url(str(row.get("url", "")).strip())
+                }
+                existing_crawl_urls = {
+                    self._normalize_url(str(row.get("url", "")).strip())
+                    for row in crawled_pages
+                    if self._normalize_url(str(row.get("url", "")).strip())
+                }
+                refined_seed_rows: list[dict[str, str]] = []
+                refined_max_results = min(20, max(max_results + 2, 8))
+                for variant in second_pass_queries:
+                    rows = self.search(variant, max_results=refined_max_results)
+                    second_pass_seed_hits.append({"query": variant, "seed_hits": len(rows), "pass": "refined"})
+                    for row in rows:
+                        payload = dict(row)
+                        payload["query_variant"] = variant
+                        refined_seed_rows.append(payload)
+                merged_seeds = self._merge_results(seeds, refined_seed_rows, seed_limit * 2)
+                new_seed_rows = [
+                    row for row in merged_seeds
+                    if self._normalize_url(str(row.get("url", "")).strip()) not in existing_seed_urls
+                ]
+                if new_seed_rows:
+                    seeds = merged_seeds
+                    second_pass_added_seeds = len(new_seed_rows)
+                    variant_hits.extend(second_pass_seed_hits)
+                    variant_queries = self._merge_query_lists(variant_queries, second_pass_queries)
+                    second_pass_used = True
+                    if crawl_enabled:
+                        extra_pages, extra_failures, extra_gated_links = self._crawl_sources(
+                            new_seed_rows,
+                            settings,
+                            query=second_pass_queries[0] if second_pass_queries else query,
+                            exclude_urls=existing_crawl_urls,
+                        )
+                        crawled_pages.extend(extra_pages)
+                        crawl_failures.extend(extra_failures)
+                        crawl_gated_links += extra_gated_links
+                        second_pass_added_pages = len(extra_pages)
+                    if crawled_pages:
+                        sources_raw = [
+                            {
+                                "title": str(page.get("title", "")).strip(),
+                                "url": str(page.get("url", "")).strip(),
+                                "snippet": str(page.get("snippet", "")).strip(),
+                                "depth": int(page.get("depth", 0)),
+                            }
+                            for page in crawled_pages
+                        ]
+                        # Re-inject Wikipedia at position 0 if it was fetched but not crawled again
+                        if wiki_page:
+                            wiki_url_norm = self._normalize_url(str(wiki_page.get("url", "")))
+                            if not any(
+                                self._normalize_url(str(s.get("url", ""))) == wiki_url_norm
+                                for s in sources_raw
+                            ):
+                                sources_raw.insert(0, {
+                                    "title": str(wiki_page.get("title", "")).strip(),
+                                    "url": str(wiki_page.get("url", "")).strip(),
+                                    "snippet": str(wiki_page.get("snippet", "")).strip(),
+                                    "depth": 0,
+                                })
+                    else:
+                        sources_raw = [dict(row) for row in seeds]
+                    sources, source_scoring_summary = self._apply_source_scoring(
+                        sources=sources_raw,
+                        query=query,
+                        enabled=source_scoring_enabled,
+                        topic_type=resolved_topic,
+                    )
+                    raw_source_count = len(sources)
+                    quality_blocked_count = sum(1 for row in sources if bool(row.get("quality_blocked", False)))
+                    filtered_sources = [
+                        row
+                        for row in sources
+                        if not bool(row.get("quality_blocked", False))
+                        and float(row.get("source_score", 0.0)) >= quality_min_score
+                    ]
+                    if not filtered_sources:
+                        filtered_sources = [
+                            row
+                            for row in sources
+                            if not bool(row.get("quality_blocked", False))
+                            and str(row.get("source_tier", "tier3")) in {"tier1", "tier2"}
+                        ][:3]
+                    sources = filtered_sources
+                    source_scoring_summary["context_min_source_score"] = round(float(quality_min_score), 2)
+                    source_scoring_summary["quality_blocked_count"] = int(quality_blocked_count)
+                    source_scoring_summary["quality_filtered_out"] = max(0, raw_source_count - len(sources))
+                    post_filter_tiers = {"tier1": 0, "tier2": 0, "tier3": 0}
+                    for row in sources:
+                        tier = str(row.get("source_tier", "tier3"))
+                        if tier not in post_filter_tiers:
+                            tier = "tier3"
+                        post_filter_tiers[tier] += 1
+                    source_scoring_summary["post_filter_tier_counts"] = post_filter_tiers
+
         conflict_detection_enabled = bool(settings.get("conflict_detection_enabled", True))
         if not sources:
             return {
@@ -2537,6 +3123,10 @@ class WebResearchEngine:
                 "query_variants_count": len(variant_queries),
                 "query_variants": variant_queries,
                 "variant_hits": variant_hits,
+                "refined_second_pass_used": second_pass_used,
+                "refined_second_pass_queries": second_pass_queries,
+                "refined_second_pass_added_seeds": second_pass_added_seeds,
+                "refined_second_pass_added_pages": second_pass_added_pages,
                 "source_scoring_enabled": source_scoring_enabled,
                 "source_scoring_summary": source_scoring_summary,
                 "conflict_detection_enabled": conflict_detection_enabled,
@@ -2608,6 +3198,10 @@ class WebResearchEngine:
             f"- query_expansion_enabled: {bool(settings.get('query_expansion_enabled', True))}",
             f"- query_variants_count: {len(variant_queries)}",
             f"- query_variants: {' | '.join(variant_queries)}",
+            f"- refined_second_pass_used: {second_pass_used}",
+            f"- refined_second_pass_queries: {' | '.join(second_pass_queries) if second_pass_queries else 'none'}",
+            f"- refined_second_pass_added_seeds: {second_pass_added_seeds}",
+            f"- refined_second_pass_added_pages: {second_pass_added_pages}",
             f"- provider: {provider}",
             f"- source_scoring_enabled: {source_scoring_enabled}",
             f"- source_scoring_applied: {bool(source_scoring_summary.get('applied', False))}",
@@ -2763,6 +3357,10 @@ class WebResearchEngine:
             "query_variants_count": len(variant_queries),
             "query_variants": variant_queries,
             "variant_hits": variant_hits,
+            "refined_second_pass_used": second_pass_used,
+            "refined_second_pass_queries": second_pass_queries,
+            "refined_second_pass_added_seeds": second_pass_added_seeds,
+            "refined_second_pass_added_pages": second_pass_added_pages,
             "source_scoring_enabled": source_scoring_enabled,
             "source_scoring_summary": source_scoring_summary,
             "conflict_detection_enabled": conflict_detection_enabled,
@@ -2776,6 +3374,21 @@ class WebResearchEngine:
             "sources": sources,
         }
         self._append_source_log(log_payload)
+
+        # Persist cleaned chunks to DB cache and prune stale data.
+        # Both ops are best-effort — failures never block the query result.
+        cache_ttl = int(settings.get("cache_ttl_days", 14))
+        log_retain = int(settings.get("log_retain_days", 30))
+        try:
+            self._store_web_chunks(project, sources, ttl_days=cache_ttl)
+        except Exception:
+            pass
+        try:
+            self._purge_expired_web_chunks()
+            self._purge_old_source_log(retain_days=log_retain)
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "project": project,
@@ -2791,6 +3404,10 @@ class WebResearchEngine:
             "query_variants_count": len(variant_queries),
             "query_variants": variant_queries,
             "variant_hits": variant_hits,
+            "refined_second_pass_used": second_pass_used,
+            "refined_second_pass_queries": second_pass_queries,
+            "refined_second_pass_added_seeds": second_pass_added_seeds,
+            "refined_second_pass_added_pages": second_pass_added_pages,
             "source_scoring_enabled": source_scoring_enabled,
             "source_scoring_summary": source_scoring_summary,
             "conflict_detection_enabled": conflict_detection_enabled,
@@ -2882,12 +3499,11 @@ class WebResearchEngine:
 
     def web_context_for_project(self, project: str, limit: int = 6) -> str:
         logs = self.recent_sources_for_project(project, limit=limit)
-        if not logs:
-            return ""
         settings = self._load_settings()
         min_score = max(0.1, min(float(settings.get("context_min_source_score", 0.52)), 1.0))
         lines = ["Recent web source cache (use only if relevant):"]
         count = 0
+
         for log in logs:
             for source in log.get("sources", []) if isinstance(log.get("sources"), list) else []:
                 if count >= limit:
@@ -2923,6 +3539,33 @@ class WebResearchEngine:
                 count += 1
             if count >= limit:
                 break
+
+        # Fall back to persistent DB cache when the live log is empty or sparse.
+        if count < limit:
+            seen_urls: set[str] = {
+                str(s.get("url", ""))
+                for log in logs
+                for s in (log.get("sources", []) if isinstance(log.get("sources"), list) else [])
+            }
+            try:
+                cached = self._query_cached_chunks(project, limit=limit - count)
+                for row in cached:
+                    url_value = str(row.get("url", "")).strip()
+                    if not url_value or url_value in seen_urls:
+                        continue
+                    title = str(row.get("title", "")).strip()
+                    snippet = str(row.get("snippet", "")).strip()
+                    tier = str(row.get("source_tier", "tier3")).strip() or "tier3"
+                    score = float(row.get("source_score", 0.0))
+                    crawled_at = str(row.get("crawled_at", "")).split("T")[0]
+                    lines.append(f"- [cached {tier} {score:.2f} as-of={crawled_at}] {title or url_value} | {url_value}")
+                    if snippet:
+                        lines.append(f"  snippet: {snippet}")
+                    count += 1
+                    seen_urls.add(url_value)
+            except Exception:
+                pass
+
         if count == 0:
             return ""
         return "\n".join(lines)
