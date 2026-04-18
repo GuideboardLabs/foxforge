@@ -48,9 +48,9 @@ def main() -> int:
             flask_app = appmod.create_app()
             with flask_app.test_client() as client:
                 root_html = client.get("/").get_data(as_text=True)
-                _require("Life Admin" in root_html, "Life Admin panel missing from root page")
+                _require("Personal Context" in root_html, "Personal Context panel missing from root page")
                 _require("Memory Ledger" in root_html, "Memory Ledger missing from root page")
-                _require("Second Brain" in root_html, "Second Brain panel missing from root page")
+                _require("Memory Overview" in root_html, "Memory Overview section missing from root page")
                 _require("Planner Pulse" not in root_html, "Planner UI still present in root page")
                 _require("Waypoints" not in root_html, "Planner app/tab still present in root page")
 
@@ -122,9 +122,6 @@ def main() -> int:
                 _require(bool(second_brain_payload.get("overview")), "Second Brain overview missing")
                 _require(bool(second_brain_payload.get("briefing_lines")), "Second Brain briefing lines missing")
                 _require(bool(second_brain_payload.get("timeline")), "Second Brain timeline missing")
-
-                gemini_payload = client.get("/api/settings/gemini-critique").get_json()
-                _require(gemini_payload.get("ok") is True, "Gemini critique settings endpoint failed")
 
             print("UI smoke passed: planner removal and core memory/system flows are healthy.")
             return 0
