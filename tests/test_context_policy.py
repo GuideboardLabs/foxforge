@@ -37,10 +37,8 @@ class ContextPolicyTests(unittest.TestCase):
         self.assertTrue(any("intrusive_context_mention" in note for note in feedback["notes"]))
 
     def test_continuous_improvement_tracks_context_score(self) -> None:
-        runtime_tmp = Path(ROOT) / "Runtime" / "test_context_policy_tmp"
-        if runtime_tmp.exists():
-            shutil.rmtree(runtime_tmp, ignore_errors=True)
-        runtime_tmp.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        runtime_tmp = Path(tempfile.mkdtemp(prefix="foxforge_test_context_policy_"))
         repo_root = runtime_tmp / "repo"
         repo_root.mkdir(parents=True, exist_ok=True)
         engine = ContinuousImprovementEngine(repo_root)
@@ -61,6 +59,7 @@ class ContextPolicyTests(unittest.TestCase):
         )
         status = engine.status_snapshot("general")
         self.assertGreater(status["project"]["avg_context_quality"], 0.0)
+        shutil.rmtree(runtime_tmp, ignore_errors=True)
 
     def test_context_usage_eval_dataset_passes(self) -> None:
         payload = run_context_usage_eval(Path(ROOT))

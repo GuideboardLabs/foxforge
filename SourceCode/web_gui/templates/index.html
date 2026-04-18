@@ -349,7 +349,7 @@
                         </div>
                         <div class="chat-header-right">
                             <div v-show="inputMode === 'make'" class="make-type-picker-wrap">
-                                <button class="make-type-picker-btn" type="button" @click="makeTypeModalOpen = true" :title="makeType ? 'Change Make type' : 'Pick a Make type'">
+                                <button class="make-type-picker-btn" type="button" @click="openMakeTypeModal()" :title="makeType ? 'Change Make type' : 'Pick a Make type'">
                                     <span class="make-type-picker-label">[[ makeType ? makeLabelForType(makeType) : '— Pick type —' ]]</span>
                                     <span class="make-type-picker-caret" aria-hidden="true">&#9662;</span>
                                 </button>

@@ -16,11 +16,11 @@ class OrchestratorPersonaTests(unittest.TestCase):
         self.orch._manifesto_cache_text = ""
 
     def test_strip_alias_prefix_for_vocative_address(self) -> None:
-        text = self.orch._strip_foxforge_vocative_prefix("Guidey, add a reminder for tomorrow")
+        text = self.orch._strip_foxforge_vocative_prefix("Reynard, add a reminder for tomorrow")
         self.assertEqual(text, "add a reminder for tomorrow")
 
-    def test_strip_fredrick_prefix_for_vocative_address(self) -> None:
-        text = self.orch._strip_foxforge_vocative_prefix("Fredrick, add a reminder for tomorrow")
+    def test_strip_foxforge_prefix_for_vocative_address(self) -> None:
+        text = self.orch._strip_foxforge_vocative_prefix("Foxforge, add a reminder for tomorrow")
         self.assertEqual(text, "add a reminder for tomorrow")
 
     def test_does_not_strip_when_alias_is_subject(self) -> None:
@@ -35,15 +35,14 @@ class OrchestratorPersonaTests(unittest.TestCase):
     def test_identity_reply_contains_alias_and_origin(self) -> None:
         reply = self.orch._foxforge_identity_reply().lower()
         self.assertIn("foxforge", reply)
-        self.assertIn("guide fierri", reply)
-        self.assertIn("origin story", reply)
+        self.assertIn("reynard", reply)
         self.assertIn("seth canfield", reply)
         self.assertIn("elma", reply)
 
     def test_persona_block_includes_manifesto_principles(self) -> None:
         persona = self.orch._foxforge_persona_block().lower()
-        self.assertIn("fredrick the fox", persona)
-        self.assertIn("warm", persona)
+        self.assertIn("fredrick", persona)
+        self.assertIn("orchestration", persona)
         self.assertNotIn("dark humor", persona)
         if self.orch.manifesto_path.exists():
             self.assertIn("foxforge manifesto principles", persona)

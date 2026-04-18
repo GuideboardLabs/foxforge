@@ -10,9 +10,8 @@ from shared_tools.personal_memory import PersonalMemory
 
 class SecondBrainPayloadTests(unittest.TestCase):
     def test_second_brain_payload_includes_memory_overview(self) -> None:
-        runtime_tmp = Path(ROOT) / "Runtime" / "test_second_brain_tmp"
-        if runtime_tmp.exists():
-            shutil.rmtree(runtime_tmp, ignore_errors=True)
+        import tempfile
+        runtime_tmp = Path(tempfile.mkdtemp(prefix="foxforge_test_second_brain_"))
         repo_root = runtime_tmp / "repo"
         repo_root.mkdir(parents=True, exist_ok=True)
 
@@ -46,6 +45,7 @@ class SecondBrainPayloadTests(unittest.TestCase):
         self.assertIn("manual", payload["source_breakdown"])
         self.assertTrue(payload["briefing_lines"])
         self.assertTrue(payload["timeline"])
+        shutil.rmtree(runtime_tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
 Foxforge is a local-only AI workspace for research, writing, and software generation.
 It routes requests through specialized multi-agent pipelines — each lane a coordinated team of models working in defined stages toward a quality-controlled output. Everything runs on your own hardware, on models you control, with data that never leaves your machine.
 
-There is no external API integration and there never will be. Gemini was once wired in and has since been fully removed. The architecture is deliberately closed to frontier providers.
+There is no external API integration and there never will be. The architecture is deliberately closed to frontier providers.
 
 ## Why Foxforge
 

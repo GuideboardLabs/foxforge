@@ -7441,13 +7441,19 @@ const app = window.Vue.createApp({
     },
 
     async loadMakeTypeCatalog() {
-      if (this.makeTypeCatalog.length > 0) return;
       try {
         const payload = await this.apiGet("/api/make/catalog");
-        this.makeTypeCatalog = Array.isArray(payload.catalog) ? payload.catalog : [];
+        if (Array.isArray(payload.catalog) && payload.catalog.length > 0) {
+          this.makeTypeCatalog = payload.catalog;
+        }
       } catch (err) {
         console.warn("Could not load Make type catalog:", err);
       }
+    },
+
+    async openMakeTypeModal() {
+      this.makeTypeModalOpen = true;
+      await this.loadMakeTypeCatalog();
     },
 
     closeActionsOverlay() {

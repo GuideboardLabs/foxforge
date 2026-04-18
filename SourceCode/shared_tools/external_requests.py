@@ -216,36 +216,10 @@ class ExternalToolsSettings:
 
 
 class ExternalRequestStore:
-    _schema_ready_roots: set[str] = set()
-    _schema_ready_lock = Lock()
-
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
         initialize_database(self.repo_root)
-        self._ensure_schema_once()
-
-    def _schema_key(self) -> str:
-        return str(self.repo_root.resolve())
-
-    def _ensure_schema_once(self) -> None:
-        key = self._schema_key()
-        with self._schema_ready_lock:
-            if key in self._schema_ready_roots:
-                return
-            try:
-                self._ensure_schema()
-            except sqlite3.OperationalError as exc:
-                # Under concurrent write load, another request may already be
-                # creating these tables. If the table exists, proceed safely.
-                if "locked" not in str(exc).lower():
-                    raise
-                with connect(self.repo_root) as conn:
-                    row = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='external_requests';"
-                    ).fetchone()
-                    if row is None:
-                        raise
-            self._schema_ready_roots.add(key)
+        self._ensure_schema()
 
     def _ensure_schema(self) -> None:
         with connect(self.repo_root) as conn:

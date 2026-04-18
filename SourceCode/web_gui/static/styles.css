@@ -53,6 +53,7 @@ body.dark {
     --palette-mint: #9aa0a6;
     --palette-cream: #bdc1c6;
     --palette-orange: #f05a1e;
+    --palette-blue: #4285f4;
     --palette-brown: #262a32;
     --palette-red: #c84010;
     --surface-0: #111318;
@@ -76,6 +77,7 @@ body.day {
     --palette-mint: #d2c9bf;
     --palette-cream: #6d645a;
     --palette-orange: #c7a889;
+    --palette-blue: #3367d6;
     --palette-brown: #dac9b8;
     --palette-red: #b88f6d;
     --surface-0: #f3ebe2;
@@ -787,12 +789,12 @@ body.sidebar-collapsed .sidebar {
     background: rgba(101, 163, 13, 0.12);
 }
 
-/* Building — orange */
+/* Building — blue */
 .panel-btn-building {
-    border-color: var(--palette-orange);
-    background: rgba(240, 90, 30, 0.1);
+    border-color: var(--palette-blue);
+    background: rgba(66, 133, 244, 0.1);
 }
-.junction-icon-building { color: var(--palette-orange); }
+.junction-icon-building { color: var(--palette-blue); }
 
 /* Reflections — sky blue */
 .panel-btn-reflections {
@@ -2201,8 +2203,8 @@ body.sidebar-collapsed .sidebar {
     margin-bottom: 8px;
     padding: 2px 8px;
     border-radius: 999px;
-    border: 1px solid var(--palette-orange);
-    color: var(--palette-orange);
+    border: 1px solid var(--palette-blue);
+    color: var(--palette-blue);
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.32px;
@@ -2283,9 +2285,9 @@ body.sidebar-collapsed .sidebar {
     margin-top: 2px;
 }
 
-/* Build panel progress fill (orange instead of yellow) */
+/* Build panel progress fill (blue) */
 .build-progress-fill {
-    background: var(--palette-orange);
+    background: var(--palette-blue);
 }
 
 .msg-web-stack {
@@ -7629,7 +7631,7 @@ body.dark .waypoint-builder-btn {
 
 body.dark .panel-btn-pending { border-color: #d97706; background: rgba(217, 119, 6, 0.14); }
 body.dark .panel-btn-foraging { border-color: #65a30d; background: rgba(101, 163, 13, 0.13); }
-body.dark .panel-btn-building { border-color: #f05a1e; background: rgba(240, 90, 30, 0.12); }
+body.dark .panel-btn-building { border-color: #4285f4; background: rgba(66, 133, 244, 0.12); }
 body.dark .panel-btn-reflections { border-color: #0ea5e9; background: rgba(14, 165, 233, 0.12); }
 body.dark .panel-btn-lessons { border-color: #ca8a04; background: rgba(202, 138, 4, 0.14); }
 body.dark .panel-btn-projects { border-color: #e8480a; background: rgba(232, 72, 10, 0.14); }
@@ -7908,7 +7910,7 @@ body.day .actions-refresh-btn:hover {
 
 body.day .panel-btn-pending { border-color: #b45309; background: rgba(180, 83, 9, 0.08); }
 body.day .panel-btn-foraging { border-color: #4d7c0f; background: rgba(77, 124, 15, 0.08); }
-body.day .panel-btn-building { border-color: #c4400a; background: rgba(196, 64, 10, 0.07); }
+body.day .panel-btn-building { border-color: #3367d6; background: rgba(51, 103, 214, 0.07); }
 body.day .panel-btn-reflections { border-color: #0284c7; background: rgba(2, 132, 199, 0.08); }
 body.day .panel-btn-lessons { border-color: #a16207; background: rgba(161, 98, 7, 0.08); }
 body.day .panel-btn-projects { border-color: #1558b0; background: rgba(21, 88, 176, 0.08); }
