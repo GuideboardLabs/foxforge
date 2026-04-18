@@ -48,6 +48,22 @@ class OrchestratorPersonaTests(unittest.TestCase):
         if self.orch.manifesto_path.exists():
             self.assertIn("foxforge manifesto principles", persona)
 
+    def test_strip_web_source_provenance_rewrites_user_provided_phrase(self) -> None:
+        raw = "Based on the links you provided, this is likely current."
+        cleaned = FoxforgeOrchestrator._strip_web_source_provenance(raw)
+        self.assertNotIn("links you provided", cleaned.lower())
+        self.assertIn("based on the cited sources", cleaned.lower())
+
+    def test_strip_web_source_provenance_drops_origin_sentence(self) -> None:
+        raw = (
+            "These sources were fetched autonomously by the system's web crawler — "
+            "the user did NOT provide them. Here are the verified updates."
+        )
+        cleaned = FoxforgeOrchestrator._strip_web_source_provenance(raw)
+        self.assertNotIn("web crawler", cleaned.lower())
+        self.assertNotIn("user did not provide", cleaned.lower())
+        self.assertIn("Here are the verified updates.", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

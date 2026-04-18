@@ -29,6 +29,20 @@ def register_settings_routes(bp: Blueprint, ctx: AppContext) -> None:
         snapshot = ctx.foraging_manager.snapshot(profile_id=str(profile.get("id", "")))
         return {"ok": True, "paused": value, **snapshot}, 200
 
+    @bp.route("/api/settings/building", methods=["POST"])
+    def set_building_state() -> tuple[dict, int]:
+        profile = ctx.require_profile()
+        payload = request.get_json(silent=True) or {}
+        raw_paused = payload.get("paused", None)
+        if raw_paused is None:
+            paused = not ctx.building_manager.is_paused()
+        else:
+            paused = bool(raw_paused)
+        value = ctx.building_manager.set_paused(paused)
+        ctx.cache_clear(str(profile.get("id", "")))
+        snapshot = ctx.building_manager.snapshot(profile_id=str(profile.get("id", "")))
+        return {"ok": True, "paused": value, **snapshot}, 200
+
     @bp.route("/api/settings/web-mode", methods=["POST"])
     def set_web_mode() -> tuple[dict, int]:
         profile = ctx.require_profile()
@@ -312,14 +326,17 @@ def register_settings_routes(bp: Blueprint, ctx: AppContext) -> None:
     def forage_card_pin(card_id: str) -> tuple[dict, int]:
         ctx.require_profile()
         repo = ctx.forage_card_repo()
-        card = repo.get_card(card_id)
+        resolved_id = repo.resolve_card_id(card_id)
+        if not resolved_id:
+            return {"ok": False, "message": "Card not found."}, 404
+        card = repo.get_card(resolved_id)
         if card is None:
             return {"ok": False, "message": "Card not found."}, 404
         if int(card.get("is_pinned", 0)):
-            ok = repo.unpin_card(card_id)
+            ok = repo.unpin_card(resolved_id)
         else:
-            ok = repo.pin_card(card_id)
-        return {"ok": ok, "card": repo.get_card(card_id)}, 200
+            ok = repo.pin_card(resolved_id)
+        return {"ok": ok, "card": repo.get_card(resolved_id)}, 200
 
     @bp.route("/api/forage-cards/<card_id>", methods=["DELETE"])
     def forage_card_delete(card_id: str) -> tuple[dict, int]:

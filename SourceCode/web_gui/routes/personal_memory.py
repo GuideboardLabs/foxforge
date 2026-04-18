@@ -116,9 +116,12 @@ def create_personal_memory_blueprint(ctx: AppContext) -> Blueprint:
         data["user_profile"] = {
             "preferred_name": str(body.get("preferred_name", "")).strip(),
             "full_name": str(body.get("full_name", "")).strip(),
+            "age": str(body.get("age", "")).strip(),
             "gender": str(body.get("gender", body.get("pronouns", ""))).strip(),
             "birthday": str(body.get("birthday", "")).strip(),
             "location": str(body.get("location", "")).strip(),
+            "ancestry": str(body.get("ancestry", "")).strip(),
+            "health": str(body.get("health", "")).strip(),
             "work": str(body.get("work", "")).strip(),
             "likes": str(body.get("likes", "")).strip(),
             "dislikes": str(body.get("dislikes", "")).strip(),
@@ -275,71 +278,5 @@ def create_personal_memory_blueprint(ctx: AppContext) -> Blueprint:
         data["pets"] = [p for p in data["pets"] if p.get("name", "").lower() != name.lower()]
         pm.save(data)
         return {"ok": len(data["pets"]) < before}, 200
-
-    @bp.route('/api/personal-memory/reminders', methods=['POST'])
-    def personal_memory_add_reminder() -> tuple[dict, int]:
-        from shared_tools.personal_memory import PersonalMemory
-        profile = ctx.require_profile()
-        body = request.get_json(silent=True) or {}
-        label = str(body.get("label", "")).strip()
-        if not label:
-            return {"error": "label is required"}, 400
-        pm = PersonalMemory(ctx.repo_root_for_profile(profile))
-        data = pm.load()
-        data["recurring_reminders"].append({
-            "label": label,
-            "frequency": str(body.get("frequency", "")).strip(),
-            "time": str(body.get("time", "")).strip(),
-            "notes": str(body.get("notes", "")).strip(),
-            "person": str(body.get("person", "")).strip(),
-            "start_date": str(body.get("start_date", "")).strip(),
-            "end_date": str(body.get("end_date", "")).strip(),
-            "location": str(body.get("location", "")).strip(),
-            "channel": str(body.get("channel", "")).strip(),
-            "priority": str(body.get("priority", "")).strip(),
-        })
-        pm.save(data)
-        return {"ok": True}, 201
-
-    @bp.route('/api/personal-memory/reminders/<label>', methods=['PATCH'])
-    def personal_memory_update_reminder(label: str) -> tuple[dict, int]:
-        from shared_tools.personal_memory import PersonalMemory
-        profile = ctx.require_profile()
-        body = request.get_json(silent=True) or {}
-        pm = PersonalMemory(ctx.repo_root_for_profile(profile))
-        data = pm.load()
-        idx = _pm_find_index(data.get("recurring_reminders", []), "label", label)
-        if idx < 0:
-            return {"error": "reminder not found"}, 404
-        next_label = str(body.get("label", "")).strip()
-        if not next_label:
-            return {"error": "label is required"}, 400
-        data["recurring_reminders"][idx] = {
-            "label": next_label,
-            "frequency": str(body.get("frequency", "")).strip(),
-            "time": str(body.get("time", "")).strip(),
-            "notes": str(body.get("notes", "")).strip(),
-            "person": str(body.get("person", "")).strip(),
-            "start_date": str(body.get("start_date", "")).strip(),
-            "end_date": str(body.get("end_date", "")).strip(),
-            "location": str(body.get("location", "")).strip(),
-            "channel": str(body.get("channel", "")).strip(),
-            "priority": str(body.get("priority", "")).strip(),
-        }
-        pm.save(data)
-        return {"ok": True}, 200
-
-    @bp.route('/api/personal-memory/reminders/<label>', methods=['DELETE'])
-    def personal_memory_remove_reminder(label: str) -> tuple[dict, int]:
-        from shared_tools.personal_memory import PersonalMemory
-        profile = ctx.require_profile()
-        pm = PersonalMemory(ctx.repo_root_for_profile(profile))
-        data = pm.load()
-        before = len(data["recurring_reminders"])
-        data["recurring_reminders"] = [
-            r for r in data["recurring_reminders"] if r.get("label", "").lower() != label.lower()
-        ]
-        pm.save(data)
-        return {"ok": len(data["recurring_reminders"]) < before}, 200
 
     return bp

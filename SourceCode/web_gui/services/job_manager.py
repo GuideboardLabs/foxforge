@@ -73,6 +73,7 @@ class JobManager:
                 "summary_path": "",
                 "raw_path": "",
                 "web_stack": {},
+                "live_sources": [],
                 "status": "running",
                 "user_text_preview": str(user_text or "").strip()[:280],
             }
@@ -142,6 +143,63 @@ class JobManager:
                             "finding_preview": str(agent_event.get("finding_preview", "")).strip()[:400],
                             "confidence": int(agent_event.get("confidence", 0)),
                         })
+                # Build lane events — mirror of research events for the Build panel
+                elif ae_stage == "build_pool_started":
+                    tracker["total"] = int(agent_event.get("agents_total", 0))
+                    tracker["profile"] = str(agent_event.get("make_type", "")).strip().replace("_", " ")
+                    tracker["topic_type"] = str(agent_event.get("destination", "")).strip()
+                    tracker["workers"] = int(agent_event.get("workers", 1))
+                    tracker["all_agents"] = [
+                        {"persona": f"stage-{i+1}", "directive": "", "role": "primary"}
+                        for i in range(tracker["total"])
+                    ]
+                    tracker["active"] = []
+                    tracker["done"] = []
+                elif ae_stage == "build_agent_started":
+                    agent_name = str(agent_event.get("agent", "")).strip()
+                    model = str(agent_event.get("model", "")).strip()
+                    if agent_name and not any(
+                        (a.get("persona") if isinstance(a, dict) else a) == agent_name
+                        for a in tracker["active"]
+                    ):
+                        tracker["active"].append({
+                            "persona": agent_name,
+                            "directive": str(agent_event.get("directive", "")).strip(),
+                            "role": "primary",
+                            "model": model,
+                        })
+                elif ae_stage == "build_agent_completed":
+                    agent_name = str(agent_event.get("agent", "")).strip()
+                    tracker["active"] = [
+                        a for a in tracker["active"]
+                        if (a.get("persona") if isinstance(a, dict) else a) != agent_name
+                    ]
+                    if agent_name:
+                        output_chars = int(agent_event.get("output_chars", 0))
+                        tracker["done"].append({
+                            "persona": agent_name,
+                            "failed": bool(agent_event.get("failed", False)),
+                            "role": "primary",
+                            "finding_preview": f"{output_chars:,} chars" if output_chars else str(agent_event.get("files", "")) + " files",
+                            "confidence": 5 if not agent_event.get("failed") else 1,
+                        })
+                elif ae_stage == "build_quality_gate_passed":
+                    tracker["done"].append({
+                        "persona": "quality-gate",
+                        "failed": False,
+                        "role": "primary",
+                        "finding_preview": "All quality checks passed.",
+                        "confidence": 5,
+                    })
+                elif ae_stage == "build_quality_gate_failed":
+                    issues = list(agent_event.get("issues", []))
+                    tracker["done"].append({
+                        "persona": "quality-gate",
+                        "failed": True,
+                        "role": "primary",
+                        "finding_preview": "; ".join(issues)[:300],
+                        "confidence": 2,
+                    })
                 row["agent_tracker"] = tracker
             events = row.get("events", [])
             if not isinstance(events, list):
@@ -152,6 +210,26 @@ class JobManager:
                 "detail": str(detail or "").strip()[:400],
             })
             row["events"] = self._trim_events(events)
+
+    def append_live_source(self, profile: dict[str, Any], request_id: str, source: dict[str, Any]) -> None:
+        """Append a newly-crawled source to the job's live_sources list for real-time UI display."""
+        if not isinstance(source, dict):
+            return
+        key = self._key(profile, request_id)
+        with self._lock:
+            row = self._jobs.get(key)
+            if not isinstance(row, dict):
+                return
+            ls: list[dict[str, Any]] = row.get("live_sources", [])
+            if not isinstance(ls, list):
+                ls = []
+            ls.append({
+                "url": str(source.get("url", "")).strip(),
+                "domain": str(source.get("domain", "")).strip(),
+                "title": str(source.get("title", "")).strip()[:120],
+            })
+            row["live_sources"] = ls[-12:]  # keep last 12
+            row["updated_at"] = _now_iso()
 
     def is_cancel_requested(self, profile: dict[str, Any], request_id: str) -> bool:
         key = self._key(profile, request_id)

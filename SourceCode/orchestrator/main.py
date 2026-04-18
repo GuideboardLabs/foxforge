@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import sys
 import re
+import threading
 import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -27,6 +29,7 @@ from shared_tools.model_routing import load_model_routing, lane_model_config
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.web_research import build_web_progress_payload
 from shared_tools.answer_composer import compose_research_summary, evaluate_answer_confidence
+from shared_tools.document_ingestion import is_document_ext
 from shared_tools.fact_cards import render_fact_card_markdown
 from shared_tools.fact_policy import classify_fact_volatility, detect_topic_type
 from shared_tools.perf_trace import PerfTrace
@@ -109,8 +112,6 @@ _BUILD_INTENT_TERMS = frozenset({
     "produce", "assemble", "ship", "write the", "launch",
 })
 
-_APP_TARGETS = frozenset({"app", "web_app", "standalone_app", "dashboard", "landing_page", "api"})
-
 _LIVE_VERIFICATION_MARKERS = frozenset({
     "today", "tonight", "right now", "live", "latest", "current", "recent",
     "upcoming", "next", "this weekend", "this week", "breaking",
@@ -129,12 +130,6 @@ _SURFACE_POLISH_SKIP_TOKENS = (
     "[ADD_SHOPPING:",
     "[ADD_ROUTINE:",
 )
-_TOOL_TARGETS = frozenset({"tool", "script"})
-_CREATIVE_TARGETS = frozenset({"novel", "memoir", "book", "screenplay"})
-_CONTENT_TARGETS = frozenset({"blog", "social_post", "email"})
-_SPECIALIST_TARGETS = frozenset({"medical", "finance", "sports", "history", "game_design_doc"})
-
-
 def _has_build_intent(text: str) -> bool:
     low = text.lower()
     for term in _BUILD_INTENT_TERMS:
@@ -147,17 +142,8 @@ def _has_build_intent(text: str) -> bool:
 
 
 def _make_lane_for_target(target: str) -> str:
-    if target in _APP_TARGETS:
-        return "make_app"
-    if target in _TOOL_TARGETS:
-        return "make_tool"
-    if target in _CREATIVE_TARGETS:
-        return "make_creative"
-    if target in _CONTENT_TARGETS:
-        return "make_content"
-    if target in _SPECIALIST_TARGETS:
-        return "make_specialist"
-    return "make_doc"
+    from orchestrator.services.make_catalog import lane_for_type
+    return lane_for_type(target)
 
 
 class FoxforgeOrchestrator:
@@ -175,7 +161,10 @@ class FoxforgeOrchestrator:
         self.improvement_engine = ContinuousImprovementEngine(repo_root)
         self.project_slug = "general"
         self.model_routing = load_model_routing(repo_root)
-        self.tool_registry = self._infra.build_tool_registry(bus=self.bus)
+        # Build the tool registry lazily. Eager construction pulls in several
+        # DB-backed stores for every lightweight panel/status request and can
+        # contend on SQLite locks under load.
+        self._tool_registry = None
         self.manifesto_path = self.repo_root / "Runtime" / "config" / "foxforge_manifesto.md"
         self._manifesto_cache_mtime: float = -1.0
         self._manifesto_cache_text: str = ""
@@ -233,6 +222,12 @@ class FoxforgeOrchestrator:
     def watchtower(self):
         return self._infra.watchtower
 
+    @property
+    def tool_registry(self):
+        if self._tool_registry is None:
+            self._tool_registry = self._infra.build_tool_registry(bus=self.bus)
+        return self._tool_registry
+
     def _make_agent_task(
         self,
         *,
@@ -276,7 +271,7 @@ class FoxforgeOrchestrator:
     def reload_models(self) -> str:
         self.model_routing = load_model_routing(self.repo_root)
         self._infra.reset()
-        self.tool_registry = self._infra.build_tool_registry(bus=self.bus)
+        self._tool_registry = None
         return "Model routing reloaded."
 
     def models_text(self) -> str:
@@ -530,11 +525,46 @@ class FoxforgeOrchestrator:
         polished = re.sub(r"[ \t]{2,}", " ", polished)
         return polished.strip()
 
+    @staticmethod
+    def _strip_web_source_provenance(text: str) -> str:
+        body = str(text or "").strip()
+        if not body:
+            return ""
+        cleaned = body
+        cleaned = re.sub(
+            r"(?i)\bbased on (?:the )?(?:links|urls?) (?:you )?(?:provided|gave(?: me)?)\b",
+            "based on the cited sources",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"(?i)\bfrom (?:the )?(?:links|urls?) (?:you )?(?:provided|gave(?: me)?)\b",
+            "from the cited sources",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"(?i)\b(?:these|the)\s+(?:web\s+)?(?:sources?|source snippets?|urls?)\s+(?:were|was)\s+"
+            r"(?:fetched|retrieved|pulled|scraped)\s+(?:autonomously|automatically)?"
+            r"(?:\s+by\s+the\s+system(?:'s)?\s+web\s+crawler)?"
+            r"(?:\s*[—-]\s*the user did not provide(?:\s+them|\s+any\s+links?\s+or\s+urls?)?)?\b\.?",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"(?i)\bit\s+was\s+not\s+provided\s+by\s+the\s+user\b\.?", "", cleaned)
+        cleaned = re.sub(r"(?i)\bthe user did not provide(?:\s+any)?\s+(?:links?|urls?|sources?)\b\.?", "", cleaned)
+        cleaned = re.sub(r"(?i)\bit is not the user's browsing activity\b\.?", "", cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"\s+([,;:.!?])", r"\1", cleaned)
+        cleaned = re.sub(r"([.!?])\s*(?:[.!?]\s*)+", r"\1 ", cleaned)
+        return cleaned.strip()
+
     def _surface_polish_reply(self, text: str) -> str:
-        raw = str(text or "").strip()
+        raw = self._strip_web_source_provenance(text)
         if not raw:
             return ""
         heuristic = self._heuristic_surface_polish(raw)
+        heuristic = self._strip_web_source_provenance(heuristic)
         if not heuristic:
             return raw
         if any(token in heuristic for token in _SURFACE_POLISH_SKIP_TOKENS):
@@ -543,7 +573,7 @@ class FoxforgeOrchestrator:
             return heuristic
 
         cfg = lane_model_config(self.repo_root, "orchestrator_reasoning")
-        model = str(cfg.get("model", "")).strip() or "qwen3:14b"
+        model = str(cfg.get("model", "")).strip() or "deepseek-r1:8b"
         fallback_models = cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else ["qwen3:8b"]
         system_prompt = (
             "You are doing a light copyedit pass on assistant text. "
@@ -565,7 +595,7 @@ class FoxforgeOrchestrator:
                 retry_backoff_sec=0.5,
                 fallback_models=fallback_models,
             )
-            polished = str(polished or "").strip()
+            polished = self._strip_web_source_provenance(polished)
             if not polished:
                 return heuristic
             if abs(len(polished) - len(heuristic)) > max(120, int(len(heuristic) * 0.35)):
@@ -725,21 +755,29 @@ class FoxforgeOrchestrator:
         must_verify_live = self._requires_live_verification(live_query_text, web_topic_type)
         if must_verify_live:
             recency_sensitive = True
+        # Context gate: for keyword-triggered (non-forced) web paths, verify the routing
+        # makes sense given the full conversation — suppresses false positives like "source"
+        # used to mean "source of the problem" rather than "fetch web sources".
+        _web_gate_cleared = True
+        if not must_verify_live and prior_messages and self._should_offer_web(text, "project"):
+            _web_gate_cleared = self._routing_context_gate(text, prior_messages)
+        web_note = ""
+        web_context = ""
         web_details: dict[str, Any] = {}
-        try:
-            # Talk mode stays conversational, but recency/source-sensitive prompts
-            # can still get live web grounding before final response generation.
-            web_note, web_context, web_details = self._prepare_web_context(
-                text=live_query_text if must_verify_live else text,
-                lane="project",
-                topic_type=web_topic_type,
-                force=must_verify_live,
-                quick=True,
-            )
-        except Exception:
-            web_note = ""
-            web_context = ""
-            web_details = {}
+        if _web_gate_cleared:
+            try:
+                # Talk mode stays conversational, but recency/source-sensitive prompts
+                # can still get live web grounding before final response generation.
+                web_note, web_context, web_details = self._prepare_web_context(
+                    text=live_query_text if must_verify_live else text,
+                    lane="project",
+                    topic_type=web_topic_type,
+                    force=must_verify_live,
+                    quick=True,
+                    progress_callback=progress_callback,
+                )
+            except Exception:
+                pass
         if isinstance(details_sink, dict):
             details_sink["web_note"] = web_note
             details_sink["web_context"] = web_context
@@ -765,7 +803,7 @@ class FoxforgeOrchestrator:
         if must_verify_live and web_context.strip():
             user_prompt = (
                 f"{text}\n\n"
-                "Live verification context (system-retrieved):\n"
+                "Live verification context:\n"
                 f"{web_context.strip()}\n\n"
                 "Use the live context above for all current facts. "
                 "If a requested detail is missing, unclear, or conflicting in the live context, say you could not verify it. "
@@ -775,7 +813,7 @@ class FoxforgeOrchestrator:
             # Mode B: Evolving Knowledge — blend training + web
             user_prompt = (
                 f"{text}\n\n"
-                "Supplementary web context (system-retrieved for freshness check):\n"
+                "Supplementary web context for freshness check:\n"
                 f"{web_context.strip()}\n\n"
                 "Answer this question from your own knowledge first. Then review the web context above "
                 "and correct, update, or add to your answer where the web data is more current. "
@@ -787,7 +825,7 @@ class FoxforgeOrchestrator:
             # Mode A: Current Events — web replaces training
             user_prompt = (
                 f"{text}\n\n"
-                "Live web context (system-scraped — extract news events/stories from this, not website descriptions):\n"
+                "Live web context (extract news events/stories from this, not website descriptions):\n"
                 f"{web_context.strip()}\n\n"
                 "Report actual events and headlines found above. If the scraped text is only site navigation "
                 "or platform features with no news content, ignore it and answer from training knowledge."
@@ -919,8 +957,7 @@ class FoxforgeOrchestrator:
                 "family logistics, and timing constraints when that improves the answer. "
                 "When relevant personal context is provided, use it sparingly and naturally. "
                 "Do not force personalization, and do not announce that you remembered something unless the user asks. "
-                "When live web context is provided, it is content SCRAPED from websites by the system — "
-                "it is NOT the user's browsing activity. Use it to answer recency-sensitive questions. "
+                "When live web context is provided, use it to answer recency-sensitive questions. "
                 "For news/current-events queries: extract and report actual news STORIES, EVENTS, and HEADLINES "
                 "found in the snippets — do NOT describe website features, video library navigation, "
                 "user account systems, subscription prompts, or how a news platform works. "
@@ -1045,8 +1082,8 @@ class FoxforgeOrchestrator:
         _tt = str(topic_type or "").strip().lower()
         fallback_models = cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else []
         if _tt == "underground":
-            model = "llama3.1-abliterated:8b"
-            fallback_models = ["llama3.1-abliterated:8b"]
+            model = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
+            fallback_models = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
 
         system_prompt = (
             "You are the internal Foxforge orchestrator. "
@@ -1054,15 +1091,15 @@ class FoxforgeOrchestrator:
             "No persona, no charm, no motivational language. "
             "Always include: what completed, where outputs were written, and next best action. "
             "Do not arbitrarily compress or shorten content; include all materially relevant details. "
-            "IMPORTANT: Any URLs, web sources, or fetched pages in the worker result were retrieved "
-            "AUTONOMOUSLY by the system's web crawler — they were NOT provided or shared by the user. "
-            "Never say 'based on the links you provided' or 'from the URLs you gave me'. "
-            "Instead say 'I found' / 'I retrieved' / 'from my web search' / 'sources I pulled'."
+            "IMPORTANT: Do not mention how web sources were obtained or who supplied them. "
+            "If source grounding is needed, cite URLs/domains directly without provenance chatter."
         )
+        compact_worker = self._compact_worker_result_for_prompt(worker_result)
+        compact_worker_text = json.dumps(compact_worker, ensure_ascii=True, sort_keys=True)
         user_prompt = (
-            f"User request:\n{user_text}\n\n"
+            f"User request:\n{self._clip_prompt_text(user_text, 2200)}\n\n"
             f"Route lane: {lane}\n\n"
-            f"Worker result object:\n{worker_result}\n\n"
+            f"Worker result object:\n{compact_worker_text}\n\n"
             "Return plain text. Be complete and include all materially relevant findings."
         )
         try:
@@ -1081,6 +1118,167 @@ class FoxforgeOrchestrator:
         except Exception:
             return fallback
 
+    def _make_summary_reply(self, *, lane: str, out: dict[str, Any], fallback: str) -> str:
+        """Return a terse summary-with-link reply for finished Make lane artifacts."""
+        from orchestrator.services.make_catalog import label_for_type, MAKE_CATALOG
+        artifact_path = str(out.get("path", "") or out.get("summary_path", "")).strip()
+        delivery_kind = str(out.get("delivery_kind", "") or out.get("type_id", "")).strip()
+        label = label_for_type(delivery_kind) if delivery_kind else lane.replace("make_", "").replace("_", " ").title()
+        words = int(out.get("word_count", 0)) or 0
+        files = int(out.get("files_written", 0)) or 0
+        app_name = str(out.get("app_name", "") or out.get("name", "")).strip()
+        ok = bool(out.get("ok", True))
+
+        lines: list[str] = []
+        if not ok:
+            return fallback
+
+        if app_name:
+            lines.append(f"**Built:** {app_name}")
+        lines.append(f"**Type:** {label}")
+        if words:
+            lines.append(f"**Words:** {words:,}")
+        if files and not words:
+            lines.append(f"**Files written:** {files}")
+        if artifact_path:
+            rel = artifact_path
+            try:
+                from pathlib import Path
+                rel = str(Path(artifact_path).relative_to(self.repo_root))
+            except Exception:
+                pass
+            lines.append(f"**Location:** `{rel}`")
+
+        summary_text = str(out.get("message", "")).strip()
+        if not summary_text and delivery_kind:
+            summary_text = f"{label} draft complete."
+        if summary_text:
+            lines.append(f"\n{summary_text}")
+
+        if artifact_path:
+            rel = artifact_path
+            try:
+                from pathlib import Path
+                rel_path = Path(artifact_path).relative_to(self.repo_root)
+                rel = str(rel_path)
+                link_url = f"/api/projects/file?path={rel}"
+                lines.append(f"\n[Open artifact]({link_url})")
+            except Exception:
+                pass
+
+        return "\n".join(lines) if lines else fallback
+
+    def _clip_prompt_text(self, value: Any, limit_chars: int) -> str:
+        text = str(value or "").strip()
+        limit = max(200, int(limit_chars))
+        if len(text) <= limit:
+            return text
+        tail = len(text) - limit
+        return f"{text[:limit].rstrip()}\n...[truncated {tail} chars]"
+
+    def _compact_worker_result_for_prompt(self, worker_result: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(worker_result, dict):
+            return {}
+
+        def _clean_scalar(raw: Any, max_chars: int = 260) -> Any:
+            if isinstance(raw, str):
+                return self._clip_prompt_text(raw, max_chars)
+            if isinstance(raw, (int, float, bool)) or raw is None:
+                return raw
+            return self._clip_prompt_text(str(raw), max_chars)
+
+        compact: dict[str, Any] = {}
+        keep_scalar_keys = (
+            "ok",
+            "status",
+            "message",
+            "project",
+            "lane",
+            "analysis_profile",
+            "topic_type",
+            "source_count",
+            "topic_canon_added",
+            "topic_reviews_created",
+            "canceled",
+            "cancel_summary",
+            "model",
+            "workers",
+            "agents_total",
+            "web_context_used",
+            "summary_postprocessed",
+        )
+        keep_path_keys = (
+            "summary_path",
+            "raw_path",
+            "path",
+            "spec_path",
+            "impl_path",
+            "py_path",
+            "markdown_path",
+            "source_path",
+        )
+        for key in keep_scalar_keys:
+            if key in worker_result:
+                compact[key] = _clean_scalar(worker_result.get(key))
+        for key in keep_path_keys:
+            value = str(worker_result.get(key, "")).strip()
+            if value:
+                compact[key] = self._clip_prompt_text(value, 280)
+
+        if isinstance(worker_result.get("models_used"), list):
+            compact["models_used"] = [
+                self._clip_prompt_text(str(x), 80)
+                for x in worker_result.get("models_used", [])[:6]
+                if str(x).strip()
+            ]
+            compact["models_used_total"] = len(worker_result.get("models_used", []))
+
+        reliability = worker_result.get("reliability")
+        if isinstance(reliability, dict):
+            compact["reliability"] = {
+                "agents_total": int(reliability.get("agents_total", 0) or 0),
+                "good": int(reliability.get("good", 0) or 0),
+                "weak": int(reliability.get("weak", 0) or 0),
+                "failed": int(reliability.get("failed", 0) or 0),
+            }
+
+        web_details = worker_result.get("web_details")
+        if isinstance(web_details, dict):
+            web_compact: dict[str, Any] = {}
+            for key in (
+                "requested",
+                "mode",
+                "source_count",
+                "seed_count",
+                "query_variants_count",
+                "conflict_count",
+                "crawl_pages",
+                "crawl_failures",
+                "crawl_gated_links",
+                "source_path",
+            ):
+                if key in web_details:
+                    web_compact[key] = _clean_scalar(web_details.get(key))
+            sources = web_details.get("sources")
+            if isinstance(sources, list):
+                preview: list[dict[str, str]] = []
+                for src in sources[:6]:
+                    if not isinstance(src, dict):
+                        continue
+                    row = {
+                        "title": self._clip_prompt_text(str(src.get("title", "")).strip(), 120),
+                        "domain": self._clip_prompt_text(str(src.get("source_domain", "")).strip(), 80),
+                        "url": self._clip_prompt_text(str(src.get("url", "")).strip(), 140),
+                    }
+                    if row["title"] or row["domain"] or row["url"]:
+                        preview.append(row)
+                if preview:
+                    web_compact["sources_preview"] = preview
+                web_compact["sources_total"] = len(sources)
+            if web_compact:
+                compact["web_details"] = web_compact
+        return compact
+
     def _reynard_relay(
         self,
         *,
@@ -1097,8 +1295,8 @@ class FoxforgeOrchestrator:
 
         fallback_models = cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else []
         if str(topic_type or "").strip().lower() == "underground":
-            model = "llama3.1-abliterated:8b"
-            fallback_models = ["llama3.1-abliterated:8b"]
+            model = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
+            fallback_models = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
 
         system_prompt = (
             self._reynard_persona_block()
@@ -1111,11 +1309,13 @@ class FoxforgeOrchestrator:
             "Prioritize clarity and completeness; be concise only when it does not omit important details. "
             "If a next action is obvious, mention it once without turning it into a lecture."
         )
+        compact_worker = self._compact_worker_result_for_prompt(worker_result)
+        compact_worker_text = json.dumps(compact_worker, ensure_ascii=True, sort_keys=True)
         user_prompt = (
-            f"User request:\n{user_text}\n\n"
+            f"User request:\n{self._clip_prompt_text(user_text, 2200)}\n\n"
             f"Lane: {lane}\n\n"
-            f"Internal orchestrator summary:\n{str(internal_reply or '').strip()}\n\n"
-            f"Worker result object:\n{worker_result or {}}\n\n"
+            f"Internal orchestrator summary:\n{self._clip_prompt_text(str(internal_reply or '').strip(), 9000)}\n\n"
+            f"Worker result object:\n{compact_worker_text}\n\n"
             "Return plain text only."
         )
         try:
@@ -1229,7 +1429,7 @@ class FoxforgeOrchestrator:
         _lr_tt = str(topic_type or "").strip().lower()
         _lr_unrestricted = _lr_tt == "underground"
         if _lr_unrestricted:
-            model = "llama3.1-abliterated:8b"
+            model = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
         _lr_guidance = ""
         try:
             _lr_guidance = self.learning_engine.guidance_for_lane("research", limit=5)
@@ -1248,15 +1448,15 @@ class FoxforgeOrchestrator:
                     )
                 )
             prompt = (
-                "Answer the user using ONLY the system-retrieved source snippets and local context below. "
-                "These sources were fetched autonomously by the web crawler — the user did NOT provide them. "
+                "Answer the user using ONLY the source snippets and local context below. "
+                "Do not discuss how sources were obtained. "
                 "Tag each claim [E] (sourced), [I] (inferred), or [S] (speculative). "
                 "End with 'Confidence: X/5 — [reason]'. "
                 "Be concise and say when details are uncertain.\n\n"
                 f"Question: {question}\n\n"
                 + "Local context:\n"
                 + ("\n\n".join(context_bits)[:2400])
-                + "\n\nSystem-retrieved source snippets:\n"
+                + "\n\nSource snippets:\n"
                 + ("\n\n".join(snippets)[:4000])
             )
             try:
@@ -1264,9 +1464,7 @@ class FoxforgeOrchestrator:
                     trace.start("light_synthesis")
                 _lr_sys = (
                     "You are Foxforge. Produce a fast, accurate, source-grounded answer. "
-                    "The source snippets in the prompt were fetched autonomously by the system's web crawler — "
-                    "the user did NOT provide any links or URLs. When citing sources say 'I found' or 'from my search', "
-                    "never 'from the links you provided' or 'based on your URLs'. "
+                    "Do not mention how sources were obtained or who supplied them. "
                     "Label every claim with its evidence type:\n"
                     "  [E] = empirical — cite the source domain or URL.\n"
                     "  [I] = inference — frame as 'this suggests...' or 'likely...'\n"
@@ -1286,7 +1484,7 @@ class FoxforgeOrchestrator:
                     timeout=min(int(model_cfg.get("timeout_sec", 120)), 120),
                     retry_attempts=2,
                     retry_backoff_sec=0.8,
-                    fallback_models=["llama3.1-abliterated:8b"] if _lr_unrestricted else (
+                    fallback_models=["huihui_ai/qwen3-abliterated:8b-Q4_K_M"] if _lr_unrestricted else (
                         model_cfg.get("fallback_models", []) if isinstance(model_cfg.get("fallback_models", []), list) else []
                     ),
                 )
@@ -1341,9 +1539,9 @@ class FoxforgeOrchestrator:
             cycle = self.reflection_engine.create_cycle(
                 project=self.project_slug,
                 lane=lane,
-                user_request=user_text,
-                orchestrator_reply=reply_text,
-                worker_result=worker_result,
+                user_request=self._clip_prompt_text(user_text, 2000),
+                orchestrator_reply=self._clip_prompt_text(reply_text, 10000),
+                worker_result=self._compact_worker_result_for_prompt(worker_result if isinstance(worker_result, dict) else None),
             )
         except Exception:
             return reply_text
@@ -1508,6 +1706,10 @@ class FoxforgeOrchestrator:
             worker_result=worker_result,
         )
         try:
+            self._enqueue_library_ingest_from_worker_result(worker_result)
+        except Exception:
+            pass
+        try:
             self._run_continuous_improvement(
                 user_text=user_text,
                 lane=lane,
@@ -1519,8 +1721,189 @@ class FoxforgeOrchestrator:
             pass
         return final_reply
 
+    def _collect_worker_artifact_paths(self, worker_result: dict[str, Any] | None) -> list[Path]:
+        if not isinstance(worker_result, dict):
+            return []
+        paths: list[Path] = []
+        candidate_keys = (
+            "path",
+            "summary_path",
+            "raw_path",
+            "source_path",
+            "spec_path",
+            "impl_path",
+            "py_path",
+            "markdown_path",
+        )
+        web_details = worker_result.get("web_details")
+        if isinstance(web_details, dict):
+            source_path = str(web_details.get("source_path", "")).strip()
+            if source_path:
+                try:
+                    paths.append(Path(source_path))
+                except Exception:
+                    pass
+        for key in candidate_keys:
+            raw = str(worker_result.get(key, "")).strip()
+            if not raw:
+                continue
+            try:
+                paths.append(Path(raw))
+            except Exception:
+                continue
+        dedup: list[Path] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            try:
+                path = raw_path if raw_path.is_absolute() else (self.repo_root / raw_path)
+                resolved = path.resolve()
+            except Exception:
+                continue
+            try:
+                resolved.relative_to(self.repo_root / "Projects")
+            except ValueError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(resolved)
+        return dedup
+
+    def _library_source_kind_for_artifact(self, path: Path) -> str:
+        low = str(path).replace("\\", "/").lower()
+        if "/research_summaries/" in low:
+            return "reference"
+        if "/review/" in low:
+            return "review"
+        return "notes"
+
+    def _enqueue_library_ingest_for_artifact(self, artifact_path: Path, *, project_slug: str, source_origin: str) -> None:
+        path = Path(artifact_path)
+        if not path.exists() or not path.is_file():
+            return
+        ext = path.suffix.lower()
+        if not is_document_ext(ext):
+            return
+        low = str(path).replace("\\", "/").lower()
+        if "/research_web_sources/" in low:
+            return
+        source_kind = self._library_source_kind_for_artifact(path)
+        mime = mimetypes.guess_type(path.name)[0] or ("text/markdown" if ext == ".md" else "text/plain")
+
+        def _worker() -> None:
+            try:
+                item = self.library_service.intake_file(
+                    path,
+                    source_name=path.name,
+                    mime=mime,
+                    source_kind=source_kind,
+                    title="",
+                    topic_id="",
+                    project_slug=project_slug,
+                    source_origin=source_origin,
+                    conversation_id="",
+                )
+                item_id = str(item.get("id", "")).strip()
+                if item_id:
+                    self.library_service.enqueue_ingest(item_id)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name=f"foxforge-library-artifact-{uuid.uuid4().hex[:8]}",
+        ).start()
+
+    def _enqueue_library_ingest_from_worker_result(self, worker_result: dict[str, Any] | None) -> None:
+        paths = self._collect_worker_artifact_paths(worker_result)
+        if not paths:
+            return
+        project_slug = str((worker_result or {}).get("project", "")).strip() or str(self.project_slug).strip() or "general"
+        for path in paths:
+            self._enqueue_library_ingest_for_artifact(
+                path,
+                project_slug=project_slug,
+                source_origin="project_artifact",
+            )
+
     def _should_offer_web(self, text: str, lane: str) -> bool:
         return should_offer_web(text, lane)
+
+    def _routing_context_gate(
+        self,
+        text: str,
+        prior_messages: list[dict[str, str]],
+        *,
+        timeout: int = 8,
+    ) -> bool:
+        """
+        Lightweight LLM gate that confirms keyword-triggered web routing is
+        actually warranted given the full conversational context.
+
+        Returns True (allow web fetch) or False (suppress).
+        Fails open — any error or timeout returns True so existing behaviour
+        is preserved rather than silently suppressing valid requests.
+        """
+        try:
+            cfg = self._reynard_layer_config()
+            model = str(cfg.get("model", "")).strip()
+            if not model:
+                return True
+
+            history_lines: list[str] = []
+            for row in prior_messages[-5:]:
+                role = str(row.get("role", "")).strip().lower()
+                content = str(row.get("content", "")).strip()
+                if role in ("user", "assistant") and content:
+                    history_lines.append(f"{role.upper()}: {content[:300]}")
+            history_block = "\n".join(history_lines)
+
+            system_prompt = (
+                "You are a one-word routing gate. Reply with only 'yes' or 'no' — nothing else.\n\n"
+                "Given a conversation and its latest message, decide: does the latest message "
+                "genuinely require fetching live web data, real-time news, or current information "
+                "from the internet?\n\n"
+                "Common FALSE triggers (answer 'no'):\n"
+                "- 'source' used as: the source of a problem, source code, source material, source of truth\n"
+                "- 'link' used as: a link between ideas, linked to a concept, the missing link\n"
+                "- 'web' used as: a web of connections, a web of lies\n"
+                "- 'news' in historical or fictional context: 'that was big news in the 80s'\n"
+                "- 'update' meaning: update me on what you said, update the document\n"
+                "- 'current' meaning: current state of the code, current approach\n"
+                "- Any question about history, definitions, explanations, opinions, or general knowledge\n\n"
+                "Common TRUE triggers (answer 'yes'):\n"
+                "- Asking for today's news, recent events, live scores, current prices\n"
+                "- Asking who currently holds a position or title\n"
+                "- Asking for the latest software version or release\n"
+                "- Asking what happened recently or this week\n"
+                "- Asking to look something up or search the web"
+            )
+            user_prompt = (
+                f"Conversation history:\n{history_block or '(none)'}\n\n"
+                f"Latest message: {text.strip()}\n\n"
+                "Does this latest message genuinely need live web data fetched right now? "
+                "Answer only 'yes' or 'no'."
+            )
+
+            result = self.ollama.chat(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+                num_ctx=2048,
+                think=False,
+                timeout=timeout,
+                retry_attempts=1,
+                retry_backoff_sec=0.5,
+                fallback_models=[],
+            )
+            answer = str(result or "").strip().lower().strip(".,!? \t\n")
+            # Only suppress on a clear 'no' — everything else (yes, empty, garbled) allows
+            return answer != "no"
+        except Exception:
+            return True  # fail-open: preserve existing behaviour on any error
 
     def _is_recency_sensitive_from_history(self, prior_messages: list, lookback: int = 4) -> bool:
         return is_recency_sensitive_from_history(prior_messages, lookback)
@@ -1620,7 +2003,7 @@ class FoxforgeOrchestrator:
             return ""
         return body[: max(500, min(limit, 30000))]
 
-    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general", force: bool = False, quick: bool = False) -> tuple[str, str, dict[str, Any]]:
+    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general", force: bool = False, quick: bool = False, progress_callback=None) -> tuple[str, str, dict[str, Any]]:
         mode = self.web_engine.get_mode()
         lane_key = lane.strip().lower()
         normalized_topic_type = str(topic_type or "").strip().lower() or "general"
@@ -1663,6 +2046,7 @@ class FoxforgeOrchestrator:
             request_id="auto" if mode == "auto" else "ask_auto_try",
             note=("quick chat web mode" if quick else "auto web mode") if mode == "auto" else ("quick ask mode auto-try" if quick else "ask mode auto-try"),
             topic_type=normalized_topic_type,
+            progress_callback=progress_callback,
         )
         details["requested"] = True
         details["source_path"] = str(result.get("source_path", ""))
@@ -1682,6 +2066,7 @@ class FoxforgeOrchestrator:
         details["crawl_pages"] = int(result.get("crawl_pages", 0))
         details["crawl_failures"] = int(result.get("crawl_failures", 0))
         details["sources"] = result.get("sources", []) if isinstance(result.get("sources", []), list) else []
+        details["intel_summary"] = result.get("intel_summary", {}) if isinstance(result.get("intel_summary", {}), dict) else {}
         if bool(result.get("ok", False)):
             feedback_text = self._web_learning_feedback(text, result.get("sources", []))
             self.learning_engine.ingest_feedback_text(
@@ -2169,6 +2554,103 @@ class FoxforgeOrchestrator:
                 "sections_written": specialist_result.get("sections_written", []),
             }
 
+        # --- Longform writing: essay_long, essay_short, guide, tutorial, video_script, newsletter, press_release ---
+        _LONGFORM_KINDS = {"essay_long", "essay_short", "guide", "tutorial", "video_script", "newsletter", "press_release"}
+        if kind in _LONGFORM_KINDS:
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            raw_notes_context = self._read_raw_notes_context(self.project_slug)
+            sources_context = self._read_sources_context(self.project_slug)
+            longform_result = self._run_registered_agent(
+                "make_longform",
+                self._make_agent_task(
+                    lane="make_longform",
+                    text=text,
+                    context={
+                        "type_id": kind,
+                        "research_context": research_context,
+                        "raw_notes_context": raw_notes_context,
+                        "sources_context": sources_context,
+                        "project_context": project_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            longform_body = str(longform_result.get("body", "")).strip()
+            if not longform_body:
+                longform_body = f"# {kind.replace('_', ' ').title()}\n\n(Longform pool returned no content.)\n"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            _LONGFORM_DIRS = {
+                "video_script": "VideoScripts", "newsletter": "Newsletters",
+                "press_release": "PressReleases", "guide": "Guides", "tutorial": "Tutorials",
+            }
+            dir_name = _LONGFORM_DIRS.get(kind, "Essays-Scripts")
+            deliverable_root = self.repo_root / "Projects" / dir_name / self.project_slug
+            deliverable_root.mkdir(parents=True, exist_ok=True)
+            out_path = deliverable_root / f"{stamp}_{kind}.md"
+            out_path.write_text(longform_body + "\n", encoding="utf-8")
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": str(out_path)},
+            )
+            return {
+                "ok": longform_result.get("ok", True),
+                "message": longform_result.get("message", f"Longform {kind.replace('_', ' ')} complete."),
+                "path": str(out_path),
+                "delivery_kind": kind,
+                "sections_written": longform_result.get("sections_written", []),
+                "word_count": len(longform_body.split()),
+            }
+
+        # --- Desktop app: .NET 8 + Avalonia ---
+        if kind == "desktop_app":
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            out = self._run_registered_agent(
+                "make_desktop_app",
+                self._make_agent_task(
+                    lane="make_desktop_app",
+                    text=text,
+                    context={
+                        "project_context": project_context,
+                        "research_context": research_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            out["delivery_kind"] = kind
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": out.get("path", "")},
+            )
+            return out
+
+        # --- Tool / script ---
+        if kind in {"tool", "script"}:
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            out = self._run_registered_agent(
+                "make_tool",
+                self._make_agent_task(
+                    lane="make_tool",
+                    text=text,
+                    context={
+                        "project_context": project_context,
+                        "research_context": research_context,
+                    },
+                    cancel_checker=getattr(self, "_last_cancel_checker", None),
+                    progress_callback=getattr(self, "_last_progress_callback", None),
+                ),
+            )
+            out["delivery_kind"] = kind
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": kind, "path": out.get("path", "")},
+            )
+            return out
+
         # --- Fallback: unknown or generic document kinds ---
         deliverable_root = self.repo_root / "Projects" / "Essays-Scripts" / self.project_slug
         deliverable_root.mkdir(parents=True, exist_ok=True)
@@ -2555,14 +3037,7 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'App build completed.')} Output: {out.get('path', '')}"
-            internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
-            reply = self._reynard_relay(
-                user_text=text,
-                lane=lane,
-                internal_reply=internal_reply,
-                worker_result=out,
-                topic_type=topic_type,
-            )
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2600,14 +3075,7 @@ class FoxforgeOrchestrator:
                 ),
             )
             fallback = f"{out.get('message', 'Tool build completed.')} Output: {out.get('path', '')}"
-            internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
-            reply = self._reynard_relay(
-                user_text=text,
-                lane=lane,
-                internal_reply=internal_reply,
-                worker_result=out,
-                topic_type=topic_type,
-            )
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2637,14 +3105,7 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
-            internal_reply = self._orchestrator_finalize(text, "project", out, fallback, topic_type=topic_type)
-            reply = self._reynard_relay(
-                user_text=text,
-                lane="project",
-                internal_reply=internal_reply,
-                worker_result=out,
-                topic_type=topic_type,
-            )
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(
@@ -2674,14 +3135,112 @@ class FoxforgeOrchestrator:
                 mode=mode,
             )
             fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
-            internal_reply = self._orchestrator_finalize(text, "project", out, fallback, topic_type=topic_type)
-            reply = self._reynard_relay(
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
+            reply = self._append_daymarker_note(reply, event_note)
+            reply = self._append_daymarker_note(reply, reminder_note)
+            return self._complete_turn(
                 user_text=text,
-                lane="project",
-                internal_reply=internal_reply,
+                lane=lane,
+                reply_text=reply,
                 worker_result=out,
-                topic_type=topic_type,
+                context_feedback=self._context_feedback(
+                    user_text=text,
+                    reply_text=reply,
+                    household_context=household_context,
+                    personal_context=personal_context,
+                ),
             )
+
+        if lane == "make_longform":
+            if _is_cancelled():
+                return "Request cancelled before make_longform lane execution started."
+            self._last_project_mode = pipeline
+            self._last_progress_callback = progress_callback
+            self._last_cancel_checker = cancel_checker
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            raw_notes_context = self._read_raw_notes_context(self.project_slug)
+            sources_context = self._read_sources_context(self.project_slug)
+            longform_result = self._run_registered_agent(
+                "make_longform",
+                self._make_agent_task(
+                    lane="make_longform",
+                    text=text,
+                    context={
+                        "type_id": target,
+                        "research_context": research_context,
+                        "raw_notes_context": raw_notes_context,
+                        "sources_context": sources_context,
+                        "project_context": project_context,
+                    },
+                    cancel_checker=cancel_checker,
+                    progress_callback=progress_callback,
+                ),
+            )
+            longform_body = str(longform_result.get("body", "")).strip()
+            if not longform_body:
+                longform_body = f"# {target.replace('_', ' ').title()}\n\n(Longform pool returned no content.)\n"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            _LONGFORM_DIRS_L = {
+                "video_script": "VideoScripts", "newsletter": "Newsletters",
+                "press_release": "PressReleases", "guide": "Guides", "tutorial": "Tutorials",
+            }
+            dir_name = _LONGFORM_DIRS_L.get(target, "Essays-Scripts")
+            deliverable_root = self.repo_root / "Projects" / dir_name / self.project_slug
+            deliverable_root.mkdir(parents=True, exist_ok=True)
+            out_path = deliverable_root / f"{stamp}_{target}.md"
+            out_path.write_text(longform_body + "\n", encoding="utf-8")
+            self.bus.emit(
+                "orchestrator",
+                "make_deliverable_written",
+                {"project": self.project_slug, "kind": target, "path": str(out_path)},
+            )
+            out = {
+                "ok": longform_result.get("ok", True),
+                "message": longform_result.get("message", f"Longform {target.replace('_', ' ')} complete."),
+                "path": str(out_path),
+                "delivery_kind": target,
+                "sections_written": longform_result.get("sections_written", []),
+                "word_count": len(longform_body.split()),
+            }
+            fallback = f"{out.get('message', 'Longform build completed.')} Output: {out_path}"
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
+            reply = self._append_daymarker_note(reply, event_note)
+            reply = self._append_daymarker_note(reply, reminder_note)
+            return self._complete_turn(
+                user_text=text,
+                lane=lane,
+                reply_text=reply,
+                worker_result=out,
+                context_feedback=self._context_feedback(
+                    user_text=text,
+                    reply_text=reply,
+                    household_context=household_context,
+                    personal_context=personal_context,
+                ),
+            )
+
+        if lane == "make_desktop_app":
+            if _is_cancelled():
+                return "Request cancelled before make_desktop_app lane execution started."
+            self._last_project_mode = pipeline
+            self._last_progress_callback = progress_callback
+            self._last_cancel_checker = cancel_checker
+            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            out = self._run_registered_agent(
+                "make_desktop_app",
+                self._make_agent_task(
+                    lane="make_desktop_app",
+                    text=text,
+                    context={
+                        "project_context": project_context,
+                        "research_context": research_context,
+                    },
+                    cancel_checker=cancel_checker,
+                    progress_callback=progress_callback,
+                ),
+            )
+            fallback = f"{out.get('message', 'Desktop app build completed.')} Output: {out.get('path', '')}"
+            reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
             reply = self._append_daymarker_note(reply, event_note)
             reply = self._append_daymarker_note(reply, reminder_note)
             return self._complete_turn(

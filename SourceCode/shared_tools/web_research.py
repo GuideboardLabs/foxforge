@@ -21,6 +21,7 @@ from shared_tools.db import connect as _db_connect_shared
 from shared_tools.file_store import ProjectStore
 from shared_tools.fact_policy import enrich_source_metadata, detect_topic_type, classify_fact_volatility
 from shared_tools.domain_reputation import DomainReputation
+from shared_tools.inference_router import InferenceRouter
 
 
 def _now_iso() -> str:
@@ -102,6 +103,14 @@ _NAV_HEADING_RE = re.compile(
     r"^#+\s*(main navigation|navigation|site navigation|primary navigation|header|footer|menu|breadcrumb|skip to|table of contents|contents)\s*$",
     re.IGNORECASE,
 )
+_JUNK_SECTION_HEADING_RE = re.compile(
+    r"^#+\s*(related articles?|you might also like|recommended for you|more stories|trending now|most popular|also read|see also|more from|popular posts?|suggested reading)\s*$",
+    re.IGNORECASE,
+)
+_AD_LINE_RE = re.compile(
+    r"\b(sponsored|advertisement|promoted content|partner content|paid content|ad\b)",
+    re.IGNORECASE,
+)
 _BOILERPLATE_LOWER_EXTENDED = _BOILERPLATE_LOWER + (
     "skip to main content",
     "skip to content",
@@ -125,27 +134,63 @@ _BOILERPLATE_LOWER_EXTENDED = _BOILERPLATE_LOWER + (
     "download the app",
     "follow us on",
     "newsletter signup",
+    "you might also like",
+    "related articles",
+    "recommended for you",
+    "sponsored content",
+    "advertisement",
+    "promoted",
+    "read more at",
+    "click here to",
+    "learn more about",
+    "trending now",
+    "most popular",
+    "don't miss",
+    "limited time",
+    "free shipping",
+    "add to cart",
+    "buy now",
+    "shop now",
+    "sale ends",
+    "discount code",
+    "partner content",
+    "paid content",
+    "affiliate",
 )
 
 
 def _clean_crawl4ai_markdown(text: str) -> str:
-    """Strip navigation link menus, cookie banners, and share-button boilerplate from Crawl4AI markdown."""
+    """Strip navigation link menus, cookie banners, ad content, and share-button boilerplate from Crawl4AI markdown."""
     if not text:
         return text
     lines = text.split("\n")
     cleaned: list[str] = []
     nav_run = 0
     skip_nav_section = False
+    skip_junk_section = False
     for line in lines:
         stripped = line.strip()
 
         # Detect a navigation heading and skip until next content heading
         if _NAV_HEADING_RE.match(stripped):
             skip_nav_section = True
+            skip_junk_section = False
             continue
         if skip_nav_section:
             if re.match(r"^#+\s+\S", stripped) and not _NAV_HEADING_RE.match(stripped):
                 skip_nav_section = False
+                # fall through to process this heading normally
+            else:
+                continue
+
+        # Detect junk section headings (related articles, you might also like, etc.)
+        if _JUNK_SECTION_HEADING_RE.match(stripped):
+            skip_junk_section = True
+            continue
+        if skip_junk_section:
+            if re.match(r"^#+\s+\S", stripped) and not _JUNK_SECTION_HEADING_RE.match(stripped):
+                skip_junk_section = False
+                # fall through to process this heading normally
             else:
                 continue
 
@@ -162,6 +207,16 @@ def _clean_crawl4ai_markdown(text: str) -> str:
         low = stripped.lower()
         if len(stripped) < 160 and any(p in low for p in _BOILERPLATE_LOWER_EXTENDED):
             continue
+
+        # Short ad/sponsored lines (<200 chars)
+        if len(stripped) < 200 and _AD_LINE_RE.search(stripped):
+            continue
+
+        # Lines where >75% of non-whitespace chars are part of markdown link syntax
+        if stripped and len(stripped) < 300:
+            link_chars = sum(len(m.group(0)) for m in re.finditer(r"\[([^\]]*)\]\([^)]*\)", stripped))
+            if link_chars > 0 and link_chars / len(stripped) > 0.75:
+                continue
 
         # Lone image-only lines (![...](...)) with no surrounding text
         if re.match(r"^!\[[^\]]*\]\([^)]*\)\s*$", stripped):
@@ -393,6 +448,11 @@ class WebResearchEngine:
         "thingiverse.com",
         "lttreviews.com",
         "techpowerup.com",
+        "wirecutter.com",
+        "thewirecutter.com",
+        "consumerreports.org",
+        "reviewed.com",
+        "pcmag.com",
     }
 
     # Gaming / esports editorial
@@ -518,6 +578,24 @@ class WebResearchEngine:
         "akc.org",
         "petmd.com",
     }
+    # Social / feed / forum domains that are low-signal for technical queries.
+    # Applied as a score penalty in _topic_domain_bonus when topic_type="technical".
+    TECHNICAL_SOCIAL_DEMOTE = frozenset({
+        "reddit.com",
+        "medium.com",
+        "substack.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "facebook.com",
+        "instagram.com",
+        "quora.com",
+        "pinterest.com",
+        "tiktok.com",
+        "tumblr.com",
+        "news.ycombinator.com",
+    })
+
     TOPIC_FAMILY_ALIASES = {
         "pet_care": "animal_care",
         "pets": "animal_care",
@@ -689,6 +767,7 @@ class WebResearchEngine:
         self.lock = Lock()
         self._searxng_backoff_until = 0.0
         self._crawl4ai_backoff_until = 0.0
+        self._reddit_backoff_until = 0.0
         self._tor_active = False  # Set True during underground run_query execution
 
         self.root.mkdir(parents=True, exist_ok=True)
@@ -704,9 +783,26 @@ class WebResearchEngine:
                         "max_results": 8,
                         "query_expansion_enabled": True,
                         "query_expansion_variants": 4,
+                        "query_decomposition_enabled": True,
+                        "query_decomposition_max_sub": 5,
+                        "pre_crawl_seed_selection_enabled": True,
+                        "pre_crawl_results_per_query": 20,
+                        "pre_crawl_primary_quota": 5,
+                        "pre_crawl_extra_quota_min": 2,
+                        "pre_crawl_extra_quota_max": 3,
+                        "smart_query_variants_enabled": False,
+                        "smart_query_variants_limit": 3,
+                        "smart_query_summary_chars": 2200,
+                        "smart_query_cache_rows": 6,
+                        "iterative_search_enabled": True,
+                        "iterative_search_time_budget_sec": 25,
+                        "embedding_content_filter_enabled": True,
                         "source_scoring_enabled": True,
                         "min_quality_sources": 2,
-                        "context_min_source_score": 0.52,
+                        "context_min_source_score": 0.62,
+                        "fresh_runs_enabled": True,
+                        "fresh_runs_history_limit": 6,
+                        "fresh_runs_min_new_domains": 4,
                         "conflict_detection_enabled": True,
                         "crawl_relevance_gating_enabled": False,
                         "crawl_relevance_min_score": 0.1,
@@ -724,13 +820,13 @@ class WebResearchEngine:
                         "crawl4ai_base_url": "http://127.0.0.1:11235",
                         "crawl4ai_timeout_sec": 40,
                         "crawl4ai_retry_attempts": 2,
-                        "crawl4ai_css_selector": "article,main,p",
+                        "crawl4ai_css_selector": "",
                         "newspaper_enabled": True,
                         "newspaper_language": "",
                         "search_retry_attempts": 3,
                         "crawl_retry_attempts": 3,
                         "crawl_same_domain_only": True,
-                        "crawl_text_chars": 800,
+                        "crawl_text_chars": 1200,
                     },
                     indent=2,
                     ensure_ascii=True,
@@ -759,6 +855,24 @@ class WebResearchEngine:
             data = {}
         if not isinstance(data, dict):
             data = {}
+
+        def _coerce_bool(value: Any, *, default: bool) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            text = str(value).strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+            return default
+
+        def _bool_setting(name: str, default: bool) -> bool:
+            return _coerce_bool(data.get(name, default), default=default)
+
         mode = str(data.get("mode", "auto")).strip().lower()
         if mode not in self.VALID_MODES:
             mode = "auto"
@@ -787,31 +901,94 @@ class WebResearchEngine:
         except (TypeError, ValueError):
             max_results = 8
         data["max_results"] = max(1, min(max_results, 20))
-        data["query_expansion_enabled"] = bool(data.get("query_expansion_enabled", True))
+        data["query_expansion_enabled"] = _bool_setting("query_expansion_enabled", True)
         try:
             query_expansion_variants = int(data.get("query_expansion_variants", 4))
         except (TypeError, ValueError):
             query_expansion_variants = 4
         data["query_expansion_variants"] = max(1, min(query_expansion_variants, 8))
-        data["source_scoring_enabled"] = bool(data.get("source_scoring_enabled", True))
+        data["query_decomposition_enabled"] = _bool_setting("query_decomposition_enabled", True)
+        try:
+            query_decomposition_max_sub = int(data.get("query_decomposition_max_sub", 5))
+        except (TypeError, ValueError):
+            query_decomposition_max_sub = 5
+        data["query_decomposition_max_sub"] = max(1, min(query_decomposition_max_sub, 8))
+        data["pre_crawl_seed_selection_enabled"] = _bool_setting("pre_crawl_seed_selection_enabled", True)
+        try:
+            pre_crawl_results_per_query = int(data.get("pre_crawl_results_per_query", 20))
+        except (TypeError, ValueError):
+            pre_crawl_results_per_query = 20
+        # Search providers in this stack currently cap at 20 results/query.
+        data["pre_crawl_results_per_query"] = max(20, min(pre_crawl_results_per_query, 20))
+        try:
+            pre_crawl_primary_quota = int(data.get("pre_crawl_primary_quota", 5))
+        except (TypeError, ValueError):
+            pre_crawl_primary_quota = 5
+        data["pre_crawl_primary_quota"] = max(1, min(pre_crawl_primary_quota, 12))
+        try:
+            pre_crawl_extra_quota_min = int(data.get("pre_crawl_extra_quota_min", 2))
+        except (TypeError, ValueError):
+            pre_crawl_extra_quota_min = 2
+        data["pre_crawl_extra_quota_min"] = max(1, min(pre_crawl_extra_quota_min, 6))
+        try:
+            pre_crawl_extra_quota_max = int(data.get("pre_crawl_extra_quota_max", 3))
+        except (TypeError, ValueError):
+            pre_crawl_extra_quota_max = 3
+        pre_crawl_extra_quota_max = max(1, min(pre_crawl_extra_quota_max, 8))
+        data["pre_crawl_extra_quota_max"] = max(data["pre_crawl_extra_quota_min"], pre_crawl_extra_quota_max)
+        data["smart_query_variants_enabled"] = _bool_setting("smart_query_variants_enabled", True)
+        try:
+            smart_query_variants_limit = int(data.get("smart_query_variants_limit", 3))
+        except (TypeError, ValueError):
+            smart_query_variants_limit = 3
+        data["smart_query_variants_limit"] = max(1, min(smart_query_variants_limit, 6))
+        try:
+            smart_query_summary_chars = int(data.get("smart_query_summary_chars", 2200))
+        except (TypeError, ValueError):
+            smart_query_summary_chars = 2200
+        data["smart_query_summary_chars"] = max(600, min(smart_query_summary_chars, 12000))
+        try:
+            smart_query_cache_rows = int(data.get("smart_query_cache_rows", 6))
+        except (TypeError, ValueError):
+            smart_query_cache_rows = 6
+        data["smart_query_cache_rows"] = max(0, min(smart_query_cache_rows, 20))
+        data["iterative_search_enabled"] = _bool_setting("iterative_search_enabled", True)
+        try:
+            iterative_search_time_budget_sec = float(data.get("iterative_search_time_budget_sec", 25))
+        except (TypeError, ValueError):
+            iterative_search_time_budget_sec = 25.0
+        data["iterative_search_time_budget_sec"] = max(5.0, min(iterative_search_time_budget_sec, 180.0))
+        data["embedding_content_filter_enabled"] = _bool_setting("embedding_content_filter_enabled", True)
+        data["source_scoring_enabled"] = _bool_setting("source_scoring_enabled", True)
         try:
             min_quality_sources = int(data.get("min_quality_sources", 2))
         except (TypeError, ValueError):
             min_quality_sources = 2
         data["min_quality_sources"] = max(1, min(min_quality_sources, 8))
         try:
-            context_min_source_score = float(data.get("context_min_source_score", 0.52))
+            context_min_source_score = float(data.get("context_min_source_score", 0.62))
         except (TypeError, ValueError):
-            context_min_source_score = 0.52
+            context_min_source_score = 0.62
         data["context_min_source_score"] = max(0.1, min(context_min_source_score, 1.0))
-        data["conflict_detection_enabled"] = bool(data.get("conflict_detection_enabled", True))
-        data["crawl_relevance_gating_enabled"] = bool(data.get("crawl_relevance_gating_enabled", False))
+        data["fresh_runs_enabled"] = _bool_setting("fresh_runs_enabled", True)
+        try:
+            fresh_runs_history_limit = int(data.get("fresh_runs_history_limit", 6))
+        except (TypeError, ValueError):
+            fresh_runs_history_limit = 6
+        data["fresh_runs_history_limit"] = max(1, min(fresh_runs_history_limit, 20))
+        try:
+            fresh_runs_min_new_domains = int(data.get("fresh_runs_min_new_domains", 4))
+        except (TypeError, ValueError):
+            fresh_runs_min_new_domains = 4
+        data["fresh_runs_min_new_domains"] = max(1, min(fresh_runs_min_new_domains, 12))
+        data["conflict_detection_enabled"] = _bool_setting("conflict_detection_enabled", True)
+        data["crawl_relevance_gating_enabled"] = _bool_setting("crawl_relevance_gating_enabled", False)
         try:
             crawl_relevance_min_score = float(data.get("crawl_relevance_min_score", 0.1))
         except (TypeError, ValueError):
             crawl_relevance_min_score = 0.1
         data["crawl_relevance_min_score"] = max(0.0, min(crawl_relevance_min_score, 1.0))
-        data["crawl_enabled"] = bool(data.get("crawl_enabled", True))
+        data["crawl_enabled"] = _bool_setting("crawl_enabled", True)
 
         try:
             crawl_depth = int(data.get("crawl_depth", 2))
@@ -837,7 +1014,7 @@ class WebResearchEngine:
             crawl_timeout_sec = 0
         data["crawl_timeout_sec"] = max(0, min(crawl_timeout_sec, 180))
 
-        data["crawl4ai_enabled"] = bool(data.get("crawl4ai_enabled", True))
+        data["crawl4ai_enabled"] = _bool_setting("crawl4ai_enabled", True)
         data["crawl4ai_base_url"] = (
             str(os.getenv("FOXFORGE_CRAWL4AI_URL", str(data.get("crawl4ai_base_url", "http://127.0.0.1:11235"))))
             .strip()
@@ -857,7 +1034,7 @@ class WebResearchEngine:
         data["crawl4ai_retry_attempts"] = max(1, min(crawl4ai_retry_attempts, 8))
         data["crawl4ai_css_selector"] = str(data.get("crawl4ai_css_selector", "article,main,p")).strip()
 
-        data["newspaper_enabled"] = bool(data.get("newspaper_enabled", True))
+        data["newspaper_enabled"] = _bool_setting("newspaper_enabled", True)
         data["newspaper_language"] = str(data.get("newspaper_language", "")).strip()
 
         try:
@@ -872,7 +1049,7 @@ class WebResearchEngine:
             crawl_retry_attempts = 3
         data["crawl_retry_attempts"] = max(1, min(crawl_retry_attempts, 8))
 
-        data["crawl_same_domain_only"] = bool(data.get("crawl_same_domain_only", True))
+        data["crawl_same_domain_only"] = _bool_setting("crawl_same_domain_only", True)
 
         try:
             crawl_text_chars = int(data.get("crawl_text_chars", 2500))
@@ -881,7 +1058,7 @@ class WebResearchEngine:
         data["crawl_text_chars"] = max(250, min(crawl_text_chars, 6000))
 
         # TOR proxy settings (disabled by default — enable when TOR daemon is running)
-        data["tor_proxy_enabled"] = bool(data.get("tor_proxy_enabled", False))
+        data["tor_proxy_enabled"] = _bool_setting("tor_proxy_enabled", False)
         data["tor_proxy_url"] = str(data.get("tor_proxy_url", "socks5h://127.0.0.1:9050")).strip()
         try:
             tor_timeout_multiplier = float(data.get("tor_timeout_multiplier", 2.5))
@@ -965,9 +1142,26 @@ class WebResearchEngine:
             f"- max_results: {settings.get('max_results', 8)}\n"
             f"- query_expansion_enabled: {settings.get('query_expansion_enabled', True)}\n"
             f"- query_expansion_variants: {settings.get('query_expansion_variants', 4)}\n"
+            f"- query_decomposition_enabled: {settings.get('query_decomposition_enabled', True)}\n"
+            f"- query_decomposition_max_sub: {settings.get('query_decomposition_max_sub', 5)}\n"
+            f"- pre_crawl_seed_selection_enabled: {settings.get('pre_crawl_seed_selection_enabled', True)}\n"
+            f"- pre_crawl_results_per_query: {settings.get('pre_crawl_results_per_query', 20)}\n"
+            f"- pre_crawl_primary_quota: {settings.get('pre_crawl_primary_quota', 5)}\n"
+            f"- pre_crawl_extra_quota_min: {settings.get('pre_crawl_extra_quota_min', 2)}\n"
+            f"- pre_crawl_extra_quota_max: {settings.get('pre_crawl_extra_quota_max', 3)}\n"
+            f"- smart_query_variants_enabled: {settings.get('smart_query_variants_enabled', True)}\n"
+            f"- smart_query_variants_limit: {settings.get('smart_query_variants_limit', 3)}\n"
+            f"- smart_query_summary_chars: {settings.get('smart_query_summary_chars', 2200)}\n"
+            f"- smart_query_cache_rows: {settings.get('smart_query_cache_rows', 6)}\n"
+            f"- iterative_search_enabled: {settings.get('iterative_search_enabled', True)}\n"
+            f"- iterative_search_time_budget_sec: {settings.get('iterative_search_time_budget_sec', 25)}\n"
+            f"- embedding_content_filter_enabled: {settings.get('embedding_content_filter_enabled', True)}\n"
             f"- source_scoring_enabled: {settings.get('source_scoring_enabled', False)}\n"
             f"- min_quality_sources: {settings.get('min_quality_sources', 2)}\n"
-            f"- context_min_source_score: {settings.get('context_min_source_score', 0.52)}\n"
+            f"- context_min_source_score: {settings.get('context_min_source_score', 0.62)}\n"
+            f"- fresh_runs_enabled: {settings.get('fresh_runs_enabled', True)}\n"
+            f"- fresh_runs_history_limit: {settings.get('fresh_runs_history_limit', 6)}\n"
+            f"- fresh_runs_min_new_domains: {settings.get('fresh_runs_min_new_domains', 4)}\n"
             f"- conflict_detection_enabled: {settings.get('conflict_detection_enabled', False)}\n"
             f"- crawl_relevance_gating_enabled: {settings.get('crawl_relevance_gating_enabled', False)}\n"
             f"- crawl_relevance_min_score: {settings.get('crawl_relevance_min_score', 0.1)}\n"
@@ -1296,6 +1490,423 @@ class WebResearchEngine:
             out.append(text)
         return out
 
+    def _is_quick_lookup_note(self, note: str) -> bool:
+        return "quick_chat_lookup" in str(note or "").strip().lower()
+
+    def _recent_source_domains_for_project(self, project: str, limit: int = 6) -> set[str]:
+        rows = self.recent_sources_for_project(project, limit=max(1, min(limit, 30)))
+        domains: set[str] = set()
+        for row in rows:
+            sources = row.get("sources", [])
+            if not isinstance(sources, list):
+                continue
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+                domain = str(source.get("source_domain", "") or source.get("domain", "")).strip().lower()
+                if not domain:
+                    domain = self._hostname(str(source.get("url", "")).strip())
+                if domain:
+                    domains.add(domain)
+        return domains
+
+    def _recent_project_queries(self, project: str, limit: int = 6) -> list[str]:
+        rows = self.recent_sources_for_project(project, limit=max(1, min(limit, 30)))
+        queries: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            query = " ".join(str(row.get("query", "")).split()).strip()
+            if not query:
+                continue
+            key = query.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            queries.append(query)
+            if len(queries) >= limit:
+                break
+        return queries
+
+    def _latest_research_summary_excerpt(self, project: str, max_chars: int = 2200) -> str:
+        slug = str(project or "").strip() or "general"
+        root = self.repo_root / "Projects" / slug / "research_summaries"
+        if not root.exists():
+            return ""
+        try:
+            files = sorted(
+                [p for p in root.glob("*.md") if p.is_file()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            return ""
+        if not files:
+            return ""
+        try:
+            body = files[0].read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
+        text = " ".join(str(body or "").split()).strip()
+        if not text:
+            return ""
+        return text[: max(600, min(int(max_chars or 2200), 12000))]
+
+    def _cached_query_hints(self, project: str, limit: int = 6) -> list[str]:
+        hints: list[str] = []
+        seen: set[str] = set()
+        try:
+            rows = self._query_cached_chunks(project, limit=max(1, min(limit, 20)))
+        except Exception:
+            return hints
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title = " ".join(str(row.get("title", "")).split()).strip()
+            domain = str(row.get("domain", "")).strip().lower()
+            url_value = str(row.get("url", "")).strip()
+            if not domain and url_value:
+                domain = self._hostname(url_value)
+            hint = title or domain or url_value
+            hint = hint[:120].strip()
+            if not hint:
+                continue
+            key = hint.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append(hint)
+            if len(hints) >= limit:
+                break
+        return hints
+
+    _SMART_QUERY_SYSTEM = (
+        "You are a web query planner for iterative research runs. "
+        "Generate concise, search-ready queries that target NEW evidence and unresolved gaps.\n\n"
+        "RULES:\n"
+        "- Every query must name the specific entity, product, version, or claim being researched. "
+        "Never write a query that could apply to any topic (e.g. 'official documentation', "
+        "'release notes', 'version compatibility' alone are forbidden — they must be combined with "
+        "the specific subject).\n"
+        "- Include at least one query that targets community, practitioner, or real-world perspective "
+        "(forums, issue trackers, benchmarks, case studies) rather than only official sources.\n"
+        "- Do not repeat near-identical prior queries. Each variant must approach the topic from a "
+        "distinct angle: e.g. primary facts, limitations/edge-cases, comparisons, recent changes.\n"
+        "Output ONLY the queries, one per line, no numbering or commentary."
+    )
+
+    _SMART_QUERY_TOPIC_HINTS: dict[str, str] = {
+        "technical": (
+            "Prefer queries targeting changelogs, GitHub issues, migration guides, "
+            "community benchmarks, and known limitations."
+        ),
+        "financial": (
+            "Prefer queries targeting earnings reports, analyst commentary, SEC filings, "
+            "and real-money community discussion (not promotional content)."
+        ),
+        "medical": (
+            "Prefer queries targeting clinical studies, trial registries, peer-reviewed journals, "
+            "and practitioner forums rather than health news aggregators."
+        ),
+        "legal": (
+            "Prefer queries targeting primary legal sources (case law, statutes, regulatory filings) "
+            "and law review commentary."
+        ),
+        "current_events": (
+            "Prefer queries targeting wire reports, primary government/official statements, "
+            "and regional outlets that may have on-the-ground coverage."
+        ),
+    }
+
+    def _smart_query_variants(
+        self,
+        *,
+        project: str,
+        query: str,
+        settings: dict[str, Any],
+        existing_queries: list[str],
+        recent_domains: set[str] | None = None,
+        topic_type: str = "",
+    ) -> list[str]:
+        if not bool(settings.get("smart_query_variants_enabled", True)):
+            return []
+        base = " ".join(str(query or "").split()).strip()
+        if not base:
+            return []
+        try:
+            variant_limit = int(settings.get("smart_query_variants_limit", 3))
+        except (TypeError, ValueError):
+            variant_limit = 3
+        variant_limit = max(1, min(variant_limit, 6))
+        try:
+            summary_chars = int(settings.get("smart_query_summary_chars", 2200))
+        except (TypeError, ValueError):
+            summary_chars = 2200
+        try:
+            cache_rows = int(settings.get("smart_query_cache_rows", 6))
+        except (TypeError, ValueError):
+            cache_rows = 6
+        summary_excerpt = self._latest_research_summary_excerpt(project, max_chars=summary_chars)
+        recent_queries = self._recent_project_queries(project, limit=6)
+        cache_hints = self._cached_query_hints(project, limit=cache_rows)
+        recent_domain_list = sorted([d for d in (recent_domains or set()) if d])[:16]
+        context_chunks: list[str] = []
+        if summary_excerpt:
+            context_chunks.append(f"Latest summary excerpt:\n{summary_excerpt}")
+        if recent_queries:
+            context_chunks.append("Recent run queries:\n- " + "\n- ".join(recent_queries))
+        if cache_hints:
+            context_chunks.append("Cached source hints:\n- " + "\n- ".join(cache_hints))
+        if recent_domain_list:
+            context_chunks.append("Recently used domains to diversify away from when possible:\n- " + "\n- ".join(recent_domain_list))
+        context_block = "\n\n".join(context_chunks)
+        _topic_key = str(topic_type or "").strip().lower()
+        _topic_hint = self._SMART_QUERY_TOPIC_HINTS.get(_topic_key, "")
+        user_prompt = (
+            f"Current user query:\n{base}\n\n"
+            f"Already-generated query variants:\n- " + "\n- ".join(existing_queries[:10]) + "\n\n"
+            "Create up to "
+            f"{variant_limit} additional web queries for this run that are specific, evidence-seeking, and non-redundant."
+        )
+        if _topic_hint:
+            user_prompt += f"\n\nTopic guidance: {_topic_hint}"
+        if context_block:
+            user_prompt += f"\n\nProject context:\n{context_block}"
+        try:
+            router = InferenceRouter(self.repo_root)
+            raw = router.chat(
+                model="qwen3:8b",
+                system_prompt=self._SMART_QUERY_SYSTEM,
+                user_prompt=user_prompt,
+                temperature=0.0,
+                num_ctx=4096,
+                think=False,
+                timeout=25,
+                retry_attempts=1,
+                retry_backoff_sec=0.5,
+                fallback_models=["deepseek-r1:8b"],
+            )
+        except Exception:
+            return []
+        existing_keys = {str(q or "").strip().lower() for q in existing_queries}
+        out: list[str] = []
+        for line in str(raw or "").splitlines():
+            text = line.strip().lstrip("•-–*0123456789.) ")
+            text = " ".join(text.split()).strip()
+            if not text or len(text) < 6:
+                continue
+            key = text.lower()
+            if key in existing_keys:
+                continue
+            if key in {x.lower() for x in out}:
+                continue
+            out.append(text)
+            if len(out) >= variant_limit:
+                break
+        return out
+
+    def _prioritize_seed_domains_for_freshness(
+        self,
+        seeds: list[dict[str, str]],
+        recent_domains: set[str],
+        *,
+        min_new_domains: int = 4,
+    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        if not seeds:
+            return [], {
+                "recent_domains_considered": len(recent_domains),
+                "novel_domains": 0,
+                "novel_seed_rows": 0,
+                "strict_novel_only": False,
+            }
+        novel_rows: list[dict[str, str]] = []
+        repeated_rows: list[dict[str, str]] = []
+        novel_domains: set[str] = set()
+        for row in seeds:
+            host = self._hostname(str(row.get("url", "")).strip())
+            if host and host in recent_domains:
+                repeated_rows.append(row)
+                continue
+            novel_rows.append(row)
+            if host:
+                novel_domains.add(host)
+        # Favor domain diversity first (one row per fresh domain), then remainder.
+        prioritized_novel: list[dict[str, str]] = []
+        seen_domain_once: set[str] = set()
+        novel_tail: list[dict[str, str]] = []
+        for row in novel_rows:
+            host = self._hostname(str(row.get("url", "")).strip())
+            if not host or host in seen_domain_once:
+                novel_tail.append(row)
+                continue
+            seen_domain_once.add(host)
+            prioritized_novel.append(row)
+        prioritized_novel.extend(novel_tail)
+        strict_novel_only = len(novel_domains) >= max(1, int(min_new_domains or 1))
+        ordered = prioritized_novel if strict_novel_only else (prioritized_novel + repeated_rows)
+        stats = {
+            "recent_domains_considered": len(recent_domains),
+            "novel_domains": len(novel_domains),
+            "novel_seed_rows": len(novel_rows),
+            "strict_novel_only": bool(strict_novel_only),
+        }
+        return ordered, stats
+
+    def _select_pre_crawl_seeds(
+        self,
+        *,
+        seeds: list[dict[str, str]],
+        query: str,
+        variant_queries: list[str],
+        settings: dict[str, Any],
+        resolved_topic: str,
+    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        enabled = bool(settings.get("pre_crawl_seed_selection_enabled", True))
+        stats: dict[str, Any] = {
+            "enabled": enabled,
+            "results_per_query": int(settings.get("pre_crawl_results_per_query", 20) or 20),
+            "primary_quota": int(settings.get("pre_crawl_primary_quota", 5) or 5),
+            "extra_quota_min": int(settings.get("pre_crawl_extra_quota_min", 2) or 2),
+            "extra_quota_max": int(settings.get("pre_crawl_extra_quota_max", 3) or 3),
+            "seed_count_before": len(seeds),
+            "seed_count_after": len(seeds),
+            "selected_by_variant": [],
+            "primary_variant": "",
+        }
+        if not enabled or not seeds:
+            return seeds, stats
+
+        ordered_variants = [q for q in variant_queries if str(q or "").strip()]
+        variant_seen: set[str] = {str(v).strip().lower() for v in ordered_variants}
+        if not ordered_variants:
+            ordered_variants = ["main_query"]
+        primary_variant = ordered_variants[0]
+        stats["primary_variant"] = primary_variant
+
+        query_terms = self._query_terms(query)
+        tier_rank = {"tier1": 0, "tier2": 1, "tier3": 2}
+        scored_rows: list[dict[str, Any]] = []
+        by_variant: dict[str, list[dict[str, Any]]] = {}
+        for row in seeds:
+            scored = self._score_one_source(
+                row,
+                query_terms,
+                query=query,
+                topic_type=resolved_topic,
+            )
+            variant = str(scored.get("query_variant", "")).strip() or primary_variant
+            if variant.lower() not in variant_seen:
+                variant = "__unassigned__"
+            scored["query_variant"] = variant
+            scored_rows.append(scored)
+            by_variant.setdefault(variant, []).append(scored)
+
+        def _rank_key(row: dict[str, Any]) -> tuple[int, int, float, float, int, int]:
+            tier = str(row.get("source_tier", "tier3")).strip().lower()
+            return (
+                1 if bool(row.get("quality_blocked", False)) else 0,
+                tier_rank.get(tier, 2),
+                -float(row.get("source_score", 0.0)),
+                -float(row.get("freshness_score", 0.0)),
+                -int(row.get("query_term_hits", 0)),
+                -len(str(row.get("snippet", ""))),
+            )
+
+        for rows in by_variant.values():
+            rows.sort(key=_rank_key)
+
+        selected: list[dict[str, str]] = []
+        selected_urls: set[str] = set()
+
+        def _pick_for_variant(variant: str, limit: int) -> int:
+            if limit <= 0:
+                return 0
+            count = 0
+            for row in by_variant.get(variant, []):
+                url_value = self._normalize_url(str(row.get("url", "")).strip())
+                if not url_value or url_value in selected_urls:
+                    continue
+                if bool(row.get("quality_blocked", False)):
+                    continue
+                # Skip tier3 seeds with suspiciously short snippets — likely stubs,
+                # redirects, or login walls. Tier1/tier2 get authority override.
+                _tier = str(row.get("source_tier", "tier3")).strip().lower()
+                if _tier == "tier3" and len(str(row.get("snippet", "")).strip()) < 35:
+                    continue
+                selected_urls.add(url_value)
+                payload: dict[str, str] = {
+                    "title": str(row.get("title", "")).strip() or url_value,
+                    "url": url_value,
+                    "snippet": str(row.get("snippet", "")).strip(),
+                    "query_variant": variant,
+                }
+                selected.append(payload)
+                count += 1
+                if count >= limit:
+                    break
+            return count
+
+        primary_quota = max(1, int(stats["primary_quota"]))
+        extra_quota_min = max(1, int(stats["extra_quota_min"]))
+        extra_quota_max = max(extra_quota_min, int(stats["extra_quota_max"]))
+        selected_by_variant: list[dict[str, Any]] = []
+
+        picked_primary = _pick_for_variant(primary_variant, primary_quota)
+        selected_by_variant.append(
+            {
+                "variant": primary_variant,
+                "quota": primary_quota,
+                "selected": picked_primary,
+                "available": len(by_variant.get(primary_variant, [])),
+            }
+        )
+
+        extra_variants = ordered_variants[1:]
+        for variant in extra_variants:
+            picked = _pick_for_variant(variant, extra_quota_max)
+            selected_by_variant.append(
+                {
+                    "variant": variant,
+                    "quota_min": extra_quota_min,
+                    "quota_max": extra_quota_max,
+                    "selected": picked,
+                    "available": len(by_variant.get(variant, [])),
+                }
+            )
+
+        # Floor fill: try to satisfy at least (5 + 2 per extra variant) when possible.
+        minimum_target = primary_quota + (extra_quota_min * len(extra_variants))
+        if len(selected) < minimum_target:
+            spillover = sorted(scored_rows, key=_rank_key)
+            for row in spillover:
+                if len(selected) >= minimum_target:
+                    break
+                if bool(row.get("quality_blocked", False)):
+                    continue
+                _spill_tier = str(row.get("source_tier", "tier3")).strip().lower()
+                if _spill_tier == "tier3" and len(str(row.get("snippet", "")).strip()) < 35:
+                    continue
+                url_value = self._normalize_url(str(row.get("url", "")).strip())
+                if not url_value or url_value in selected_urls:
+                    continue
+                variant = str(row.get("query_variant", "")).strip() or primary_variant
+                selected_urls.add(url_value)
+                selected.append(
+                    {
+                        "title": str(row.get("title", "")).strip() or url_value,
+                        "url": url_value,
+                        "snippet": str(row.get("snippet", "")).strip(),
+                        "query_variant": variant,
+                    }
+                )
+
+        if not selected:
+            # Never return empty when seeds existed.
+            selected = self._merge_results([], seeds, min(len(seeds), max(1, primary_quota)))
+
+        stats["selected_by_variant"] = selected_by_variant
+        stats["seed_count_after"] = len(selected)
+        return selected, stats
+
     def _resolve_topic_type(self, query: str, topic_type: str) -> str:
         base = str(topic_type or "").strip().lower() or "general"
         mapped_base = self.TOPIC_FAMILY_ALIASES.get(base, base)
@@ -1306,6 +1917,39 @@ class WebResearchEngine:
         ):
             return mapped_base
         return self.TOPIC_FAMILY_ALIASES.get(detected, detected)
+
+    _DECOMPOSE_SYSTEM = (
+        "You are a search query decomposer. Given a user question, output 1-5 independent "
+        "search queries, one per line. If the question asks about multiple specific entities "
+        "(brands, products, people, places, prices) create a separate query for each entity. "
+        "If it is already a simple single-topic question output just the original query unchanged. "
+        "Output ONLY the queries, nothing else. No explanations, no bullets, no numbers."
+    )
+
+    def _decompose_query(self, query: str, settings: dict[str, Any], *, max_sub: int = 5) -> list[str]:
+        """Use a local LLM to break a compound query into independent sub-queries."""
+        base = " ".join(str(query or "").split()).strip()
+        if not base or not bool(settings.get("query_decomposition_enabled", True)):
+            return [base] if base else []
+        try:
+            router = InferenceRouter(self.repo_root)
+            raw = router.chat(
+                model="qwen3:8b",
+                system_prompt=self._DECOMPOSE_SYSTEM,
+                user_prompt=base,
+                temperature=0.0,
+                num_ctx=512,
+                think=False,
+                timeout=10,
+                retry_attempts=1,
+                retry_backoff_sec=0.5,
+                fallback_models=["deepseek-r1:8b"],
+            )
+        except Exception:
+            return [base]
+        lines = [ln.strip().lstrip("•-–*0123456789.) ") for ln in str(raw or "").splitlines()]
+        subs = [ln for ln in lines if ln and len(ln) >= 4][:max_sub]
+        return subs if subs else [base]
 
     def _expand_queries(self, query: str, settings: dict[str, Any], topic_type: str = "general") -> list[str]:
         base = " ".join(str(query or "").split()).strip()
@@ -1334,6 +1978,14 @@ class WebResearchEngine:
             out.append(text)
 
         resolved_topic = self._resolve_topic_type(base, topic_type)
+
+        # Technical queries: tighter variant cap and suppress low-signal recency/meta
+        # suffixes. TOPIC_HINTS for "technical" are already curated (docs, changelogs,
+        # version compatibility) so we only want base + 2 hints at most.
+        _is_technical = resolved_topic == "technical"
+        if _is_technical:
+            max_variants = min(max_variants, 3)
+
         low = base.lower()
         has_recency_hint = any(
             token in low
@@ -1358,14 +2010,15 @@ class WebResearchEngine:
         _add(base)
         for hint in self.TOPIC_HINTS.get(resolved_topic, ()):
             _add(f"{base} {hint}")
-        if not has_recency_hint:
-            _add(f"latest {base}")
-            _add(f"{base} recent updates")
-        if not has_year_hint:
-            _add(f"{base} {current_year}")
-        _add(f"{base} official announcement")
-        _add(f"{base} timeline")
-        _add(f"{base} analysis")
+        if not _is_technical:
+            if not has_recency_hint:
+                _add(f"latest {base}")
+                _add(f"{base} recent updates")
+            if not has_year_hint:
+                _add(f"{base} {current_year}")
+            _add(f"{base} official announcement")
+            _add(f"{base} timeline")
+            _add(f"{base} analysis")
 
         return out[:max_variants]
 
@@ -1429,6 +2082,58 @@ class WebResearchEngine:
             _add(f"{base} latest official update")
 
         return out[:max_variants]
+
+    _FOLLOWUP_SYSTEM = (
+        "You are a research gap analyst. Given a search query and the titles/snippets of results "
+        "found so far, identify 1-3 specific follow-up searches that would fill gaps. "
+        "Focus on missing specifics (prices, dates, specific model names, comparisons) rather "
+        "than broad background context. If the results already answer the query well, output NONE. "
+        "Output ONLY search queries, one per line. No explanations, no bullets, no numbers."
+    )
+
+    def _generate_followup_queries(
+        self,
+        query: str,
+        sources: list[dict[str, Any]],
+        settings: dict[str, Any],
+    ) -> list[str]:
+        """Use a local LLM to generate follow-up searches based on pass-1 source gaps."""
+        if not bool(settings.get("iterative_search_enabled", True)):
+            return []
+        base = " ".join(str(query or "").split()).strip()
+        if not base or not sources:
+            return []
+        # Build compact summary of top-5 sources for the prompt
+        top_sources = sources[:5]
+        source_lines = []
+        for i, s in enumerate(top_sources, 1):
+            title = str(s.get("title", "")).strip()[:80]
+            snippet = str(s.get("snippet", "")).strip()[:120]
+            source_lines.append(f"{i}. {title} — {snippet}")
+        source_summary = "\n".join(source_lines)
+        user_prompt = f"Query: {base}\n\nSearch results so far:\n{source_summary}"
+        try:
+            router = InferenceRouter(self.repo_root)
+            raw = router.chat(
+                model="qwen3:8b",
+                system_prompt=self._FOLLOWUP_SYSTEM,
+                user_prompt=user_prompt,
+                temperature=0.0,
+                num_ctx=1024,
+                think=False,
+                timeout=10,
+                retry_attempts=1,
+                retry_backoff_sec=0.5,
+                fallback_models=["deepseek-r1:8b"],
+            )
+        except Exception:
+            return []
+        raw_stripped = str(raw or "").strip()
+        if not raw_stripped or raw_stripped.upper().startswith("NONE"):
+            return []
+        lines = [ln.strip().lstrip("•-–*0123456789.) ") for ln in raw_stripped.splitlines()]
+        followups = [ln for ln in lines if ln and len(ln) >= 4 and not ln.upper().startswith("NONE")][:3]
+        return followups
 
     def _should_run_refined_second_pass(
         self,
@@ -1585,6 +2290,11 @@ class WebResearchEngine:
                 return 0.06
             if any(tag in domain for tag in ("docs.", "developer.", "readthedocs", "github.com")):
                 return 0.04
+            # Hard-demote social/feed/forum pages for technical queries — they
+            # crowd out official docs and repo sources without adding signal.
+            # -0.35 drops a tier2 domain (base 0.78) below the tier3 floor (0.45).
+            if self._domain_matches(domain, self.TECHNICAL_SOCIAL_DEMOTE):
+                return -0.35
         elif topic == "finance":
             if self._domain_matches(domain, self.TRUST_TIER_1) or self._domain_matches(domain, self.TRUST_TIER_2_FINANCE):
                 return 0.06
@@ -1694,6 +2404,81 @@ class WebResearchEngine:
             return 0.0
         return min(0.08, hits * 0.02)
 
+    _PRODUCT_INTENT_TERMS = frozenset({
+        "price", "cost", "buy", "purchase", "review", "recommend", "best",
+        "compare", "comparison", "worth", "vs", "versus", "alternative",
+        "deal", "cheap", "expensive", "affordable", "rating", "ranked",
+        "top", "worst", "avoid", "brand", "product", "model",
+    })
+    _COMMUNITY_REVIEW_DOMAINS = frozenset({
+        "wirecutter.com", "thewirecutter.com", "consumerreports.org",
+        "rtings.com", "reviewed.com", "pcmag.com",
+    })
+
+    def _product_community_bonus(self, host: str, query: str) -> float:
+        """Boost community/review sources for product or pricing queries."""
+        low_query = str(query or "").lower()
+        if not any(t in low_query for t in self._PRODUCT_INTENT_TERMS):
+            return 0.0
+        domain = host[4:] if host.startswith("www.") else host
+        if self._domain_matches(domain, {"reddit.com"}):
+            return 0.08
+        if self._domain_matches(domain, self._COMMUNITY_REVIEW_DOMAINS):
+            return 0.06
+        return 0.0
+
+    _EMBED_MODEL = "qwen3-embedding:4b"
+
+    def _embedding_filter_content(
+        self,
+        query: str,
+        text: str,
+        *,
+        min_similarity: float = 0.30,
+    ) -> str:
+        """Filter scraped text paragraphs by embedding similarity to the query.
+
+        Keeps only paragraphs with cosine similarity >= min_similarity.
+        Falls back to the original text if embedding is unavailable or all chunks are filtered.
+        """
+        if not text or not query:
+            return text
+        # Split on double newlines (paragraph boundaries), fallback to 300-char chunks
+        raw_chunks = [c.strip() for c in re.split(r"\n\n+", text) if c.strip()]
+        if len(raw_chunks) <= 2:
+            return text  # too short to bother filtering
+
+        try:
+            from shared_tools.ollama_client import OllamaClient
+            client = OllamaClient()
+            query_vec = client.embed(self._EMBED_MODEL, query[:800])
+            if not query_vec:
+                return text
+
+            scored: list[tuple[float, str]] = []
+            for chunk in raw_chunks:
+                try:
+                    chunk_vec = client.embed(self._EMBED_MODEL, chunk[:600])
+                    if not chunk_vec or len(chunk_vec) != len(query_vec):
+                        scored.append((0.0, chunk))
+                        continue
+                    dot = sum(a * b for a, b in zip(query_vec, chunk_vec))
+                    import math as _math
+                    na = _math.sqrt(sum(a * a for a in query_vec))
+                    nb = _math.sqrt(sum(b * b for b in chunk_vec))
+                    sim = dot / (na * nb) if na > 0 and nb > 0 else 0.0
+                    scored.append((sim, chunk))
+                except Exception:
+                    scored.append((0.0, chunk))
+
+            kept = [chunk for sim, chunk in scored if sim >= min_similarity]
+            if not kept:
+                # Keep top-3 by score as fallback rather than returning empty
+                kept = [chunk for _, chunk in sorted(scored, key=lambda x: x[0], reverse=True)[:3]]
+            return "\n\n".join(kept)
+        except Exception:
+            return text
+
     def _score_one_source(self, row: dict[str, Any], query_terms: set[str], query: str = "", topic_type: str = "general") -> dict[str, Any]:
         payload = dict(row)
         url_value = str(payload.get("url", "")).strip()
@@ -1726,6 +2511,7 @@ class WebResearchEngine:
 
         score += self._topic_domain_bonus(host, topic_type)
         score += self._topic_signal_bonus(title, snippet, topic_type)
+        score += self._product_community_bonus(host, query)
         score -= self._propaganda_penalty(title, snippet)
         low_signal_penalty, quality_flags, quality_blocked = self._low_signal_penalty(
             url=url_value,
@@ -2497,6 +3283,156 @@ class WebResearchEngine:
             "_wikipedia": True,
         }
 
+    # ── Reddit ────────────────────────────────────────────────────────────────
+
+    def _is_reddit_url(self, url: str) -> bool:
+        host = self._hostname(str(url or "")).lower()
+        return host in {"reddit.com", "www.reddit.com", "old.reddit.com", "new.reddit.com"}
+
+    def _fetch_reddit_json(self, url: str, text_chars: int = 2500) -> dict[str, Any] | None:
+        """Fetch a Reddit thread via the public JSON API and return clean text content."""
+        if not url:
+            return None
+        # Respect backoff
+        if time.time() < self._reddit_backoff_until:
+            return None
+
+        # Normalize to old.reddit.com for consistent JSON responses
+        normalized = re.sub(r"https?://(www\.|new\.)?reddit\.com", "https://old.reddit.com", url.rstrip("/"))
+        # Remove trailing query strings for cleaner JSON endpoint
+        normalized = normalized.split("?")[0]
+        json_url = normalized + "/.json?limit=25"
+
+        try:
+            req = urllib.request.Request(
+                json_url,
+                headers={
+                    "User-Agent": "Foxforge/1.0 (research assistant)",
+                    "Accept": "application/json",
+                },
+            )
+            with self._urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+        except Exception:
+            self._reddit_backoff_until = time.time() + 30.0
+            return None
+
+        try:
+            data = json.loads(raw.decode("utf-8", errors="ignore"))
+        except Exception:
+            return None
+
+        # Rate-limit check via headers is not accessible here; use heuristic
+        if isinstance(data, dict) and data.get("error"):
+            self._reddit_backoff_until = time.time() + 60.0
+            return None
+
+        parts: list[str] = []
+        title = ""
+
+        try:
+            # Reddit JSON for a thread returns a 2-element list: [post_listing, comments_listing]
+            if isinstance(data, list) and len(data) >= 1:
+                post_data = data[0].get("data", {}).get("children", [{}])[0].get("data", {})
+                title = str(post_data.get("title", "")).strip()
+                selftext = str(post_data.get("selftext", "")).strip()
+                if title:
+                    parts.append(title)
+                if selftext and selftext != "[deleted]" and selftext != "[removed]":
+                    parts.append(selftext[:1500])
+
+                # Extract top comments from second listing
+                if len(data) >= 2:
+                    comments = data[1].get("data", {}).get("children", [])
+                    comment_texts: list[tuple[int, str]] = []
+                    for child in comments:
+                        c = child.get("data", {})
+                        body = str(c.get("body", "")).strip()
+                        score = int(c.get("score", 0))
+                        if body and body not in ("[deleted]", "[removed]") and score > 0:
+                            comment_texts.append((score, body[:600]))
+                    # Sort by score descending, take top 8
+                    comment_texts.sort(reverse=True)
+                    for _, body in comment_texts[:8]:
+                        parts.append(body)
+            elif isinstance(data, dict):
+                # Search results listing
+                for child in data.get("data", {}).get("children", []):
+                    post = child.get("data", {})
+                    t = str(post.get("title", "")).strip()
+                    s = str(post.get("selftext", "")).strip()
+                    if t:
+                        parts.append(t)
+                    if s and s not in ("[deleted]", "[removed]"):
+                        parts.append(s[:400])
+        except Exception:
+            return None
+
+        if not parts:
+            return None
+
+        combined = "\n\n".join(parts)
+        if len(combined) > text_chars:
+            combined = combined[:text_chars].rsplit(".", 1)[0].strip() + "..."
+
+        return {
+            "url": url,
+            "title": title or "Reddit thread",
+            "snippet": combined,
+            "depth": 0,
+            "_reddit": True,
+        }
+
+    def _reddit_search(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Search Reddit's public JSON search API and return seed results."""
+        if time.time() < self._reddit_backoff_until:
+            return []
+        base_query = " ".join(str(query or "").split()).strip()
+        if not base_query:
+            return []
+        search_url = (
+            "https://www.reddit.com/search.json"
+            f"?q={urllib.parse.quote(base_query)}&sort=relevance&limit={min(limit, 10)}&type=link"
+        )
+        try:
+            req = urllib.request.Request(
+                search_url,
+                headers={
+                    "User-Agent": "Foxforge/1.0 (research assistant)",
+                    "Accept": "application/json",
+                },
+            )
+            with self._urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception:
+            self._reddit_backoff_until = time.time() + 30.0
+            return []
+
+        results: list[dict[str, str]] = []
+        try:
+            for child in data.get("data", {}).get("children", []):
+                post = child.get("data", {})
+                permalink = str(post.get("permalink", "")).strip()
+                if not permalink:
+                    continue
+                full_url = f"https://www.reddit.com{permalink}"
+                title = str(post.get("title", "")).strip()
+                selftext = str(post.get("selftext", "")).strip()
+                snippet = selftext[:300] if selftext and selftext not in ("[deleted]", "[removed]") else title
+                results.append({
+                    "url": full_url,
+                    "title": title,
+                    "snippet": snippet,
+                })
+        except Exception:
+            pass
+        return results
+
+    def _is_product_query(self, query: str) -> bool:
+        """Return True if the query appears to be about products, prices, or reviews."""
+        low = str(query or "").lower()
+        return any(t in low for t in self._PRODUCT_INTENT_TERMS)
+
     def _fetch_page_crawl4ai(self, url: str, settings: dict[str, Any], text_chars: int) -> dict[str, Any]:
         if not bool(settings.get("crawl4ai_enabled", True)):
             raise RuntimeError("crawl4ai disabled")
@@ -2512,6 +3448,12 @@ class WebResearchEngine:
         payload = {
             "urls": [url],
             "bypass_cache": True,
+            # Drop nav/header/footer/aside before markdown generation to reduce JS boilerplate.
+            "excluded_tags": ["nav", "header", "footer", "aside", "script", "style", "noscript"],
+            # Discard content blocks under 10 words — kills one-liner link menus and button text.
+            "word_count_threshold": 10,
+            # Auto-remove cookie banners, modals, and overlay elements.
+            "remove_overlay_elements": True,
         }
         if css_selector:
             payload["css_selector"] = css_selector
@@ -2582,7 +3524,48 @@ class WebResearchEngine:
         if len(snippet) > text_chars:
             cut = snippet[:text_chars].rsplit(" ", 1)[0].strip()
             snippet = (cut or snippet[:text_chars]).strip() + "..."
-        links = self._extract_urls_from_text(_md_for_links or text, limit=28)
+        # Extract links for depth crawling.
+        # Priority 1: crawl4ai's own structured links dict (hrefs already resolved).
+        # Priority 2: parse markdown for both absolute and relative links — relative
+        #             paths like "/path/to/page" are resolved by the caller via
+        #             _normalize_url(href, base_url=current_url) in _crawl_sources.
+        # NOTE: _extract_urls_from_text only matches https?:// absolute URLs and
+        # misses the relative links that dominate crawl4ai markdown output.
+        links: list[str] = []
+        _seen_links: set[str] = set()
+        _limit = 28
+
+        _c4ai_links = first.get("links")
+        if isinstance(_c4ai_links, dict):
+            for _link_list in (_c4ai_links.get("internal", []), _c4ai_links.get("external", [])):
+                if not isinstance(_link_list, list):
+                    continue
+                for _lobj in _link_list:
+                    if len(links) >= _limit:
+                        break
+                    href = (
+                        str(_lobj.get("href", "")).strip()
+                        if isinstance(_lobj, dict)
+                        else str(_lobj).strip()
+                    )
+                    if not href or href in _seen_links:
+                        continue
+                    _seen_links.add(href)
+                    links.append(href)
+                if len(links) >= _limit:
+                    break
+
+        if len(links) < _limit:
+            _md_text = _md_for_links or text
+            for _m in re.finditer(r'\]\(((?:/|https?://)[^\s)\"\'<>]+)\)', _md_text):
+                if len(links) >= _limit:
+                    break
+                href = _m.group(1).strip()
+                if not href or href in _seen_links:
+                    continue
+                _seen_links.add(href)
+                links.append(href)
+
         return {
             "url": url,
             "title": title or url,
@@ -2630,6 +3613,17 @@ class WebResearchEngine:
         timeout_sec = int(settings.get("crawl_timeout_sec", 0))
         retry_attempts = int(settings.get("crawl_retry_attempts", 3))
         page: dict[str, Any]
+
+        # Reddit-specific path: use JSON API to bypass JS rendering and login walls
+        if self._is_reddit_url(url):
+            try:
+                reddit_page = self._fetch_reddit_json(url, text_chars=text_chars)
+                if reddit_page and str(reddit_page.get("snippet", "")).strip():
+                    return reddit_page
+            except Exception:
+                pass
+            # Fall through to standard crawl as last resort
+
         crawl4ai_ready = bool(settings.get("crawl4ai_enabled", True)) and time.time() >= self._crawl4ai_backoff_until
         if crawl4ai_ready:
             try:
@@ -2711,6 +3705,7 @@ class WebResearchEngine:
         query: str = "",
         *,
         exclude_urls: set[str] | None = None,
+        on_source_crawled=None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
         depth_limit = int(settings.get("crawl_depth", 2))
         max_pages = int(settings.get("crawl_max_pages", 18))
@@ -2759,7 +3754,26 @@ class WebResearchEngine:
                 )
                 page["depth"] = depth
                 page["root_host"] = root_host
+                # Embedding-based paragraph filtering: keep only content relevant to the query
+                if bool(settings.get("embedding_content_filter_enabled", True)) and query and page.get("snippet"):
+                    try:
+                        filtered = self._embedding_filter_content(query, str(page["snippet"]))
+                        if filtered:
+                            page["snippet"] = filtered
+                    except Exception:
+                        pass
                 pages.append(page)
+                # Fire per-source callback so the UI can show live discovery bubbles
+                if callable(on_source_crawled):
+                    try:
+                        on_source_crawled({
+                            "url": current_url,
+                            "domain": self._hostname(current_url),
+                            "title": str(page.get("title", "")).strip(),
+                            "depth": depth,
+                        })
+                    except Exception:
+                        pass
             except Exception as exc:
                 failures.append({"url": current_url, "depth": depth, "error": str(exc)})
                 continue
@@ -2804,6 +3818,7 @@ class WebResearchEngine:
         request_id: str = "",
         note: str = "",
         topic_type: str = "general",
+        progress_callback=None,
     ) -> dict[str, Any]:
         settings = self._load_settings()
         resolved_topic = self._resolve_topic_type(query, topic_type)
@@ -2814,6 +3829,7 @@ class WebResearchEngine:
                 project=project, lane=lane, query=query, reason=reason,
                 request_id=request_id, note=note, topic_type=topic_type,
                 settings=settings, resolved_topic=resolved_topic,
+                progress_callback=progress_callback,
             )
         finally:
             self._tor_active = False
@@ -2828,21 +3844,26 @@ class WebResearchEngine:
         request_id: str = "",
         note: str = "",
         topic_type: str = "general",
+        progress_callback=None,
     ) -> dict[str, Any]:
         settings = dict(self._load_settings())
         resolved_topic = self._resolve_topic_type(query, topic_type)
         # Quick chat lookups keep the same scoring and conflict logic, but trim
         # expansion/crawl breadth so the conversation layer can ground itself fast.
         settings["max_results"] = min(int(settings.get("max_results", 8) or 8), 4)
-        settings["query_expansion_enabled"] = False
-        settings["query_expansion_variants"] = 1
+        settings["query_expansion_enabled"] = True
+        settings["query_expansion_variants"] = 2
+        settings["query_decomposition_enabled"] = True
+        settings["query_decomposition_max_sub"] = 3  # cap at 3 sub-queries for chat speed
         settings["min_quality_sources"] = 1
-        settings["context_min_source_score"] = min(float(settings.get("context_min_source_score", 0.52) or 0.52), 0.46)
+        settings["context_min_source_score"] = min(float(settings.get("context_min_source_score", 0.62) or 0.62), 0.46)
         settings["crawl_enabled"] = True
         settings["crawl_depth"] = min(int(settings.get("crawl_depth", 2) or 2), 1)
         settings["crawl_max_pages"] = min(int(settings.get("crawl_max_pages", 18) or 18), 6)
         settings["crawl_links_per_page"] = min(int(settings.get("crawl_links_per_page", 8) or 8), 3)
         settings["crawl_timeout_sec"] = min(int(settings.get("crawl_timeout_sec", 12) or 12), 8)
+        # Quick mode: allow iterative search only with a reduced time budget
+        settings["iterative_search_time_budget_sec"] = 12
         self._tor_active = str(resolved_topic).strip().lower() == "underground"
         try:
             return self._run_query_inner(
@@ -2855,6 +3876,7 @@ class WebResearchEngine:
                 topic_type=topic_type,
                 settings=settings,
                 resolved_topic=resolved_topic,
+                progress_callback=progress_callback,
             )
         finally:
             self._tor_active = False
@@ -2871,8 +3893,78 @@ class WebResearchEngine:
         topic_type: str,
         settings: dict[str, Any],
         resolved_topic: str,
+        progress_callback=None,
     ) -> dict[str, Any]:
-        variant_queries = self._expand_queries(query, settings, topic_type=resolved_topic)
+        _query_start_time = time.time()
+        quick_lookup = self._is_quick_lookup_note(note)
+        fresh_runs_enabled = bool(settings.get("fresh_runs_enabled", True)) and not quick_lookup
+        try:
+            fresh_history_limit = int(settings.get("fresh_runs_history_limit", 6))
+        except (TypeError, ValueError):
+            fresh_history_limit = 6
+        try:
+            fresh_min_new_domains = int(settings.get("fresh_runs_min_new_domains", 4))
+        except (TypeError, ValueError):
+            fresh_min_new_domains = 4
+        recent_domains = (
+            self._recent_source_domains_for_project(project, limit=fresh_history_limit)
+            if fresh_runs_enabled
+            else set()
+        )
+        fresh_run_stats: dict[str, Any] = {
+            "recent_domains_considered": len(recent_domains),
+            "novel_domains": 0,
+            "novel_seed_rows": 0,
+            "strict_novel_only": False,
+        }
+        pre_crawl_selection_stats: dict[str, Any] = {
+            "enabled": bool(settings.get("pre_crawl_seed_selection_enabled", True)),
+            "results_per_query": int(settings.get("pre_crawl_results_per_query", 20) or 20),
+            "primary_quota": int(settings.get("pre_crawl_primary_quota", 5) or 5),
+            "extra_quota_min": int(settings.get("pre_crawl_extra_quota_min", 2) or 2),
+            "extra_quota_max": int(settings.get("pre_crawl_extra_quota_max", 3) or 3),
+            "seed_count_before": 0,
+            "seed_count_after": 0,
+            "selected_by_variant": [],
+            "primary_variant": "",
+        }
+
+        def _on_source(source_dict: dict[str, Any]) -> None:
+            if callable(progress_callback):
+                try:
+                    progress_callback("web_source_discovered", source_dict)
+                except Exception:
+                    pass
+        # Decompose compound queries (e.g. "Brand A vs Brand B vs Brand C prices") into
+        # independent sub-queries before expansion so each entity gets its own searches.
+        max_sub = int(settings.get("query_decomposition_max_sub", 5))
+        sub_queries = self._decompose_query(query, settings, max_sub=max_sub)
+
+        # For each sub-query generate expansion variants, then deduplicate the combined list
+        expansion_variants = int(settings.get("query_expansion_variants", 4))
+        all_variants: list[str] = []
+        seen_variants: set[str] = set()
+        for sq in sub_queries:
+            for v in self._expand_queries(sq, settings, topic_type=resolved_topic):
+                key = v.lower()
+                if key not in seen_variants:
+                    seen_variants.add(key)
+                    all_variants.append(v)
+        variant_queries = all_variants[:max(8, expansion_variants * len(sub_queries))]
+        smart_query_variants: list[str] = []
+        if not quick_lookup:
+            smart_query_variants = self._smart_query_variants(
+                project=project,
+                query=query,
+                settings=settings,
+                existing_queries=variant_queries,
+                recent_domains=recent_domains,
+                topic_type=resolved_topic,
+            )
+            if smart_query_variants:
+                variant_queries = self._merge_query_lists(variant_queries, smart_query_variants)
+                variant_cap = max(8, (expansion_variants * len(sub_queries)) + len(smart_query_variants))
+                variant_queries = variant_queries[:max(variant_cap, len(smart_query_variants))]
         if not variant_queries:
             return {
                 "ok": False,
@@ -2888,6 +3980,9 @@ class WebResearchEngine:
                 "query_expansion_enabled": bool(settings.get("query_expansion_enabled", True)),
                 "query_variants_count": 0,
                 "query_variants": [],
+                "smart_query_variants": smart_query_variants,
+                "fresh_runs_enabled": fresh_runs_enabled,
+                "pre_crawl_selection": pre_crawl_selection_stats,
                 "variant_hits": [],
                 "source_scoring_enabled": bool(settings.get("source_scoring_enabled", True)),
                 "source_scoring_summary": {
@@ -2905,11 +4000,23 @@ class WebResearchEngine:
             }
 
         max_results = max(1, min(int(settings.get("max_results", 8)), 20))
-        seed_limit = max(max_results, min(max_results * max(1, len(variant_queries)), 80))
+        if quick_lookup:
+            search_results_per_variant = max_results
+        else:
+            try:
+                pre_crawl_results_per_query = int(settings.get("pre_crawl_results_per_query", 20))
+            except (TypeError, ValueError):
+                pre_crawl_results_per_query = 20
+            search_results_per_variant = max(20, pre_crawl_results_per_query)
+        search_results_per_variant = max(1, min(search_results_per_variant, 20))
+        seed_limit = max(
+            search_results_per_variant,
+            min(search_results_per_variant * max(1, len(variant_queries)), 240),
+        )
         seeds: list[dict[str, str]] = []
         variant_hits: list[dict[str, Any]] = []
         for variant in variant_queries:
-            rows = self.search(variant, max_results=max_results)
+            rows = self.search(variant, max_results=search_results_per_variant)
             tagged_rows: list[dict[str, str]] = []
             for row in rows:
                 payload = dict(row)
@@ -2918,19 +4025,40 @@ class WebResearchEngine:
             seeds = self._merge_results(seeds, tagged_rows, seed_limit)
             variant_hits.append({"query": variant, "seed_hits": len(rows)})
 
-        # --- Quality boost: if T1+T2 seeds are scarce, search wider ---
-        # Count T1/T2 seeds using a quick domain-only check (no content scoring yet).
-        def _tier12_count(seed_list: list[dict[str, str]]) -> int:
-            return sum(
-                1 for row in seed_list
-                if self._domain_tier(self._hostname(str(row.get("url", ""))))[0] in {"tier1", "tier2"}
-            )
+        # --- Reddit direct search for product/review queries ---
+        # Reddit returns honest community reviews but often doesn't surface in SearXNG/DDG
+        if self._is_product_query(query) and not self._tor_active:
+            try:
+                reddit_seeds = self._reddit_search(query, limit=4)
+                if reddit_seeds:
+                    for row in reddit_seeds:
+                        row["query_variant"] = f"reddit:{query}"
+                    seeds = self._merge_results(seeds, reddit_seeds, seed_limit)
+            except Exception:
+                pass
+
+        # --- Quality boost: if well-scoring T1+T2 seeds are scarce, search wider ---
+        # Score seeds now so the boost condition reflects actual usability, not just domain membership.
+        # A tier1/tier2 seed that scored below the quality floor is not useful and should not count.
+        _boost_query_terms = self._query_terms(query)
+        _boost_score_min = float(settings.get("context_min_source_score", 0.62))
+
+        def _quality_tier12_count(seed_list: list[dict[str, str]]) -> int:
+            count = 0
+            for row in seed_list:
+                tier = self._domain_tier(self._hostname(str(row.get("url", ""))))[0]
+                if tier not in {"tier1", "tier2"}:
+                    continue
+                scored = self._score_one_source(row, _boost_query_terms, query=query, topic_type=resolved_topic)
+                if not bool(scored.get("quality_blocked", False)) and float(scored.get("source_score", 0.0)) >= _boost_score_min:
+                    count += 1
+            return count
 
         _min_quality = max(1, int(settings.get("min_quality_sources", 2)))
         _boost_max_rounds = 2
-        _boost_results = min(20, max_results * 2)
+        _boost_results = search_results_per_variant
         for _boost_round in range(_boost_max_rounds):
-            if _tier12_count(seeds) >= _min_quality:
+            if _quality_tier12_count(seeds) >= _min_quality:
                 break
             _boost_seeds: list[dict[str, str]] = []
             for variant in variant_queries:
@@ -2943,6 +4071,24 @@ class WebResearchEngine:
             if len(seeds) == _before:
                 break  # nothing new found, no point continuing
             _boost_results = min(20, _boost_results + max_results)  # widen slightly each round
+        if fresh_runs_enabled and recent_domains and seeds:
+            seeds, fresh_run_stats = self._prioritize_seed_domains_for_freshness(
+                seeds,
+                recent_domains,
+                min_new_domains=fresh_min_new_domains,
+            )
+        if quick_lookup:
+            pre_crawl_selection_stats["enabled"] = False
+            pre_crawl_selection_stats["seed_count_before"] = len(seeds)
+            pre_crawl_selection_stats["seed_count_after"] = len(seeds)
+        else:
+            seeds, pre_crawl_selection_stats = self._select_pre_crawl_seeds(
+                seeds=seeds,
+                query=query,
+                variant_queries=variant_queries,
+                settings=settings,
+                resolved_topic=resolved_topic,
+            )
 
         if not seeds:
             return {
@@ -2959,6 +4105,10 @@ class WebResearchEngine:
                 "query_expansion_enabled": bool(settings.get("query_expansion_enabled", True)),
                 "query_variants_count": len(variant_queries),
                 "query_variants": variant_queries,
+                "smart_query_variants": smart_query_variants,
+                "fresh_runs_enabled": fresh_runs_enabled,
+                "fresh_run_stats": fresh_run_stats,
+                "pre_crawl_selection": pre_crawl_selection_stats,
                 "variant_hits": variant_hits,
                 "source_scoring_enabled": bool(settings.get("source_scoring_enabled", True)),
                 "source_scoring_summary": {
@@ -2986,12 +4136,15 @@ class WebResearchEngine:
         second_pass_added_seeds = 0
         second_pass_added_pages = 0
         if crawl_enabled:
-            crawled_pages, crawl_failures, crawl_gated_links = self._crawl_sources(seeds, settings, query=query)
+            crawled_pages, crawl_failures, crawl_gated_links = self._crawl_sources(
+                seeds, settings, query=query, on_source_crawled=_on_source,
+            )
 
-        # Wikipedia guaranteed source — fetch via MediaWiki API for eligible topics.
+        # Wikipedia guaranteed source — fetch via MediaWiki API for all topics except
+        # underground/tor queries where anonymity is required.
         # Uses full plaintext article extract (not crawl4ai), so it's always clean.
         wiki_page: dict[str, Any] | None = None
-        if resolved_topic in self.WIKIPEDIA_TOPIC_TYPES:
+        if resolved_topic != "underground":
             try:
                 wiki_page = self._fetch_wikipedia_extract(query, text_chars=5000, topic_type=resolved_topic)
             except Exception:
@@ -3021,7 +4174,7 @@ class WebResearchEngine:
             enabled=source_scoring_enabled,
             topic_type=resolved_topic,
         )
-        quality_min_score = float(settings.get("context_min_source_score", 0.52))
+        quality_min_score = float(settings.get("context_min_source_score", 0.62))
         quality_min_score = max(0.1, min(quality_min_score, 1.0))
         raw_source_count = len(sources)
         quality_blocked_count = sum(1 for row in sources if bool(row.get("quality_blocked", False)))
@@ -3051,7 +4204,101 @@ class WebResearchEngine:
             post_filter_tiers[tier] += 1
         source_scoring_summary["post_filter_tier_counts"] = post_filter_tiers
 
-        if self._should_run_refined_second_pass(
+        # --- LLM-based iterative search (layer 2) ---
+        # Ask the LLM to identify gaps in pass-1 results and generate targeted follow-up queries.
+        _time_budget = float(settings.get("iterative_search_time_budget_sec", 25.0))
+        _iterative_enabled = bool(settings.get("iterative_search_enabled", True))
+        _elapsed = time.time() - _query_start_time
+        _llm_followup_used = False
+        if _iterative_enabled and _elapsed < _time_budget and sources:
+            try:
+                followup_queries = self._generate_followup_queries(query, sources, settings)
+                if followup_queries:
+                    _existing_seed_urls = {
+                        self._normalize_url(str(row.get("url", "")).strip())
+                        for row in seeds
+                        if self._normalize_url(str(row.get("url", "")).strip())
+                    }
+                    _existing_crawl_urls = {
+                        self._normalize_url(str(row.get("url", "")).strip())
+                        for row in crawled_pages
+                        if self._normalize_url(str(row.get("url", "")).strip())
+                    }
+                    _followup_seeds: list[dict[str, str]] = []
+                    for fq in followup_queries:
+                        for row in self.search(fq, max_results=max(4, max_results)):
+                            payload = dict(row)
+                            payload["query_variant"] = fq
+                            _followup_seeds.append(payload)
+                        variant_hits.append({"query": fq, "seed_hits": len(_followup_seeds), "pass": "llm_followup"})
+                    _new_seeds = [
+                        row for row in _followup_seeds
+                        if self._normalize_url(str(row.get("url", "")).strip()) not in _existing_seed_urls
+                    ]
+                    if _new_seeds:
+                        seeds = self._merge_results(seeds, _followup_seeds, seed_limit * 2)
+                        second_pass_queries = followup_queries
+                        second_pass_used = True
+                        second_pass_added_seeds = len(_new_seeds)
+                        variant_queries = self._merge_query_lists(variant_queries, followup_queries)
+                        if crawl_enabled:
+                            _extra_pages, _extra_failures, _extra_gated = self._crawl_sources(
+                                _new_seeds, settings, query=followup_queries[0],
+                                exclude_urls=_existing_crawl_urls,
+                                on_source_crawled=_on_source,
+                            )
+                            crawled_pages.extend(_extra_pages)
+                            crawl_failures.extend(_extra_failures)
+                            crawl_gated_links += _extra_gated
+                            second_pass_added_pages = len(_extra_pages)
+                        if crawled_pages:
+                            _sources_raw2 = [
+                                {
+                                    "title": str(page.get("title", "")).strip(),
+                                    "url": str(page.get("url", "")).strip(),
+                                    "snippet": str(page.get("snippet", "")).strip(),
+                                    "depth": int(page.get("depth", 0)),
+                                }
+                                for page in crawled_pages
+                            ]
+                            if wiki_page:
+                                _wiki_norm = self._normalize_url(str(wiki_page.get("url", "")))
+                                if not any(self._normalize_url(str(s.get("url", ""))) == _wiki_norm for s in _sources_raw2):
+                                    _sources_raw2.insert(0, {
+                                        "title": str(wiki_page.get("title", "")).strip(),
+                                        "url": str(wiki_page.get("url", "")).strip(),
+                                        "snippet": str(wiki_page.get("snippet", "")).strip(),
+                                        "depth": 0,
+                                    })
+                        else:
+                            _sources_raw2 = [dict(row) for row in seeds]
+                        sources, source_scoring_summary = self._apply_source_scoring(
+                            sources=_sources_raw2, query=query,
+                            enabled=source_scoring_enabled, topic_type=resolved_topic,
+                        )
+                        _raw2 = len(sources)
+                        _blocked2 = sum(1 for row in sources if bool(row.get("quality_blocked", False)))
+                        _filtered2 = [
+                            row for row in sources
+                            if not bool(row.get("quality_blocked", False))
+                            and float(row.get("source_score", 0.0)) >= quality_min_score
+                        ]
+                        if not _filtered2:
+                            _filtered2 = [
+                                row for row in sources
+                                if not bool(row.get("quality_blocked", False))
+                                and str(row.get("source_tier", "tier3")) in {"tier1", "tier2"}
+                            ][:3]
+                        sources = _filtered2
+                        source_scoring_summary["context_min_source_score"] = round(float(quality_min_score), 2)
+                        source_scoring_summary["quality_blocked_count"] = int(_blocked2)
+                        source_scoring_summary["quality_filtered_out"] = max(0, _raw2 - len(sources))
+                        _llm_followup_used = True
+            except Exception:
+                pass  # iterative pass is best-effort; never block the primary result
+
+        # --- Heuristic refined second pass (fallback when LLM iterative pass didn't run) ---
+        if not _llm_followup_used and self._should_run_refined_second_pass(
             query=query,
             resolved_topic=resolved_topic,
             seeds=seeds,
@@ -3096,6 +4343,7 @@ class WebResearchEngine:
                             settings,
                             query=second_pass_queries[0] if second_pass_queries else query,
                             exclude_urls=existing_crawl_urls,
+                            on_source_crawled=_on_source,
                         )
                         crawled_pages.extend(extra_pages)
                         crawl_failures.extend(extra_failures)
@@ -3177,11 +4425,15 @@ class WebResearchEngine:
                 "query_expansion_enabled": bool(settings.get("query_expansion_enabled", True)),
                 "query_variants_count": len(variant_queries),
                 "query_variants": variant_queries,
+                "smart_query_variants": smart_query_variants,
                 "variant_hits": variant_hits,
                 "refined_second_pass_used": second_pass_used,
                 "refined_second_pass_queries": second_pass_queries,
                 "refined_second_pass_added_seeds": second_pass_added_seeds,
                 "refined_second_pass_added_pages": second_pass_added_pages,
+                "fresh_runs_enabled": fresh_runs_enabled,
+                "fresh_run_stats": fresh_run_stats,
+                "pre_crawl_selection": pre_crawl_selection_stats,
                 "source_scoring_enabled": source_scoring_enabled,
                 "source_scoring_summary": source_scoring_summary,
                 "conflict_detection_enabled": conflict_detection_enabled,
@@ -3253,6 +4505,19 @@ class WebResearchEngine:
             f"- query_expansion_enabled: {bool(settings.get('query_expansion_enabled', True))}",
             f"- query_variants_count: {len(variant_queries)}",
             f"- query_variants: {' | '.join(variant_queries)}",
+            f"- smart_query_variants: {' | '.join(smart_query_variants) if smart_query_variants else 'none'}",
+            f"- fresh_runs_enabled: {fresh_runs_enabled}",
+            f"- fresh_recent_domains_considered: {int(fresh_run_stats.get('recent_domains_considered', 0))}",
+            f"- fresh_novel_domains: {int(fresh_run_stats.get('novel_domains', 0))}",
+            f"- fresh_novel_seed_rows: {int(fresh_run_stats.get('novel_seed_rows', 0))}",
+            f"- fresh_strict_novel_only: {bool(fresh_run_stats.get('strict_novel_only', False))}",
+            f"- pre_crawl_seed_selection_enabled: {bool(pre_crawl_selection_stats.get('enabled', True))}",
+            f"- pre_crawl_results_per_query: {int(pre_crawl_selection_stats.get('results_per_query', 20))}",
+            f"- pre_crawl_primary_quota: {int(pre_crawl_selection_stats.get('primary_quota', 5))}",
+            f"- pre_crawl_extra_quota_min: {int(pre_crawl_selection_stats.get('extra_quota_min', 2))}",
+            f"- pre_crawl_extra_quota_max: {int(pre_crawl_selection_stats.get('extra_quota_max', 3))}",
+            f"- pre_crawl_seed_count_before: {int(pre_crawl_selection_stats.get('seed_count_before', len(seeds)))}",
+            f"- pre_crawl_seed_count_after: {int(pre_crawl_selection_stats.get('seed_count_after', len(seeds)))}",
             f"- refined_second_pass_used: {second_pass_used}",
             f"- refined_second_pass_queries: {' | '.join(second_pass_queries) if second_pass_queries else 'none'}",
             f"- refined_second_pass_added_seeds: {second_pass_added_seeds}",
@@ -3267,7 +4532,7 @@ class WebResearchEngine:
                 f"{source_scoring_summary.get('tier_counts', {}).get('tier3', 0)}"
             ),
             f"- source_score_top: {float(source_scoring_summary.get('top_score', 0.0)):.2f}",
-            f"- context_min_source_score: {float(source_scoring_summary.get('context_min_source_score', settings.get('context_min_source_score', 0.52))):.2f}",
+            f"- context_min_source_score: {float(source_scoring_summary.get('context_min_source_score', settings.get('context_min_source_score', 0.62))):.2f}",
             f"- quality_blocked_count: {int(source_scoring_summary.get('quality_blocked_count', 0))}",
             f"- quality_filtered_out: {int(source_scoring_summary.get('quality_filtered_out', 0))}",
             f"- conflict_detection_enabled: {conflict_detection_enabled}",
@@ -3291,6 +4556,30 @@ class WebResearchEngine:
         lines.extend(["", "## Query Variant Hits"])
         for idx, row in enumerate(variant_hits, start=1):
             lines.append(f"{idx}. {row.get('query', '')} | seed_hits={int(row.get('seed_hits', 0))}")
+
+        lines.extend(["", "## Pre-Crawl Selection"])
+        selected_by_variant = (
+            pre_crawl_selection_stats.get("selected_by_variant", [])
+            if isinstance(pre_crawl_selection_stats.get("selected_by_variant", []), list)
+            else []
+        )
+        if selected_by_variant:
+            for idx, row in enumerate(selected_by_variant, start=1):
+                variant = str(row.get("variant", "")).strip()
+                selected = int(row.get("selected", 0) or 0)
+                available = int(row.get("available", 0) or 0)
+                quota = row.get("quota", None)
+                quota_min = row.get("quota_min", None)
+                quota_max = row.get("quota_max", None)
+                if isinstance(quota, int):
+                    lines.append(f"{idx}. {variant} | selected={selected}/{quota} | available={available}")
+                else:
+                    lines.append(
+                        f"{idx}. {variant} | selected={selected} | quota_min={int(quota_min or 0)}"
+                        f" quota_max={int(quota_max or 0)} | available={available}"
+                    )
+        else:
+            lines.append("1. (selection disabled or no per-variant stats)")
 
         lines.extend(["", "## Seed Results"])
         for idx, row in enumerate(seeds, start=1):
@@ -3411,6 +4700,10 @@ class WebResearchEngine:
             "query_expansion_enabled": bool(settings.get("query_expansion_enabled", True)),
             "query_variants_count": len(variant_queries),
             "query_variants": variant_queries,
+            "smart_query_variants": smart_query_variants,
+            "fresh_runs_enabled": fresh_runs_enabled,
+            "fresh_run_stats": fresh_run_stats,
+            "pre_crawl_selection": pre_crawl_selection_stats,
             "variant_hits": variant_hits,
             "refined_second_pass_used": second_pass_used,
             "refined_second_pass_queries": second_pass_queries,
@@ -3458,6 +4751,10 @@ class WebResearchEngine:
             "query_expansion_enabled": bool(settings.get("query_expansion_enabled", True)),
             "query_variants_count": len(variant_queries),
             "query_variants": variant_queries,
+            "smart_query_variants": smart_query_variants,
+            "fresh_runs_enabled": fresh_runs_enabled,
+            "fresh_run_stats": fresh_run_stats,
+            "pre_crawl_selection": pre_crawl_selection_stats,
             "variant_hits": variant_hits,
             "refined_second_pass_used": second_pass_used,
             "refined_second_pass_queries": second_pass_queries,
@@ -3555,8 +4852,29 @@ class WebResearchEngine:
     def web_context_for_project(self, project: str, limit: int = 6) -> str:
         logs = self.recent_sources_for_project(project, limit=limit)
         settings = self._load_settings()
-        min_score = max(0.1, min(float(settings.get("context_min_source_score", 0.52)), 1.0))
+        min_score = max(0.1, min(float(settings.get("context_min_source_score", 0.62)), 1.0))
         lines = ["Recent web source cache (use only if relevant):"]
+
+        # Surface any source-integrity warnings from the most recent run so research
+        # agents see them before processing source snippets.
+        if logs:
+            _latest_intel = logs[0].get("intel_summary", {}) if isinstance(logs[0].get("intel_summary"), dict) else {}
+            _integrity_warnings: list[str] = []
+            _ind_warn = str(_latest_intel.get("independence", {}).get("warning", "") or "").strip()
+            if _ind_warn:
+                _integrity_warnings.append(f"SOURCE INTEGRITY — Wire laundering signal: {_ind_warn}")
+            _mut = _latest_intel.get("mutation", {}) if isinstance(_latest_intel.get("mutation"), dict) else {}
+            if _mut.get("mutation_detected"):
+                _mut_note = str(_mut.get("note", "") or "").strip()
+                _mut_conf = float(_mut.get("confidence", 0.0) or 0.0)
+                _integrity_warnings.append(
+                    f"SOURCE INTEGRITY — Narrative mutation detected (confidence={_mut_conf:.2f}): {_mut_note}"
+                )
+            if _integrity_warnings:
+                lines.append("## Source Integrity Warnings")
+                lines.extend(_integrity_warnings)
+                lines.append("## Sources")
+
         count = 0
 
         for log in logs:

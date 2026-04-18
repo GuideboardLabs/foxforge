@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -215,13 +216,39 @@ class ExternalToolsSettings:
 
 
 class ExternalRequestStore:
+    _schema_ready_roots: set[str] = set()
+    _schema_ready_lock = Lock()
+
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
         initialize_database(self.repo_root)
-        self._ensure_schema()
+        self._ensure_schema_once()
+
+    def _schema_key(self) -> str:
+        return str(self.repo_root.resolve())
+
+    def _ensure_schema_once(self) -> None:
+        key = self._schema_key()
+        with self._schema_ready_lock:
+            if key in self._schema_ready_roots:
+                return
+            try:
+                self._ensure_schema()
+            except sqlite3.OperationalError as exc:
+                # Under concurrent write load, another request may already be
+                # creating these tables. If the table exists, proceed safely.
+                if "locked" not in str(exc).lower():
+                    raise
+                with connect(self.repo_root) as conn:
+                    row = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='external_requests';"
+                    ).fetchone()
+                    if row is None:
+                        raise
+            self._schema_ready_roots.add(key)
 
     def _ensure_schema(self) -> None:
-        with connect(self.repo_root) as conn, transaction(conn, immediate=True):
+        with connect(self.repo_root) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS external_requests (
@@ -521,4 +548,3 @@ class ExternalRequestStore:
     def transition_event_name(self, status: str) -> str:
         key = _normalize_status(status)
         return EXTERNAL_AUDIT_EVENT_NAMES.get(key, "external_request_updated")
-

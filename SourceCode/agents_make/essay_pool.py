@@ -202,7 +202,7 @@ _MODEL_CRITIC     = "deepseek-r1:8b"
 _MODEL_COMPOSITOR = "qwen2.5:7b"
 
 # Underground: abliterated-only throughout — no filtered models anywhere
-_MODEL_UNRESTRICTED = "llama3.1-abliterated:8b"
+_MODEL_UNRESTRICTED = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
 
 
 def _models_for(topic_type: str) -> tuple[str, str, str, str]:

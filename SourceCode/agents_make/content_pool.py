@@ -1,26 +1,29 @@
-"""Content pool — blogs, social posts, emails.
+"""Content pool — blogs, social posts, emails, short-form essay_short.
 
-Pipeline:
-    1. Drafter       — llama3.1-abliterated:8b (temp 0.8) produces full content
-                        in a single pass.
-    2. Tone Reviewer — qwen3:14b (temp 0.2) checks tone appropriateness, CTA
-                        clarity, format compliance.
-    3. Final Polish  — llama3.1-abliterated:8b applies tone notes if any.
-
-Fast, lightweight pipeline optimized for short-form professional content.
+Pipeline (6 stages, matches Research sophistication):
+    1. Planner    — outlines structure + angles from research context + process note
+    2. Writers    — parallel section/angle writers (≤3 workers per content type)
+    3. Critic     — deepseek-r1:8b checks tone, structure, CTA, length, engagement
+    4. Revisor    — applies critic notes to flagged sections only
+    5. Compositor — assembles + polishes: title, transitions, consistent voice
+    6. Gate       — length / format / CTA validation, auto-fix if needed
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from shared_tools.feedback_learning import FeedbackLearningEngine
+from shared_tools.model_routing import lane_model_config
 from shared_tools.ollama_client import OllamaClient
 
 
-_MODEL_DRAFTER  = "llama3.1-abliterated:8b"
-_MODEL_REVIEWER = "qwen3:14b"
+_MODEL_DRAFTER  = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
+_MODEL_CRITIC   = "deepseek-r1:8b"
+_MODEL_POLISH   = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
 
 
 def _today() -> str:
@@ -35,38 +38,45 @@ def _trim(text: str, max_chars: int) -> str:
     return cut or body[:max_chars]
 
 
+# ---------------------------------------------------------------------------
+# Type specs
+# ---------------------------------------------------------------------------
+
 _KIND_SPECS: dict[str, dict[str, Any]] = {
     "blog": {
         "word_range": "600-800 words",
-        "structure": (
-            "Structure:\n"
-            "1. Hook & Headline — attention-grabbing title + 1-2 sentence hook\n"
-            "2. Context & Why Now — brief background, conversational not academic\n"
-            "3. Core Content — key insights with subheadings, short paragraphs, concrete examples\n"
-            "4. Takeaway & CTA — clear takeaway and call to action"
-        ),
+        "sections": [
+            ("Hook & Headline",  "Attention-grabbing title + 1–2 sentence hook. Why should the reader care right now?"),
+            ("Context & Stakes", "Brief background, conversational not academic. Set up the problem or question."),
+            ("Core Content",     "Key insights with subheadings, short paragraphs, concrete examples. This is the bulk."),
+            ("Takeaway & CTA",   "Clear takeaway and one call to action. What should the reader do or think differently?"),
+        ],
         "voice": "Conversational, authoritative, accessible. Write like you're explaining to a smart friend.",
+        "min_chars": 1200,
+        "process_note": "Hook & headline → context/why now → core content with examples → takeaway & CTA.",
     },
     "social_post": {
-        "word_range": "100-200 words total",
-        "structure": (
-            "Structure:\n"
-            "1. Hook — one punchy sentence (under 40 words) that stops the scroll\n"
-            "2. Body — 2-3 concise sentences expanding the hook\n"
-            "3. Call to Action — one sentence: what should the reader do next?"
-        ),
-        "voice": "Punchy, direct, conversational. No jargon. Every word earns its place.",
+        "word_range": "80-220 words",
+        "sections": [
+            ("Hook",   "The 'stop-scrolling' line. One punchy statement under 40 words that earns the next 10 seconds."),
+            ("Body",   "2–3 concise sentences expanding the hook. Specific, not vague."),
+            ("CTA",    "One sentence: what should the reader do, think, or feel next?"),
+        ],
+        "voice": "Punchy, direct, conversational. No jargon. No hashtag soup. Every word earns its place.",
+        "min_chars": 80,
+        "process_note": "Hook (stop-scrolling) → context ≤2 lines → payoff/insight → optional CTA. Platform-aware voice.",
     },
     "email": {
         "word_range": "200-400 words",
-        "structure": (
-            "Structure:\n"
-            "1. Subject Line — clear, specific, under 60 characters\n"
-            "2. Greeting — appropriate formality for the context\n"
-            "3. Body — context + ask in 2-3 short paragraphs, most important point first\n"
-            "4. Sign-off — professional closing with clear next step"
-        ),
-        "voice": "Professional, clear, respectful of the reader's time. Front-load the key message.",
+        "sections": [
+            ("Subject & Greeting", "Clear subject line under 60 chars + appropriate greeting for the context."),
+            ("Lede",               "The most important point in the first two sentences. Front-load the ask."),
+            ("Body",               "Context + supporting info in 2–3 short paragraphs. Respect the reader's time."),
+            ("Sign-off",           "Professional closing with a clear next step."),
+        ],
+        "voice": "Professional, clear, respectful of the reader's time.",
+        "min_chars": 400,
+        "process_note": "Subject under 60 chars → front-loaded ask → short body → clear next step.",
     },
 }
 
@@ -75,7 +85,7 @@ _KIND_SPECS: dict[str, dict[str, Any]] = {
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
-def _run_drafter(
+def _run_planner(
     client: OllamaClient,
     question: str,
     kind: str,
@@ -83,37 +93,78 @@ def _run_drafter(
     project_context: str,
 ) -> str:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
+    sections_text = "\n".join(f"- {n}: {h}" for n, h in spec["sections"])
     system_prompt = (
-        f"Today: {_today()}. "
-        f"You are a professional content writer. Write a {kind} in one pass.\n\n"
-        f"Target length: {spec['word_range']}.\n"
-        f"{spec['structure']}\n\n"
+        f"Today: {_today()}. You are a professional content strategist.\n\n"
+        f"Output type: {kind}\n"
+        f"Target length: {spec['word_range']}\n"
+        f"Voice: {spec['voice']}\n"
+        f"Process: {spec['process_note']}\n\n"
+        "For each required section, write a ONE-SENTENCE specific angle or focus "
+        "grounded in the user's request and research context. No generic filler.\n\n"
+        f"Sections:\n{sections_text}\n\n"
+        "Format:\n### [Section Name]\n[specific angle]\n\n"
+        "Do not write the content itself."
+    )
+    try:
+        result = client.chat(
+            model=_MODEL_DRAFTER,
+            system_prompt=system_prompt,
+            user_prompt=f"Request: {question}\n\nResearch:\n{_trim(research_context, 5000)}\n\nProject context:\n{_trim(project_context, 2000)}",
+            temperature=0.3,
+            num_ctx=12288,
+            think=False,
+            timeout=180,
+            retry_attempts=3,
+            retry_backoff_sec=1.2,
+        )
+        return str(result or "").strip()
+    except Exception as exc:
+        return f"[Planner failed: {exc}]"
+
+
+def _run_section_writer(
+    client: OllamaClient,
+    question: str,
+    kind: str,
+    section_name: str,
+    section_angle: str,
+    research_context: str,
+    project_context: str,
+) -> tuple[str, str]:
+    spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
+    system_prompt = (
+        f"Today: {_today()}. You are a professional {kind.replace('_', ' ')} writer.\n\n"
+        f"Write ONLY the '{section_name}' section.\n"
+        f"Overall piece length: {spec['word_range']}\n"
         f"Voice: {spec['voice']}\n\n"
-        "Output the final content in markdown. No meta-commentary or notes to self."
+        "Be specific and grounded in the research. No filler. "
+        "Return only the section content — no section heading."
     )
     user_prompt = (
-        f"Request: {question}\n\n"
-        f"Research context:\n{_trim(research_context, 8000)}\n\n"
-        f"Project context:\n{_trim(project_context, 3000)}"
+        f"Request: {question}\n"
+        f"Section focus: {section_angle}\n\n"
+        f"Research:\n{_trim(research_context, 4000)}\n\n"
+        f"Project context:\n{_trim(project_context, 1500)}"
     )
     try:
         result = client.chat(
             model=_MODEL_DRAFTER,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            temperature=0.8,
-            num_ctx=12288,
+            temperature=0.7,
+            num_ctx=10240,
             think=False,
-            timeout=240,
+            timeout=180,
             retry_attempts=3,
             retry_backoff_sec=1.2,
         )
-        return str(result or "").strip()
+        return section_name, str(result or "").strip()
     except Exception as exc:
-        return f"[Draft generation failed: {exc}]"
+        return section_name, f"[Section '{section_name}' failed: {exc}]"
 
 
-def _run_tone_reviewer(
+def _run_critic(
     client: OllamaClient,
     draft: str,
     kind: str,
@@ -121,69 +172,87 @@ def _run_tone_reviewer(
 ) -> str:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
     system_prompt = (
-        f"Today: {_today()}. "
-        f"You are an editorial reviewer for a {kind}. Check the draft for:\n"
-        "1. Tone appropriateness — does it match the expected voice?\n"
-        "2. Structure compliance — does it follow the required format?\n"
-        "3. CTA clarity — is the call to action specific and actionable?\n"
-        "4. Length compliance — is it within the target range?\n"
-        "5. Engagement — will it hold the reader's attention?\n\n"
+        f"You are an editorial critic for a {kind.replace('_', ' ')}.\n\n"
         f"Expected voice: {spec['voice']}\n"
-        f"Expected length: {spec['word_range']}\n\n"
-        "For each issue: give a one-sentence fix instruction. "
-        "If the draft is strong, say 'Approved.' and stop."
-    )
-    user_prompt = (
-        f"Kind: {kind} | Request: {question}\n\n"
-        f"Draft to review:\n{_trim(draft, 6000)}"
+        f"Expected length: {spec['word_range']}\n"
+        f"Process standard: {spec['process_note']}\n\n"
+        "Check the draft for:\n"
+        "1. Tone match — does it nail the voice?\n"
+        "2. Structure — does it follow the required format?\n"
+        "3. CTA clarity — is the call to action specific and actionable?\n"
+        "4. Length — is it within the target range?\n"
+        "5. Engagement — does it earn the reader's attention throughout?\n"
+        "6. Specificity — are there vague claims that need grounding?\n\n"
+        "For each issue: write '**[Section Name]**: [one-sentence fix instruction]'\n"
+        "If everything is strong, write 'Approved.' and stop."
     )
     try:
         result = client.chat(
-            model=_MODEL_REVIEWER,
+            model=_MODEL_CRITIC,
             system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.2,
+            user_prompt=f"Kind: {kind} | Request: {question}\n\nDraft:\n{_trim(draft, 6000)}",
+            temperature=0.1,
             num_ctx=12288,
-            think=False,
-            timeout=180,
+            think=True,
+            timeout=240,
             retry_attempts=3,
-            retry_backoff_sec=1.2,
+            retry_backoff_sec=1.5,
         )
         return str(result or "").strip()
     except Exception:
         return "Approved."
 
 
-def _run_polish(
+def _run_compositor(
     client: OllamaClient,
-    draft: str,
-    review_notes: str,
+    sections: list[tuple[str, str]],
     kind: str,
+    question: str,
 ) -> str:
+    spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
+    joined = "\n\n".join(f"**{name}**\n{body}" for name, body in sections if body)
     system_prompt = (
-        f"You are a {kind} editor. Apply the reviewer's notes to polish this content. "
-        "Preserve the voice and approximate length. Return the complete polished content only."
-    )
-    user_prompt = (
-        f"Reviewer notes:\n{_trim(review_notes, 1500)}\n\n"
-        f"Draft to polish:\n{draft}"
+        f"You are a senior {kind.replace('_', ' ')} editor assembling the final piece.\n\n"
+        f"Voice: {spec['voice']}\n"
+        f"Target length: {spec['word_range']}\n\n"
+        "Assemble the sections into one polished final document:\n"
+        "1. For blog/essay: add a title at the top\n"
+        "2. Write smooth transitions between sections (1 sentence max)\n"
+        "3. Ensure consistent voice and tense\n"
+        "4. Trim redundancy without losing substance\n"
+        "5. Return the complete polished content in markdown. No meta-commentary."
     )
     try:
         result = client.chat(
-            model=_MODEL_DRAFTER,
+            model=_MODEL_POLISH,
             system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.6,
+            user_prompt=f"Request: {question}\n\nSections:\n{joined}",
+            temperature=0.5,
             num_ctx=12288,
             think=False,
-            timeout=180,
+            timeout=240,
             retry_attempts=3,
             retry_backoff_sec=1.2,
         )
         polished = str(result or "").strip()
-        return polished if polished and len(polished) >= len(draft) * 0.5 else draft
+        # Ensure we didn't lose content
+        raw_len = sum(len(b) for _, b in sections if b)
+        if polished and len(polished) >= raw_len * 0.5:
+            return polished
+        return "\n\n".join(f"## {n}\n\n{b}" for n, b in sections if b)
     except Exception:
-        return draft
+        return "\n\n".join(f"## {n}\n\n{b}" for n, b in sections if b)
+
+
+def _quality_gate(body: str, kind: str) -> tuple[bool, list[str]]:
+    issues: list[str] = []
+    spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
+    min_chars = spec.get("min_chars", 200)
+    if len(body) < min_chars:
+        issues.append(f"Too short: {len(body)} chars (minimum {min_chars})")
+    if body.endswith("...") or body.endswith("…"):
+        issues.append("Appears truncated (ends with ellipsis)")
+    return len(issues) == 0, issues
 
 
 # ---------------------------------------------------------------------------
@@ -219,32 +288,168 @@ def run_content_pool(
         return False
 
     kind = str(target).strip().lower() or "blog"
-    bus.emit("content_pool", "start", {"question": question, "target": kind})
+    if kind not in _KIND_SPECS:
+        kind = "blog"
 
+    bus.emit("content_pool", "start", {"question": question, "target": kind})
     client = OllamaClient()
 
-    # Step 1: Draft
+    # Learning integration
+    orchestrator_cfg = lane_model_config(repo_root, "orchestrator_reasoning")
+    try:
+        learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
+        learned_guidance = learning.guidance_for_lane("make_content", limit=5)
+        if learned_guidance:
+            project_context = (learned_guidance + "\n\n" + project_context).strip()
+    except Exception:
+        pass
+
+    spec = _KIND_SPECS[kind]
+    section_defs = spec["sections"]
+    section_names = [n for n, _ in section_defs]
+
+    _progress("build_pool_started", {
+        "stage": "build_pool_started",
+        "agents_total": len(section_defs) + 3,
+        "make_type": kind,
+        "destination": "Content",
+    })
+
+    # Step 1: Planner
     if _cancelled():
-        return {"ok": False, "message": "Cancelled before drafting.", "body": ""}
+        return {"ok": False, "message": "Cancelled before planning.", "body": ""}
+    _progress("build_agent_started", {"stage": "build_agent_started", "agent": "planner", "model": _MODEL_DRAFTER})
+    outline = _run_planner(client, question, kind, research_context, project_context)
+    _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "planner", "output_chars": len(outline)})
 
-    _progress("content_draft_started", {"kind": kind})
-    draft = _run_drafter(client, question, kind, research_context, project_context)
-    _progress("content_draft_completed", {"preview": draft[:300], "chars": len(draft)})
+    # Parse outline → section angles
+    section_angles: dict[str, str] = {}
+    current_section: str | None = None
+    current_lines: list[str] = []
+    for line in outline.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("###"):
+            if current_section is not None:
+                section_angles[current_section] = " ".join(current_lines).strip()
+            current_section = stripped.lstrip("#").strip()
+            current_lines = []
+        elif current_section is not None and stripped:
+            current_lines.append(stripped)
+    if current_section is not None:
+        section_angles[current_section] = " ".join(current_lines).strip()
+    for name, hint in section_defs:
+        if name not in section_angles or not section_angles[name]:
+            section_angles[name] = hint
 
-    # Step 2: Tone review
+    # Step 2: Parallel section writers
     if _cancelled():
-        return {"ok": False, "message": "Cancelled before review.", "body": draft}
+        return {"ok": False, "message": "Cancelled before writing.", "body": ""}
+    _progress("build_agent_started", {"stage": "build_agent_started", "agent": "writers", "model": _MODEL_DRAFTER})
 
-    _progress("content_review_started", {})
-    review_notes = _run_tone_reviewer(client, draft, kind, question)
-    _progress("content_review_completed", {"preview": review_notes[:200]})
+    section_bodies: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(3, len(section_defs))) as executor:
+        futures = {}
+        for name, _ in section_defs:
+            if _cancelled():
+                break
+            angle = section_angles.get(name, "")
+            fut = executor.submit(
+                _run_section_writer,
+                client, question, kind, name, angle, research_context, project_context,
+            )
+            futures[fut] = name
+        for fut in as_completed(futures):
+            sec_name, body = fut.result()
+            section_bodies[sec_name] = body
+            _progress("build_agent_completed", {
+                "stage": "build_agent_completed",
+                "agent": f"writer:{sec_name}",
+                "output_chars": len(body),
+            })
 
-    # Step 3: Polish (only if reviewer flagged issues)
-    final_body = draft
-    if review_notes and "approved" not in review_notes.lower() and not _cancelled():
-        _progress("content_polish_started", {})
-        final_body = _run_polish(client, draft, review_notes, kind)
-        _progress("content_polish_completed", {"chars": len(final_body)})
+    ordered_sections = [(name, section_bodies.get(name, "")) for name, _ in section_defs]
+
+    # Step 3: Critic
+    if _cancelled():
+        draft_fallback = "\n\n".join(f"**{n}**\n{b}" for n, b in ordered_sections if b)
+        return {"ok": False, "message": "Cancelled before critic.", "body": draft_fallback}
+
+    assembled_draft = "\n\n".join(f"**{n}**\n{b}" for n, b in ordered_sections if b)
+    _progress("build_agent_started", {"stage": "build_agent_started", "agent": "critic", "model": _MODEL_CRITIC})
+    review_notes = _run_critic(client, assembled_draft, kind, question)
+    _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "critic", "output_chars": len(review_notes)})
+
+    # Step 4: Revisor (targeted sections)
+    revised_sections = list(ordered_sections)
+    if review_notes and "approved" not in review_notes.lower()[:60] and not _cancelled():
+        import re
+        pattern = re.compile(r'\*\*(.+?)\*\*\s*[:\-]\s*(.+?)(?=\n\*\*|\Z)', re.DOTALL)
+        fix_map: dict[str, str] = {}
+        for match in pattern.finditer(review_notes):
+            raw_name = match.group(1).strip()
+            fix = match.group(2).strip()
+            for name in section_names:
+                if raw_name.lower() in name.lower() or name.lower() in raw_name.lower():
+                    fix_map[name] = fix[:400]
+                    break
+
+        if fix_map:
+            _progress("essay_revision_started", {"flagged_sections": list(fix_map.keys())})
+            for idx, (name, body) in enumerate(revised_sections):
+                if name in fix_map and not _cancelled():
+                    _progress("build_agent_started", {"stage": "build_agent_started", "agent": f"revisor:{name}", "model": _MODEL_POLISH})
+                    fix_system = f"You are a {kind.replace('_', ' ')} editor. Apply the note and return the revised section only."
+                    fix_user = f"Note: {fix_map[name]}\n\nSection to revise:\n{body}"
+                    try:
+                        revised_body = str(client.chat(
+                            model=_MODEL_POLISH,
+                            system_prompt=fix_system,
+                            user_prompt=fix_user,
+                            temperature=0.4,
+                            num_ctx=10240,
+                            think=False,
+                            timeout=180,
+                            retry_attempts=2,
+                            retry_backoff_sec=1.2,
+                        ) or "").strip()
+                        if revised_body and len(revised_body) >= len(body) * 0.4:
+                            revised_sections[idx] = (name, revised_body)
+                    except Exception:
+                        pass
+                    _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": f"revisor:{name}"})
+
+    # Step 5: Compositor
+    if _cancelled():
+        fallback = "\n\n".join(f"## {n}\n\n{b}" for n, b in revised_sections if b)
+        return {"ok": False, "message": "Cancelled before compositor.", "body": fallback}
+
+    _progress("build_agent_started", {"stage": "build_agent_started", "agent": "compositor", "model": _MODEL_POLISH})
+    final_body = _run_compositor(client, revised_sections, kind, question)
+    _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "compositor", "output_chars": len(final_body)})
+
+    # Step 6: Quality gate
+    passed, gate_issues = _quality_gate(final_body, kind)
+    if not passed:
+        _progress("build_quality_gate_failed", {"issues": gate_issues})
+        try:
+            fix_prompt = f"Issues detected:\n" + "\n".join(f"- {i}" for i in gate_issues) + f"\n\nFix and return:\n\n{_trim(final_body, 8000)}"
+            fixed = str(client.chat(
+                model=_MODEL_POLISH,
+                system_prompt=f"You are a {kind.replace('_', ' ')} editor. Fix the issues and return the corrected version.",
+                user_prompt=fix_prompt,
+                temperature=0.3,
+                num_ctx=12288,
+                think=False,
+                timeout=200,
+                retry_attempts=2,
+                retry_backoff_sec=1.2,
+            ) or "").strip()
+            if fixed and len(fixed) > len(final_body) * 0.8:
+                final_body = fixed
+        except Exception:
+            pass
+    else:
+        _progress("build_quality_gate_passed", {})
 
     bus.emit("content_pool", "completed", {
         "project": project_slug, "target": kind, "chars": len(final_body),

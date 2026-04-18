@@ -5,51 +5,70 @@ from __future__ import annotations
 import re
 
 RECENCY_TERMS: frozenset[str] = frozenset([
-    "latest", "current", "recent", "recently", "today", "right now",
-    "as of", "this week", "this month", "this year", "now",
-    "news", "what's new", "whats new", "new in", "what happened",
-    "just released", "just announced", "breaking", "nowadays",
-    "these days", "currently", "live", "real-time", "realtime",
-    "update", "updates", "trend", "trending",
-    # sports / event recency signals
+    "latest", "recent", "recently", "today", "right now",
+    "as of", "this week", "this month", "this year",
+    "what's new", "whats new", "new in", "what happened",
+    "just released", "just announced", "nowadays",
+    "these days", "currently", "real-time", "realtime",
+    "trending",
+    # sports / event recency signals — compound phrases only to avoid collateral matches
     "next fight", "fight card", "fight night", "this weekend",
     "main event", "next event", "upcoming event", "upcoming fight",
-    "ppv", "next ppv", "card", "on the card", "fight week",
+    "ppv", "next ppv", "on the card", "fight week",
     "next match", "upcoming match", "next game", "next bout",
+    # Removed: "now" (too common), "live" (too common), "current" (too common),
+    #   "update"/"updates" (too ambiguous), "trend" (keep only "trending"),
+    #   "breaking" (too broad — use "breaking news" pattern below),
+    #   "news" (moved to compound patterns), "card" (too broad — "fight card" kept above)
 ])
 
 _WEB_OFFER_MARKER_PATTERNS: tuple[str, ...] = (
+    # Unambiguous temporal / recency markers
     r"\blatest\b",
-    r"\bcurrent\b",
-    r"\brecent\b",
+    r"\brecent(?:ly)?\b",
     r"\btoday\b",
     r"\bthis week\b",
     r"\bthis month\b",
-    r"\bnews\b",
-    r"\bwhat'?s new\b",
-    r"\bnew in\b",
-    r"\bwhat happened\b",
-    r"\bupdate(?:s)?\b",
-    r"\breddit\b",
-    r"\b(?:x|twitter)\b",
-    r"\bsource(?:s)?\b",
-    r"\bcitation(?:s)?\b",
-    r"\blink(?:s)?\b",
-    r"\bcrawl\b",
-    r"\bscrape\b",
-    r"\bweb\b",
-    r"\bfact check\b",
-    r"\btrend(?:ing|s)?\b",
+    r"\bthis year\b",
     r"\bright now\b",
     r"\bas of\b",
     r"\bnowadays\b",
     r"\bthese days\b",
+    r"\bcurrently\b",
     r"\bjust released\b",
     r"\bjust announced\b",
-    r"\bbreaking\b",
-    r"\bthis year\b",
-    r"\bcurrently\b",
-    r"\blive\b",
+    # News — require compound to avoid "that was big news in the 80s"
+    r"\bbreaking news\b",
+    r"\blatest news\b",
+    r"\brecent news\b",
+    r"\bin the news\b",
+    r"\bnews today\b",
+    r"\bwhat'?s new\b",
+    r"\bnew in\b",
+    r"\bwhat happened\b",
+    # Explicit web/search intent — require compound context
+    r"\b(?:search|browse|look up|scour) (?:the )?web\b",
+    r"\bweb (?:search|result|browser)\b",
+    r"\bcrawl\b",
+    r"\bscrape\b",
+    r"\bfact.?check\b",
+    # Live data — require compound (avoid "I live in", "live music")
+    r"\blive (?:score|update|stream|result|data|feed|game|event|match|fight)\b",
+    r"\bgo live\b",
+    # Updates — require qualifier to avoid "update the document"
+    r"\b(?:latest|recent|new)\s+update(?:s)?\b",
+    # Trending (specific enough as single word; "trend"/"trends" alone are not)
+    r"\btrending\b",
+    # Social platform references (explicit intent to fetch from platform)
+    r"\breddit\b",
+    r"\btwitter\b",
+    # Citations and explicit sourcing requests — compound to avoid "open source", "source code"
+    r"\bcitation(?:s)?\b",
+    r"\bcite (?:a |your )?source(?:s)?\b",
+    r"\bfind (?:a |the )?source(?:s)?\b",
+    r"\bweb source(?:s)?\b",
+    r"\bsource(?:s)? for this\b",
+    # Raw URL in the message
     r"https?://",
 )
 

@@ -998,10 +998,12 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         incoming_image_style: str | None = None
         incoming_selected_loras: list[str] | None = None
 
+        requested_make_type = ""
         content_type = str(request.content_type or "").strip().lower()
         if content_type.startswith("multipart/form-data"):
             raw_content = str(request.form.get("content", "")).strip()
             requested_mode = str(request.form.get("mode", "")).strip().lower()
+            requested_make_type = str(request.form.get("make_type", "")).strip().lower()
             request_id = str(request.form.get("request_id", "")).strip()
             attachments, upload_errors = ctx.save_uploaded_images(profile, conversation_id)
             if "image_style" in request.form:
@@ -1012,6 +1014,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             payload = request.get_json(silent=True) or {}
             raw_content = str(payload.get("content", "")).strip()
             requested_mode = str(payload.get("mode", "")).strip().lower()
+            requested_make_type = str(payload.get("make_type", "")).strip().lower()
             request_id = str(payload.get("request_id", "")).strip()
             if "image_style" in payload:
                 incoming_image_style = str(payload.get("image_style", "")).strip().lower()
@@ -1042,6 +1045,30 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         talk_text = _extract_talk_text(raw_content)
         is_forage_request = requested_mode == "forage"
         is_make_request = requested_mode == "make"
+
+        # Intent confirmation gate — prevents "make me some tea" from firing Make pools
+        # Fast path: skip if user explicitly chose mode=make AND selected a type
+        if is_make_request and raw_content and not raw_content.startswith("/"):
+            if not requested_make_type:
+                # Only run confirmer if no type selected (ambiguous)
+                try:
+                    from orchestrator.services.intent_confirmer import confirm_make_intent
+                    repo_root_for_confirm = ctx.repo_root_for_profile(profile)
+                    confirm_result = confirm_make_intent(
+                        raw_content,
+                        repo_root_for_confirm,
+                        ui_mode=requested_mode,
+                        make_type=requested_make_type,
+                    )
+                    if not confirm_result.get("skipped") and confirm_result.get("intent") != "make":
+                        is_make_request = False
+                        if confirm_result.get("intent") == "forage":
+                            is_forage_request = True
+                    elif confirm_result.get("suggested_type") and not requested_make_type:
+                        requested_make_type = str(confirm_result.get("suggested_type", "")).strip()
+                except Exception:
+                    pass
+
         is_make_lane_request = is_make_request and not raw_content.startswith("/")
         is_talk_request = (requested_mode == "talk" or talk_text is not None) and not is_forage_request
         if is_make_lane_request and not raw_content and attachments:
@@ -1077,6 +1104,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         request_project_mode = dict(project_mode)
         if is_make_lane_request:
             request_project_mode["mode"] = "make"
+            if requested_make_type:
+                request_project_mode["target"] = requested_make_type
 
         guard = check_content(raw_content)
         if guard.blocked:
@@ -1092,19 +1121,22 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         command_input_base = raw_content if raw_content else "Please analyze the attached image(s)."
         lane_guess = ""
         is_foraging_request = False
+        is_building_request = False
         if is_forage_request:
             lane_guess = "research"
             is_foraging_request = True
         elif is_make_lane_request:
-            target_value = str(request_project_mode.get("target", "auto")).strip().lower()
-            lane_guess = f"build:{target_value or 'auto'}"
-            is_foraging_request = True
+            # Use make_type from UI picker first, then fall back to project target
+            effective_make_type = requested_make_type or str(request_project_mode.get("target", "auto")).strip().lower()
+            lane_guess = f"build:{effective_make_type or 'auto'}"
+            is_building_request = True
         elif not is_talk_request and not raw_content.startswith("/"):
             mode_value = str(request_project_mode.get("mode", "discovery")).strip().lower()
             target_value = str(request_project_mode.get("target", "auto")).strip().lower()
             if mode_value == "make":
-                lane_guess = f"build:{target_value or 'auto'}"
-                is_foraging_request = True
+                effective_make_type = requested_make_type or target_value
+                lane_guess = f"build:{effective_make_type or 'auto'}"
+                is_building_request = True
             else:
                 try:
                     lane_guess = str(orch.router.route(command_input_base, project_slug=convo_project)).strip().lower()
@@ -1117,6 +1149,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         is_image_compose_request = is_image_gen_request and has_image_attachments
         if is_image_gen_request:
             is_foraging_request = False
+            is_building_request = False
             is_talk_request = False
 
         user_msg = store.add_message(
@@ -1126,6 +1159,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             mode=user_mode,
             attachments=attachments,
             foraging=is_foraging_request,
+            building=is_building_request if is_building_request else None,
             request_id=request_id,
             reply_to=reply_to_data,
         )
@@ -1174,7 +1208,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         def _cancel_requested() -> bool:
             return ctx.job_manager.is_cancel_requested(profile, request_id)
 
-        def _progress(stage: str, detail: str = "", *, summary_path: str = "", raw_path: str = "", web_stack: dict | None = None, agent_event: dict | None = None) -> None:
+        def _progress(stage: str, detail: str = "", *, summary_path: str = "", raw_path: str = "", web_stack: dict | None = None, agent_event: dict | None = None, live_source: dict | None = None) -> None:
             ctx.job_manager.update(
                 profile,
                 request_id,
@@ -1185,6 +1219,11 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                 web_stack=web_stack,
                 agent_event=agent_event,
             )
+            if live_source and isinstance(live_source, dict):
+                try:
+                    ctx.job_manager.append_live_source(profile, request_id, live_source)
+                except Exception:
+                    pass
 
         def _cancel_reply() -> str:
             row = ctx.job_manager.get(profile, request_id) or {}
@@ -1211,6 +1250,18 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         elif ctx.foraging_manager.active_count() > 0:
             ctx.foraging_manager.request_yield(seconds=150.0)
             _progress("foraging_yield_requested", "Foreground chat/cmd requested temporary Foraging yield.")
+
+        if is_building_request:
+            ctx.building_manager.register_job(
+                profile=profile,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                project=convo_project,
+                make_type=effective_make_type,
+                lane=lane_guess or "make_longform",
+                job_key=ctx.job_manager.key(profile, request_id),
+            )
+            _progress("building_started", f"Build task started — type '{effective_make_type}', lane '{lane_guess or 'make_longform'}'.")
 
         image_context = ""
         doc_context = ""
@@ -1340,6 +1391,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                             stage,
                             str(detail if not isinstance(detail, dict) else detail.get("note", "") or ""),
                             web_stack=(detail if isinstance(detail, dict) and stage == "web_stack_ready" else None),
+                            live_source=(detail if isinstance(detail, dict) and stage == "web_source_discovered" else None),
                         ),
                     )
                     if _cancel_requested():
@@ -1396,7 +1448,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                         summary_path=(str(detail.get("summary_path", "")).strip() if isinstance(detail, dict) else ""),
                         raw_path=(str(detail.get("raw_path", "")).strip() if isinstance(detail, dict) else ""),
                         web_stack=(detail if isinstance(detail, dict) and stage == "web_stack_ready" else None),
-                        agent_event=(dict(detail, stage=stage) if isinstance(detail, dict) and stage in {"research_pool_started", "research_agent_started", "research_agent_completed"} else None),
+                        agent_event=(dict(detail, stage=stage) if isinstance(detail, dict) and stage in {"research_pool_started", "research_agent_started", "research_agent_completed", "build_pool_started", "build_agent_started", "build_agent_completed", "build_quality_gate_passed", "build_quality_gate_failed"} else None),
+                        live_source=(detail if isinstance(detail, dict) and stage == "web_source_discovered" else None),
                     ),
                 )
                 _progress("foraging_run_done", "Foraging orchestrator returned final reply.")
@@ -1423,6 +1476,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         finally:
             if is_foraging_request:
                 ctx.foraging_manager.unregister_job(ctx.job_manager.key(profile, request_id))
+            if is_building_request:
+                ctx.building_manager.unregister_job(ctx.job_manager.key(profile, request_id))
 
         attachment_notes: list[str] = []
         if _cancel_requested() and not str(reply_text or "").strip().lower().startswith("request cancelled"):

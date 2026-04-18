@@ -9,12 +9,10 @@
   "description": "Foxforge family dashboard and chat workspace.",
   "icons": [
     {
-      "src": "/static/branding/logo.png",
-      "type": "image/png"
-    },
-    {
-      "src": "/static/branding/GuideBoard.png",
-      "type": "image/png"
+      "src": "/static/branding/foxforge-appicon.png",
+      "type": "image/png",
+      "sizes": "750x750",
+      "purpose": "any"
     }
   ]
 }

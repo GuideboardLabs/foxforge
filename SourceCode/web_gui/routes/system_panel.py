@@ -120,3 +120,13 @@ def register_panel_routes(bp: Blueprint, ctx: AppContext) -> None:
         snapshot = ctx.foraging_manager.snapshot(profile_id=str(profile.get("id", "")))
         jobs = ctx.foraging_manager.rows_for_profile(profile, ctx.job_manager, limit=limit)
         return {"foraging": snapshot, "jobs": jobs}, 200
+
+    @bp.get("/api/panel/building")
+    def panel_building() -> tuple[dict, int]:
+        from web_gui.utils.request_utils import parse_optional_int
+
+        profile = ctx.require_profile()
+        limit = parse_optional_int(request.args.get("limit"), default=60, minimum=1, maximum=200)
+        snapshot = ctx.building_manager.snapshot(profile_id=str(profile.get("id", "")))
+        jobs = ctx.building_manager.rows_for_profile(profile, ctx.job_manager, limit=limit)
+        return {"building": snapshot, "jobs": jobs}, 200

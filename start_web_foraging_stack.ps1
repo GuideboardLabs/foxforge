@@ -158,7 +158,7 @@ Ensure-DockerReady
 Ensure-SearxSettings
 
 Ensure-Container -Name "searxng" -RunArgs "-p 8080:8080 --name searxng -v `"$($SearxSettingsPath):/etc/searxng/settings.yml`" searxng/searxng"
-Ensure-Container -Name "crawl4ai" -RunArgs "--platform linux/amd64 -p 11235:11235 --name crawl4ai --shm-size=1g --cpus=4 --memory=4g -e MAX_CONCURRENT_TASKS=5 -e BROWSER_POOL_SIZE=10 unclecode/crawl4ai:latest"
+Ensure-Container -Name "crawl4ai" -RunArgs "--platform linux/amd64 -p 11235:11235 --name crawl4ai --shm-size=2g --cpus=4 --memory=4g -e MAX_CONCURRENT_TASKS=5 -e BROWSER_POOL_SIZE=10 unclecode/crawl4ai:latest"
 
 Start-Sleep -Seconds 4
 Write-Host ""

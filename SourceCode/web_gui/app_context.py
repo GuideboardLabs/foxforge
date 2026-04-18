@@ -19,6 +19,7 @@ from shared_tools.web_push import (
 from orchestrator.main import FoxforgeOrchestrator
 from web_gui.bootstrap import get_watchtower, get_topic_engine
 from web_gui.services import JobManager, ForagingManager
+from web_gui.services.building_manager import BuildingManager
 from web_gui.utils.login_limiter import LoginRateLimiter
 
 LOGGER = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class AppContext:
         panel_cache: dict[str, dict[str, Any]],
         job_manager: JobManager,
         foraging_manager: ForagingManager,
+        building_manager: BuildingManager | None = None,
     ) -> None:
         self.root = root
         self.auth_store = auth_store
@@ -52,6 +54,7 @@ class AppContext:
         self.panel_cache = panel_cache
         self.job_manager = job_manager
         self.foraging_manager = foraging_manager
+        self.building_manager: BuildingManager = building_manager or BuildingManager()
         self.project_catalog_lock = Lock()
         self.login_limiter = LoginRateLimiter()
         self._panel_cache_lock = Lock()
@@ -452,7 +455,13 @@ class AppContext:
         compact = " ".join(raw_content.split())
         preview = compact[:157] + "..." if len(compact) > 160 else compact
         is_foraging = bool(message.get("foraging", False))
-        title = f"Foraging finished in {title_text}" if is_foraging else f"New message in {title_text}"
+        is_building = bool(message.get("building", False))
+        if is_foraging:
+            title = f"Foraging finished in {title_text}"
+        elif is_building:
+            title = f"Build finished in {title_text}"
+        else:
+            title = f"New message in {title_text}"
         body = preview or f"{self.display_name(profile)} has a new Foxforge reply."
         cid = str(conversation_id or "").strip()
         url = f"/#{cid}" if cid else "/"
@@ -462,7 +471,7 @@ class AppContext:
             "tag": f"conversation:{conversation_id}",
             "icon": "/static/branding/logo.png",
             "badge": "/static/branding/logo.png",
-            "renotify": is_foraging,
+            "renotify": is_foraging or is_building,
         }
         event_key = f"conversation:{str(profile.get('id', '')).strip()}:{conversation_id}:{str(message.get('id', '')).strip()}"
         return payload, event_key

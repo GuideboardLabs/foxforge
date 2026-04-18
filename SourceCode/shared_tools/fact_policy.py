@@ -11,11 +11,30 @@ _DATE_RE = re.compile(rf"\b{_MONTHS}\s+\d{{1,2}},?\s+(?:19|20)\d{{2}}\b", re.IGN
 
 def detect_topic_type(query: str, topic_type: str = "general") -> str:
     low = f"{topic_type} {query}".lower()
-    if any(token in low for token in ["ufc", "mma", "boxing", "fight", "main card", "weigh-in"]):
+    tokens = set(re.findall(r"[a-z0-9]+", low))
+
+    if {"ufc", "mma", "boxing"} & tokens:
         return "combat_sports"
-    if any(token in low for token in ["matchup", "odds", "sportsbook", "draftkings", "moneyline", "spread", "kickoff", "tipoff"]):
+    if "fight" in tokens and (
+        "card" in tokens
+        or "bout" in tokens
+        or "prelims" in tokens
+        or "octagon" in tokens
+        or ("main" in tokens and "event" in tokens)
+    ):
+        return "combat_sports"
+    if (
+        "main card" in low
+        or "fight card" in low
+        or "bout order" in low
+        or "weigh-in" in low
+        or "weigh in" in low
+    ):
+        return "combat_sports"
+
+    if {"matchup", "odds", "sportsbook", "draftkings", "moneyline", "spread", "kickoff", "tipoff"} & tokens:
         return "sports_event"
-    if " vs " in low and any(token in low for token in ["nba", "nfl", "mlb", "nhl", "soccer", "football", "boxing", "mma", "ufc"]):
+    if " vs " in low and {"nba", "nfl", "mlb", "nhl", "soccer", "football", "boxing", "mma", "ufc"} & tokens:
         return "sports_event"
     if any(
         token in low

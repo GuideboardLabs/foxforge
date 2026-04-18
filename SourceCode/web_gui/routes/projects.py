@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -7,9 +9,11 @@ from typing import TYPE_CHECKING, Any
 from flask import Blueprint, request
 
 from shared_tools.project_pipeline import ProjectPipelineStore
+from web_gui.chat_helpers import GENERAL_PROJECT
 from web_gui.utils.file_utils import (
     normalize_project_slug as _normalize_project_slug,
     safe_path_in_roots as _safe_path_in_roots,
+    safe_upload_name as _safe_upload_name,
 )
 from web_gui.utils.request_utils import parse_optional_int
 
@@ -189,8 +193,103 @@ def _project_details(ctx: AppContext, orch: FoxforgeOrchestrator, slug: str, eve
             "artifacts": unique_artifacts, "handoffs": handoffs, "pipeline": pipeline}
 
 
+def _normalize_promote_mode(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"move", "cutoff", "cut_off", "detach", "rehome"}:
+        return "move"
+    if value in {"clone", "copy", "fork", "keep"}:
+        return "clone"
+    return ""
+
+
+def _clone_messages_with_attachments(
+    ctx: AppContext,
+    profile: dict[str, Any],
+    *,
+    source_conversation_id: str,
+    target_conversation_id: str,
+    source_messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    if not source_messages:
+        return [], 0, 0
+    copied_files = 0
+    missing_files = 0
+    filename_map: dict[str, str] = {}
+    source_dir = ctx.attachment_dir_for(profile, source_conversation_id)
+    target_dir = ctx.attachment_dir_for(profile, target_conversation_id)
+    cloned_messages: list[dict[str, Any]] = deepcopy(source_messages)
+
+    for row in cloned_messages:
+        attachments = row.get("attachments")
+        if not isinstance(attachments, list):
+            continue
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get("filename", "")).strip()
+            if not raw_name:
+                continue
+            safe_name = _safe_upload_name(raw_name)
+            lookup = safe_name or raw_name
+            if lookup in filename_map:
+                mapped_name = filename_map.get(lookup, "")
+            else:
+                src = source_dir / lookup
+                if not src.exists() or not src.is_file():
+                    missing_files += 1
+                    filename_map[lookup] = ""
+                    continue
+                dest_name = lookup
+                dest = target_dir / dest_name
+                if dest.exists():
+                    stem = Path(dest_name).stem
+                    suffix = Path(dest_name).suffix
+                    for idx in range(2, 1000):
+                        candidate = f"{stem}_{idx}{suffix}"
+                        if not (target_dir / candidate).exists():
+                            dest_name = candidate
+                            dest = target_dir / candidate
+                            break
+                shutil.copy2(src, dest)
+                copied_files += 1
+                mapped_name = dest_name
+                filename_map[lookup] = mapped_name
+                filename_map[raw_name] = mapped_name
+            if not mapped_name:
+                continue
+            item["filename"] = mapped_name
+            item["url"] = f"/api/conversations/{target_conversation_id}/attachments/{mapped_name}"
+
+    return cloned_messages, copied_files, missing_files
+
+
+def _copy_project_tree_missing(source_dir: Path, target_dir: Path) -> int:
+    if not source_dir.exists() or not source_dir.is_dir():
+        return 0
+    copied = 0
+    for src in source_dir.rglob("*"):
+        if src.is_dir():
+            continue
+        if not src.is_file():
+            continue
+        rel = src.relative_to(source_dir)
+        dest = target_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            continue
+        shutil.copy2(src, dest)
+        copied += 1
+    return copied
+
+
 def create_projects_blueprint(ctx: AppContext) -> Blueprint:
     bp = Blueprint('project_routes', __name__)
+
+    @bp.get("/api/make/catalog")
+    def make_catalog() -> tuple[dict, int]:
+        ctx.require_profile()
+        from orchestrator.services.make_catalog import catalog_for_api
+        return {"catalog": catalog_for_api()}, 200
 
     @bp.route('/api/action-proposals', methods=['GET'])
     def list_action_proposals() -> tuple[dict, int]:
@@ -238,6 +337,168 @@ def create_projects_blueprint(ctx: AppContext) -> Blueprint:
         row = ctx.set_project_catalog_entry(ctx.root, project=project, description=description)
         ctx.cache_clear(str(profile.get("id", "")))
         return {"ok": True, "project": project, "description": str(row.get("description", "")).strip()}, 200
+
+    @bp.route('/api/projects/promote-branch', methods=['POST'])
+    def promote_project_branch() -> tuple[dict, int]:
+        profile = ctx.require_profile()
+        payload = request.get_json(silent=True) or {}
+        source_conversation_id = str(
+            payload.get("source_conversation_id", "") or payload.get("conversation_id", "")
+        ).strip()
+        if not source_conversation_id:
+            return {"ok": False, "error": "source_conversation_id is required."}, 400
+
+        raw_target = str(payload.get("target_project", "")).strip()
+        if not raw_target:
+            return {"ok": False, "error": "target_project is required."}, 400
+        target_project = _normalize_project_slug(raw_target)
+        if target_project == GENERAL_PROJECT:
+            return {"ok": False, "error": "Choose a non-general target project."}, 400
+
+        mode = _normalize_promote_mode(payload.get("mode", "clone"))
+        if not mode:
+            return {"ok": False, "error": "mode must be clone or move."}, 400
+
+        store = ctx.conversation_store_for(profile)
+        source_conversation = store.get(source_conversation_id)
+        if source_conversation is None:
+            return {"ok": False, "error": "Source conversation not found."}, 404
+
+        source_project = _normalize_project_slug(source_conversation.get("project", GENERAL_PROJECT))
+        if target_project == source_project:
+            return {"ok": False, "error": "Target project must be different from source project."}, 400
+
+        existing_target_branches = [
+            row for row in store.list()
+            if _normalize_project_slug(row.get("project", GENERAL_PROJECT)) == target_project
+        ]
+        if existing_target_branches:
+            return {
+                "ok": False,
+                "error": "Target project already has branches. Choose a new project name for promotion.",
+            }, 409
+
+        source_topic_id = str(source_conversation.get("topic_id", "")).strip()
+        target_topic_id = source_topic_id
+        if target_project == GENERAL_PROJECT:
+            target_topic_id = "general"
+        elif target_topic_id == "general":
+            target_topic_id = ""
+
+        target_path = ""
+        if target_project != GENERAL_PROJECT and target_topic_id and target_topic_id != "general":
+            target_path = store._generate_path(target_project, str(source_conversation.get("title", "New Chat")))
+
+        repo_root = ctx.repo_root_for_profile(profile)
+        target_project_dir = repo_root / "Projects" / target_project
+        target_project_dir.mkdir(parents=True, exist_ok=True)
+
+        copy_project_data = bool(payload.get("copy_project_data", False))
+        copied_project_files = 0
+        if copy_project_data and source_project != GENERAL_PROJECT:
+            source_project_dir = repo_root / "Projects" / source_project
+            copied_project_files = _copy_project_tree_missing(source_project_dir, target_project_dir)
+
+        pipeline_store = ctx.pipeline_for(profile)
+        source_pipeline = pipeline_store.get(source_project)
+        target_pipeline = pipeline_store.set(
+            target_project,
+            mode=str(source_pipeline.get("mode", "discovery")).strip().lower() or "discovery",
+            target=str(source_pipeline.get("target", "auto")).strip().lower() or "auto",
+            topic_type=str(source_pipeline.get("topic_type", "general")).strip().lower() or "general",
+        )
+
+        description_override = str(payload.get("description", "")).strip()
+        catalog_rows = ctx.load_project_catalog(repo_root)
+        existing_target_description = str(catalog_rows.get(target_project, {}).get("description", "")).strip()
+        source_description = str(catalog_rows.get(source_project, {}).get("description", "")).strip()
+        target_description = description_override or existing_target_description or source_description
+        catalog_row = ctx.set_project_catalog_entry(
+            repo_root,
+            project=target_project,
+            description=target_description,
+        )
+
+        copied_attachments = 0
+        missing_attachments = 0
+        result_conversation: dict[str, Any] | None = None
+
+        if mode == "move":
+            updated = store.set_project(source_conversation_id, target_project)
+            if updated is None:
+                return {"ok": False, "error": "Source conversation not found."}, 404
+            updated = store.set_topic(source_conversation_id, target_topic_id)
+            if updated is None:
+                return {"ok": False, "error": "Source conversation not found."}, 404
+            updated = store.set_path(source_conversation_id, target_path)
+            if updated is None:
+                return {"ok": False, "error": "Source conversation not found."}, 404
+            result_conversation = updated
+        else:
+            title = str(source_conversation.get("title", "New Chat"))
+            clone = store.create(
+                title=title,
+                project=target_project,
+                topic_id=target_topic_id or "general",
+                path=target_path,
+            )
+            clone_id = str(clone.get("id", "")).strip()
+            if not clone_id:
+                return {"ok": False, "error": "Could not create promoted project branch."}, 500
+            if not target_topic_id and target_project != GENERAL_PROJECT:
+                patched = store.set_topic(clone_id, "")
+                if patched is not None:
+                    clone = patched
+            if target_path != str(clone.get("path", "")).strip():
+                patched = store.set_path(clone_id, target_path)
+                if patched is not None:
+                    clone = patched
+
+            source_messages = source_conversation.get("messages")
+            if not isinstance(source_messages, list):
+                source_messages = []
+            cloned_messages, copied_attachments, missing_attachments = _clone_messages_with_attachments(
+                ctx,
+                profile,
+                source_conversation_id=source_conversation_id,
+                target_conversation_id=clone_id,
+                source_messages=source_messages,
+            )
+            patched = store.replace_messages(
+                clone_id,
+                cloned_messages,
+                summary=str(source_conversation.get("summary", "")),
+                last_read_message_id=str(source_conversation.get("last_read_message_id", "")).strip(),
+            )
+            if patched is not None:
+                clone = patched
+            selected_loras = source_conversation.get("selected_loras")
+            patched = store.set_image_preferences(
+                clone_id,
+                image_style=str(source_conversation.get("image_style", "")),
+                selected_loras=selected_loras if isinstance(selected_loras, list) else [],
+            )
+            if patched is not None:
+                clone = patched
+            result_conversation = clone
+
+        if result_conversation is None:
+            return {"ok": False, "error": "Project branch promotion failed."}, 500
+
+        ctx.cache_clear(str(profile.get("id", "")))
+        return {
+            "ok": True,
+            "mode": mode,
+            "source_project": source_project,
+            "project": target_project,
+            "source_conversation_id": source_conversation_id,
+            "conversation": result_conversation,
+            "copied_project_files": copied_project_files,
+            "copied_attachments": copied_attachments,
+            "missing_attachments": missing_attachments,
+            "pipeline": target_pipeline,
+            "description": str(catalog_row.get("description", "")).strip(),
+        }, 200
 
     @bp.route('/api/projects/<project_slug>/details', methods=['GET'])
     def project_details(project_slug: str) -> tuple[dict, int]:

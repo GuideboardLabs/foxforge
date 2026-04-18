@@ -12,9 +12,12 @@ from typing import Any
 PROFILE_DEFAULTS: dict[str, str] = {
     "preferred_name": "",
     "full_name": "",
+    "age": "",
     "gender": "",
     "birthday": "",
     "location": "",
+    "ancestry": "",
+    "health": "",
     "work": "",
     "likes": "",
     "dislikes": "",
@@ -49,23 +52,10 @@ PET_DEFAULTS: dict[str, str] = {
     "microchip": "",
     "behavior_notes": "",
 }
-REMINDER_DEFAULTS: dict[str, str] = {
-    "label": "",
-    "frequency": "",
-    "time": "",
-    "notes": "",
-    "person": "",
-    "start_date": "",
-    "end_date": "",
-    "location": "",
-    "channel": "",
-    "priority": "",
-}
 EMPTY_SNAPSHOT: dict[str, Any] = {
     "user_profile": {},
     "family_members": [],
     "pets": [],
-    "recurring_reminders": [],
     "household_notes": "",
 }
 RECORD_DEFAULTS: dict[str, Any] = {
@@ -103,7 +93,7 @@ SOURCE_PRIORITY = {
     "manual": 3,
     "import": 3,
 }
-SYNCABLE_CATEGORIES = {"profile", "family", "pet", "reminder", "household"}
+SYNCABLE_CATEGORIES = {"profile", "family", "pet", "household"}
 
 
 def _clean_text(value: Any) -> str:
@@ -246,6 +236,8 @@ class PersonalMemoryRecordStore:
             row = self._normalize_record(item)
             if not row["category"] or not row["field"]:
                 continue
+            if row["category"] == "reminder":
+                continue
             records.append(row)
         records.sort(key=lambda row: (row["category"], _name_key(row["subject"]), row["field"], row["updated_at"], row["id"]))
         return {"version": 1, "records": records}
@@ -257,7 +249,10 @@ class PersonalMemoryRecordStore:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             payload = {}
-        return self._normalize_payload(payload)["records"]
+        normalized = self._normalize_payload(payload)
+        if payload != normalized:
+            _atomic_write(self.path, normalized)
+        return normalized["records"]
 
     def _save(self, records: list[dict[str, Any]]) -> None:
         _atomic_write(self.path, self._normalize_payload({"records": records}))
@@ -376,15 +371,6 @@ class PersonalMemoryRecordStore:
                 if not value:
                     continue
                 records.append(self._build_record(category="pet", subject=subject, field=field, value=value, status=status, confidence=confidence, source_type=source_type, source_label=source_label, evidence=f"{source_label} pet:{subject}", tags=["pet"]))
-        for row in data.get("recurring_reminders", []):
-            subject = _clean_text(row.get("label", ""))
-            if not subject:
-                continue
-            for field in REMINDER_DEFAULTS:
-                value = _clean_text(row.get(field, ""))
-                if not value:
-                    continue
-                records.append(self._build_record(category="reminder", subject=subject, field=field, value=value, status=status, confidence=confidence, source_type=source_type, source_label=source_label, evidence=f"{source_label} reminder:{subject}", tags=["reminder"]))
         notes = _clean_text(data.get("household_notes", ""))
         if notes:
             records.append(self._build_record(category="household", subject="household", field="notes", value=notes, status=status, confidence=confidence, source_type=source_type, source_label=source_label, evidence=f"{source_label} household notes", tags=["household"]))
@@ -396,7 +382,6 @@ class PersonalMemoryRecordStore:
         result["user_profile"] = _normalize_object(payload.get("user_profile", {}), PROFILE_DEFAULTS)
         result["family_members"] = _normalize_rows(payload.get("family_members", []), FAMILY_DEFAULTS, "name")
         result["pets"] = _normalize_rows(payload.get("pets", []), PET_DEFAULTS, "name")
-        result["recurring_reminders"] = _normalize_rows(payload.get("recurring_reminders", []), REMINDER_DEFAULTS, "label")
         result["household_notes"] = _clean_text(payload.get("household_notes", ""))
         return result
 
@@ -430,14 +415,6 @@ class PersonalMemoryRecordStore:
                 if idx >= 0:
                     out[field] = _clean_text(relevant[idx].get("value", ""))
             return out
-        if category == "reminder":
-            out = dict(REMINDER_DEFAULTS)
-            out["label"] = _clean_text(subject)
-            for field in REMINDER_DEFAULTS:
-                idx = self._find_record_index(relevant, category=category, subject=subject, field=field)
-                if idx >= 0:
-                    out[field] = _clean_text(relevant[idx].get("value", ""))
-            return out
         return {}
 
     def snapshot_from_records(self, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -450,9 +427,6 @@ class PersonalMemoryRecordStore:
 
         pet_subjects = sorted({_display_name(row.get("subject", "")) for row in active if _clean_text(row.get("category", "")).lower() == "pet" and _clean_text(row.get("subject", ""))}, key=lambda value: _name_key(value))
         payload["pets"] = [row for row in (self._summary_for_subject(active, "pet", subject) for subject in pet_subjects) if row.get("name")]
-
-        reminder_subjects = sorted({_clean_text(row.get("subject", "")) for row in active if _clean_text(row.get("category", "")).lower() == "reminder" and _clean_text(row.get("subject", ""))}, key=lambda value: value.lower())
-        payload["recurring_reminders"] = [row for row in (self._summary_for_subject(active, "reminder", subject) for subject in reminder_subjects) if row.get("label")]
 
         idx = self._find_record_index(active, category="household", subject="household", field="notes")
         payload["household_notes"] = _clean_text(active[idx].get("value", "")) if idx >= 0 else ""

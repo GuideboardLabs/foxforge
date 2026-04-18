@@ -114,9 +114,12 @@ const TOPIC_TYPES = [
 ];
 const LIFE_ADMIN_PROFILE_DETAIL_FIELDS = [
   ["full_name", "Full name"],
+  ["age", "Age"],
   ["gender", "Gender"],
   ["birthday", "Birthday"],
   ["location", "Location"],
+  ["ancestry", "Ancestry"],
+  ["health", "Health"],
   ["work", "Work"],
   ["likes", "Likes"],
   ["dislikes", "Dislikes"],
@@ -144,14 +147,6 @@ const LIFE_ADMIN_PET_DETAIL_FIELDS = [
   ["vet", "Vet"],
   ["microchip", "Microchip"],
   ["behavior_notes", "Behavior"],
-];
-const LIFE_ADMIN_REMINDER_DETAIL_FIELDS = [
-  ["person", "Person"],
-  ["start_date", "Start"],
-  ["end_date", "End"],
-  ["location", "Location"],
-  ["channel", "Channel"],
-  ["priority", "Priority"],
 ];
 const MAKE_TARGETS = [
   { value: "auto",         label: "Auto" },
@@ -323,9 +318,12 @@ function blankLifeAdminProfileForm() {
   return {
     preferred_name: "",
     full_name: "",
+    age: "",
     gender: "",
     birthday: "",
     location: "",
+    ancestry: "",
+    health: "",
     work: "",
     likes: "",
     dislikes: "",
@@ -365,21 +363,6 @@ function blankLifeAdminPetForm() {
     vet: "",
     microchip: "",
     behavior_notes: "",
-  };
-}
-
-function blankLifeAdminReminderForm() {
-  return {
-    label: "",
-    frequency: "",
-    time: "",
-    notes: "",
-    person: "",
-    start_date: "",
-    end_date: "",
-    location: "",
-    channel: "",
-    priority: "",
   };
 }
 
@@ -1032,6 +1015,11 @@ const app = window.Vue.createApp({
   data() {
     return {
       conversations: [],
+      sidebarProjectRows: [],
+      sidebarTopicRows: [],
+      sidebarProjectsLoading: false,
+      sidebarProjectsFetchedAt: 0,
+      sidebarProjectsError: "",
       activeConversationId: null,
       activeConversation: null,
       activeProject: "general",
@@ -1070,6 +1058,8 @@ const app = window.Vue.createApp({
       fontConfigError: "",
       topicTypeOptions: TOPIC_TYPES,
       draft: "",
+      conversationDrafts: {},
+      conversationComposerState: {},
       composerImages: [],
       composerAddMenuOpen: false,
       composerImageStyle: "realistic",
@@ -1133,6 +1123,8 @@ const app = window.Vue.createApp({
       sendingJobStage: {},
       assistantTypingByMessage: {},
       quickActionBusy: {},
+      completedQuickActions: {},
+      forageCardSavedState: {},
       completedWaypointActions: {},
       chatMenuOpen: false,
       sidebarOpen: false,
@@ -1156,6 +1148,8 @@ const app = window.Vue.createApp({
         foraging_paused: false,
         foraging_active_jobs: 0,
         foraging_yielding: false,
+        building_paused: false,
+        building_active_jobs: 0,
         briefings_unread: 0,
         action_proposals_pending: 0,
         watchtower_active: 0,
@@ -1163,27 +1157,28 @@ const app = window.Vue.createApp({
         library_items_total: 0,
         library_items_pending: 0,
       },
+      makeType: localStorage.getItem("foxforge_make_type") || "",
+      makeTypeModalOpen: false,
+      makeTypeCatalog: [],
       watchtowerForm: { topic: "", profile: "general", schedule: "daily", schedule_hour: 7 },
       briefingsFilter: { mode: "unread", search: "" },
       lifeAdminForms: {
         profile: blankLifeAdminProfileForm(),
         family: blankLifeAdminFamilyForm(),
         pet: blankLifeAdminPetForm(),
-        reminder: blankLifeAdminReminderForm(),
         notes: "",
       },
       lifeAdminState: {
         profileDetailsOpen: false,
         familyDetailsOpen: false,
         petDetailsOpen: false,
-        reminderDetailsOpen: false,
         familyEditingKey: "",
         petEditingKey: "",
-        reminderEditingKey: "",
         memoryFilter: "all",
       },
       actionProposals: [],
       jobWebStack: {},
+      pendingLiveSources: {},
       sourceExpandedMsgs: {},
       lessonsUnreadCount: 0,
       lessonsReadIds: {},
@@ -1218,6 +1213,7 @@ const app = window.Vue.createApp({
       contentTreeExpanded: {},
       _contentTreeProject: "",
       lessonsSortBy: "newest",
+      lessonsViewMode: "current",
       panelLoading: false,
       projectDetail: null,
       projectPipeline: {
@@ -1317,11 +1313,27 @@ const app = window.Vue.createApp({
         description: "",
       },
       projectPickerError: "",
+      projectBranchModalOpen: false,
+      projectBranchSubmitting: false,
+      projectBranchSearch: "",
+      projectBranchError: "",
+      projectBranchForm: {
+        project: "",
+        description: "",
+        mode: "clone",
+        copy_project_data: false,
+      },
       projectTargetModalOpen: false,
       projectTargetSubmitting: false,
       projectTargetError: "",
       projectTargetForm: {
         target: "auto",
+      },
+      projectTopicTypeModalOpen: false,
+      projectTopicTypeSubmitting: false,
+      projectTopicTypeError: "",
+      projectTopicTypeForm: {
+        topic_type: "general",
       },
       waypointMemberEditorForm: blankWaypointMemberEditorForm("#4285f4"),
       familyProfileModalOpen: false,
@@ -1365,15 +1377,6 @@ const app = window.Vue.createApp({
         color: "#4285f4",
         pin: "",
         pin_confirm: "",
-      },
-      taskReminderOpen: false,
-      taskReminderSubmitting: false,
-      taskReminderDialog: {
-        taskId: "",
-        taskTitle: "",
-        date: "",
-        time: "",
-        sliderMinutes: 0,
       },
       waypointDayPanelExpanded: true,
       waypointTaskForm: {
@@ -1635,32 +1638,22 @@ const app = window.Vue.createApp({
     },
     activeConversationThinkingPhrase() {
       const phrases = [
-        'Thinking…',
-        'Considering…',
-        'Spelinking…',
-        'Reflecting…',
-        'Weighing options…',
-        'Consulting the latent space…',
-        'Drafting a response…',
-        'Thinking…',
-        'Almost ready…',
-        'Putting it together…',
+        'Working on it.',
+        'Thinking.',
+        'One sec.',
+        'Still here.',
       ];
-      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 4000) % phrases.length;
       return phrases[idx];
     },
     activeConversationForagingPhrase() {
       const phrases = [
-        'Spinning up agents…',
-        'Dispatching researchers…',
-        'Crawling sources…',
-        'Reading the web…',
-        'Cross-referencing…',
-        'Sifting results…',
-        'Synthesizing findings…',
-        'Compiling report…',
+        'Waking up the council.',
+        'Deploying tiny robots.',
+        'Loading the van.',
+        'Calling in favors.',
       ];
-      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 3000) % phrases.length;
+      const idx = Math.floor((this.thinkingNowTs || Date.now()) / 4000) % phrases.length;
       return phrases[idx];
     },
     activeConversationElapsedSec() {
@@ -1698,6 +1691,10 @@ const app = window.Vue.createApp({
       return Array.isArray(this.panelData) && this.panelData.length ? (this.panelData[0] || {}) : {};
     },
     secondBrainContext() {
+      if (this.panelKey === "life-admin") {
+        const brain = this.lifeAdminContext?.second_brain;
+        return brain && typeof brain === "object" ? brain : {};
+      }
       return Array.isArray(this.panelData) && this.panelData.length ? (this.panelData[0] || {}) : {};
     },
     secondBrainSourceRows() {
@@ -1886,6 +1883,7 @@ const app = window.Vue.createApp({
       const values = [
         this.panelStatus?.pending_actions,
         this.panelStatus?.foraging_active_jobs,
+        this.panelStatus?.building_active_jobs,
         this.reflectionsUnreadCount,
         this.lessonsUnreadCount,
         this.panelStatus?.library_items_pending,
@@ -1903,7 +1901,6 @@ const app = window.Vue.createApp({
         this.mdOverlayOpen ||
         this.actionsOverlayOpen ||
         this.panelOverlayOpen ||
-        this.taskReminderOpen ||
         this.imageToolStyleModalOpen ||
         this.imageToolPromptModalOpen ||
         this.waypointTaskModalOpen ||
@@ -1911,7 +1908,9 @@ const app = window.Vue.createApp({
         this.waypointShoppingModalOpen ||
         this.waypointContactModalOpen ||
         this.projectPickerOpen ||
+        this.projectBranchModalOpen ||
         this.projectTargetModalOpen ||
+        this.projectTopicTypeModalOpen ||
         this.libraryIntakeOpen ||
         this.topicPickerOpen ||
         this.familyProfileModalOpen ||
@@ -1919,7 +1918,8 @@ const app = window.Vue.createApp({
         this.webPushModalOpen ||
         this.emailSettingsModalOpen ||
         this.botSettingsModalOpen ||
-        this.resetModalOpen
+        this.resetModalOpen ||
+        this.makeTypeModalOpen
       );
     },
     homeLastConversation() {
@@ -2033,6 +2033,14 @@ const app = window.Vue.createApp({
     projectBuildTargetLabel() {
       return this.projectTargetTitle(this.projectPipeline?.target);
     },
+    activeConversationProjectSlug() {
+      const activeProject = String(this.activeConversation?.project || "").trim();
+      return normalizeProjectSlug(activeProject || "general");
+    },
+    activeConversationIsProject() {
+      const activeId = String(this.activeConversationId || "").trim();
+      return Boolean(activeId) && this.activeConversationProjectSlug !== "general";
+    },
     projectBuildTargetOptions() {
       return MAKE_TARGETS;
     },
@@ -2065,6 +2073,191 @@ const app = window.Vue.createApp({
           String(t.name || "").toLowerCase().includes(q) ||
           String(t.type || "").toLowerCase().includes(q)
       );
+    },
+    sidebarTopicRowsEffective() {
+      const preferred = Array.isArray(this.sidebarTopicRows) ? this.sidebarTopicRows : [];
+      if (preferred.length) {
+        return preferred;
+      }
+      return Array.isArray(this.topicPickerRows) ? this.topicPickerRows : [];
+    },
+    sidebarProjectHierarchy() {
+      const projectRows = Array.isArray(this.sidebarProjectRows) ? this.sidebarProjectRows : [];
+      const topics = Array.isArray(this.sidebarTopicRowsEffective) ? this.sidebarTopicRowsEffective : [];
+      const conversations = Array.isArray(this.conversations) ? this.conversations : [];
+
+      const topicById = new Map();
+      const topicBySlug = new Map();
+      for (const topic of topics) {
+        const id = String(topic?.id || "").trim();
+        const slug = normalizeProjectSlug(topic?.slug || topic?.name || "");
+        if (id) {
+          topicById.set(id, topic);
+        }
+        if (slug) {
+          topicBySlug.set(slug, topic);
+        }
+      }
+
+      const chatCountByProject = new Map();
+      const recentConversationByProject = new Map();
+      const topicHintByProject = new Map();
+      for (const row of conversations) {
+        const slug = normalizeProjectSlug(row?.project || "general");
+        if (!slug || slug === "general") {
+          continue;
+        }
+        chatCountByProject.set(slug, Number(chatCountByProject.get(slug) || 0) + 1);
+        if (!recentConversationByProject.has(slug)) {
+          recentConversationByProject.set(slug, row);
+        }
+        const rawTopicId = String(row?.topic_id || "").trim();
+        if (rawTopicId && rawTopicId !== "general" && !topicHintByProject.has(slug)) {
+          topicHintByProject.set(slug, rawTopicId);
+        }
+      }
+
+      const projectMap = new Map();
+      for (const row of projectRows) {
+        const slug = normalizeProjectSlug(row?.project || "");
+        if (!slug || slug === "general") {
+          continue;
+        }
+        projectMap.set(slug, { ...row, project: slug });
+      }
+      for (const [slug, convo] of recentConversationByProject.entries()) {
+        if (projectMap.has(slug)) {
+          continue;
+        }
+        projectMap.set(slug, {
+          project: slug,
+          source: "conversation",
+          updated_at: String(convo?.updated_at || convo?.created_at || "").trim(),
+          research_summaries: 0,
+          implementation_specs: 0,
+          plan_docs: 0,
+          event_count: 0,
+          description: "",
+          mode: "discovery",
+          topic_type: "general",
+        });
+      }
+
+      const typeOrder = new Map((Array.isArray(this.topicTypeOptions) ? this.topicTypeOptions : TOPIC_TYPES).map((row, idx) => [String(row?.value || "").trim().toLowerCase(), idx]));
+      const rankType = (value) => {
+        const key = String(value || "general").trim().toLowerCase() || "general";
+        return typeOrder.has(key) ? Number(typeOrder.get(key)) : 10_000;
+      };
+      const parseTs = (value) => {
+        const ts = Date.parse(String(value || "").trim());
+        return Number.isFinite(ts) ? ts : 0;
+      };
+
+      const typeGroups = new Map();
+      for (const [slug, row] of projectMap.entries()) {
+        const hintedTopicId = String(topicHintByProject.get(slug) || "").trim();
+        const topic = (hintedTopicId ? topicById.get(hintedTopicId) : null) || topicBySlug.get(slug) || null;
+        const topicType = String(topic?.type || row?.topic_type || "general").trim().toLowerCase() || "general";
+        const topicId = String(topic?.id || "").trim();
+        const topicName = topic
+          ? String(topic.name || slug).trim()
+          : topicType === "general"
+            ? "General / Unassigned"
+            : `Unassigned ${this.topicTypeLabel(topicType)}`;
+        const topicKey = topicId || `unassigned_${topicType}`;
+        const chatCount = Number(chatCountByProject.get(slug) || 0);
+        const recentConversation = recentConversationByProject.get(slug) || null;
+        const projectItem = {
+          project: slug,
+          description: String(row?.description || "").trim(),
+          updated_at: String(row?.updated_at || "").trim(),
+          research_summaries: Number(row?.research_summaries || 0),
+          implementation_specs: Number(row?.implementation_specs || 0),
+          plan_docs: Number(row?.plan_docs || 0),
+          event_count: Number(row?.event_count || 0),
+          mode: String(row?.mode || "discovery").trim().toLowerCase() || "discovery",
+          topic_type: topicType,
+          topic_id: topicId,
+          topic_name: topicName,
+          chat_count: chatCount,
+          latest_conversation_id: String(recentConversation?.id || "").trim(),
+        };
+
+        let typeGroup = typeGroups.get(topicType);
+        if (!typeGroup) {
+          typeGroup = {
+            type: topicType,
+            type_label: this.topicTypeLabel(topicType),
+            topics_map: new Map(),
+          };
+          typeGroups.set(topicType, typeGroup);
+        }
+        let topicGroup = typeGroup.topics_map.get(topicKey);
+        if (!topicGroup) {
+          topicGroup = {
+            id: topicId || topicKey,
+            name: topicName,
+            is_unassigned: !topicId,
+            projects: [],
+          };
+          typeGroup.topics_map.set(topicKey, topicGroup);
+        }
+        topicGroup.projects.push(projectItem);
+      }
+
+      const groups = Array.from(typeGroups.values())
+        .map((group) => {
+          const topicsList = Array.from(group.topics_map.values())
+            .map((topicGroup) => {
+              topicGroup.projects.sort((a, b) => {
+                const tsDiff = parseTs(b.updated_at) - parseTs(a.updated_at);
+                if (tsDiff !== 0) {
+                  return tsDiff;
+                }
+                const chatsDiff = Number(b.chat_count || 0) - Number(a.chat_count || 0);
+                if (chatsDiff !== 0) {
+                  return chatsDiff;
+                }
+                return String(a.project || "").localeCompare(String(b.project || ""));
+              });
+              const projectCount = topicGroup.projects.length;
+              const chatCount = topicGroup.projects.reduce((sum, row) => sum + Number(row.chat_count || 0), 0);
+              return {
+                id: topicGroup.id,
+                name: topicGroup.name,
+                is_unassigned: topicGroup.is_unassigned,
+                project_count: projectCount,
+                chat_count: chatCount,
+                projects: topicGroup.projects,
+              };
+            })
+            .sort((a, b) => {
+              if (a.is_unassigned !== b.is_unassigned) {
+                return a.is_unassigned ? 1 : -1;
+              }
+              return String(a.name || "").localeCompare(String(b.name || ""));
+            });
+          const projectCount = topicsList.reduce((sum, item) => sum + Number(item.project_count || 0), 0);
+          const chatCount = topicsList.reduce((sum, item) => sum + Number(item.chat_count || 0), 0);
+          return {
+            type: group.type,
+            type_label: group.type_label,
+            project_count: projectCount,
+            chat_count: chatCount,
+            topics: topicsList,
+          };
+        })
+        .sort((a, b) => {
+          const rankDiff = rankType(a.type) - rankType(b.type);
+          if (rankDiff !== 0) {
+            return rankDiff;
+          }
+          return String(a.type_label || "").localeCompare(String(b.type_label || ""));
+        });
+      return groups;
+    },
+    sidebarProjectCount() {
+      return this.sidebarProjectHierarchy.reduce((sum, row) => sum + Number(row.project_count || 0), 0);
     },
     libraryPanelContext() {
       return this.panelData && typeof this.panelData === "object" && !Array.isArray(this.panelData)
@@ -2107,48 +2300,6 @@ const app = window.Vue.createApp({
           return false;
         }
         return true;
-      });
-    },
-    taskReminderPreviewDateLabel() {
-      const dateText = String(this.taskReminderDialog?.date || "").trim();
-      const timeText = normalizeTimeText(this.taskReminderDialog?.time || "");
-      if (!isIsoDate(dateText) || !timeText) {
-        return "Pick a day and time for this reminder.";
-      }
-      const base = parseDateKey(dateText);
-      if (!base) {
-        return "Pick a valid reminder date.";
-      }
-      const [hh, mm] = timeText.split(":").map((x) => Number(x));
-      const when = new Date(base.getFullYear(), base.getMonth(), base.getDate(), Number(hh || 0), Number(mm || 0), 0, 0);
-      if (Number.isNaN(when.getTime())) {
-        return "Pick a valid reminder time.";
-      }
-      return when.toLocaleDateString(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      });
-    },
-    taskReminderPreviewTimeLabel() {
-      const dateText = String(this.taskReminderDialog?.date || "").trim();
-      const timeText = normalizeTimeText(this.taskReminderDialog?.time || "");
-      if (!isIsoDate(dateText) || !timeText) {
-        return "--:--";
-      }
-      const base = parseDateKey(dateText);
-      if (!base) {
-        return "--:--";
-      }
-      const [hh, mm] = timeText.split(":").map((x) => Number(x));
-      const when = new Date(base.getFullYear(), base.getMonth(), base.getDate(), Number(hh || 0), Number(mm || 0), 0, 0);
-      if (Number.isNaN(when.getTime())) {
-        return "--:--";
-      }
-      return when.toLocaleTimeString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
       });
     },
     waypointSelectedDateLabel() {
@@ -2226,15 +2377,43 @@ const app = window.Vue.createApp({
         yielding ? "yes" : "no"
       }`;
     },
+    buildingStatusShort() {
+      if (this.panelStatus.building_paused) {
+        return "Building Paused";
+      }
+      const active = Number(this.panelStatus.building_active_jobs || 0);
+      if (active > 0) {
+        return `Building Active (${active})`;
+      }
+      return "Building Ready";
+    },
+    makeTypeCatalogCategories() {
+      const cats = [];
+      for (const entry of this.makeTypeCatalog) {
+        if (!cats.includes(entry.category)) cats.push(entry.category);
+      }
+      return cats;
+    },
+    makeTypeCatalogByCategory() {
+      const map = {};
+      for (const entry of this.makeTypeCatalog) {
+        if (!map[entry.category]) map[entry.category] = [];
+        map[entry.category].push(entry);
+      }
+      return map;
+    },
     panelTitle() {
       if (this.panelKey === "foraging") {
         return "Foraging Control";
+      }
+      if (this.panelKey === "building") {
+        return "Build Control";
       }
       if (this.panelKey === "reflections") {
         return "Reflection Moments";
       }
       if (this.panelKey === "lessons") {
-        return "Guideposts";
+        return "Guidance";
       }
       if (this.panelKey === "handoffs") {
         return "Handoffs";
@@ -2243,10 +2422,10 @@ const app = window.Vue.createApp({
         return "Outbox";
       }
       if (this.panelKey === "projects") {
-        return "Fieldbook";
+        return "Topics";
       }
       if (this.panelKey === "project_detail") {
-        return `Fieldbook Detail: ${this.activeProject}`;
+        return `Topic Detail: ${this.activeProject}`;
       }
       if (this.panelKey === "content") {
         return `Content: ${this.activeProject}`;
@@ -2264,16 +2443,13 @@ const app = window.Vue.createApp({
         return this.libraryDetailItem ? `Library: ${this.libraryDetailItem.title || this.libraryDetailItem.source_name}` : "Library Detail";
       }
       if (this.panelKey === "life-admin") {
-        return "Life Admin";
-      }
-      if (this.panelKey === "second-brain") {
-        return "Second Brain";
+        return "Personal Context";
       }
       if (this.panelKey === "topics") {
-        return "Fieldbook";
+        return "Topics";
       }
       if (this.panelKey === "topic_detail") {
-        return this.topicDetailData ? `Fieldbook: ${this.topicDetailData.name}` : "Fieldbook Detail";
+        return this.topicDetailData ? `Topic: ${this.topicDetailData.name}` : "Topic Detail";
       }
       if (this.panelKey === "system") {
         return "Settings";
@@ -2284,11 +2460,16 @@ const app = window.Vue.createApp({
       if (this.panelKey === "foraging") {
         return "Background Foraging jobs, progress checkpoints, and quick controls.";
       }
+      if (this.panelKey === "building") {
+        return "Active Build jobs, stage progress, and quick controls.";
+      }
       if (this.panelKey === "reflections") {
         return "Recent self-reflection blurbs with read/unread tracking.";
       }
       if (this.panelKey === "lessons") {
-        return "Learned guidance with confidence, status, and source context.";
+        return this.lessonsViewMode === "archive"
+          ? "Archived guidance that is already approved."
+          : "Current guidance that still needs review.";
       }
       if (this.panelKey === "handoffs") {
         return "Project handoff queue and ingest status.";
@@ -2297,10 +2478,10 @@ const app = window.Vue.createApp({
         return "Response files waiting for ingest or already processed.";
       }
       if (this.panelKey === "projects") {
-        return "Per-project Fieldbook progress, artifacts, and routed lanes.";
+        return "Per-project topic progress, artifacts, and routed lanes.";
       }
       if (this.panelKey === "project_detail") {
-        return "Project-scoped Fieldbook artifacts, recent events, and handoff tasks.";
+        return "Project-scoped topic artifacts, recent events, and handoff tasks.";
       }
       if (this.panelKey === "content") {
         return "Project file browser with collapsible folders and click-to-preview.";
@@ -2321,10 +2502,7 @@ const app = window.Vue.createApp({
         return "Saved research cards from completed Forage runs. Pin to keep.";
       }
       if (this.panelKey === "life-admin") {
-        return "Persistent household context injected into the personal assistant.";
-      }
-      if (this.panelKey === "second-brain") {
-        return "Memory dashboard, waypoint-linked context, fading facts, and the weekly household briefing.";
+        return "Editable personal context plus the memory dashboard Foxforge uses to ground chat.";
       }
       if (this.panelKey === "topics") {
         return "Research topics — artifact counts, last activity, and mode.";
@@ -2343,6 +2521,14 @@ const app = window.Vue.createApp({
         return rows;
       }
 
+      const viewMode = String(this.lessonsViewMode || "current").trim().toLowerCase();
+      const lessonRows = rows.filter((row) => {
+        const status = String(row?.status || "").trim().toLowerCase();
+        if (viewMode === "archive") {
+          return status === "approved";
+        }
+        return status !== "approved";
+      });
       const mode = String(this.lessonsSortBy || "newest").trim().toLowerCase();
       const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
       const rowTs = (row) => {
@@ -2361,18 +2547,21 @@ const app = window.Vue.createApp({
       const rowProject = (row) => String((row && row.project) || "").trim();
 
       if (mode === "name") {
-        rows.sort((a, b) => {
+        lessonRows.sort((a, b) => {
           const cmp = collator.compare(rowName(a), rowName(b));
           if (cmp !== 0) {
             return cmp;
           }
           return rowTs(b) - rowTs(a);
         });
-        return rows;
+        if (this.lessonsFilterByTopic && this.activeProject) {
+          return lessonRows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
+        }
+        return lessonRows;
       }
 
       if (mode === "project") {
-        rows.sort((a, b) => {
+        lessonRows.sort((a, b) => {
           const pcmp = collator.compare(rowProject(a), rowProject(b));
           if (pcmp !== 0) {
             return pcmp;
@@ -2383,21 +2572,27 @@ const app = window.Vue.createApp({
           }
           return rowTs(b) - rowTs(a);
         });
-        return rows;
+        if (this.lessonsFilterByTopic && this.activeProject) {
+          return lessonRows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
+        }
+        return lessonRows;
       }
 
       if (mode === "score") {
-        rows.sort((a, b) => {
+        lessonRows.sort((a, b) => {
           const diff = rowScore(b) - rowScore(a);
           if (diff !== 0) {
             return diff;
           }
           return rowTs(b) - rowTs(a);
         });
-        return rows;
+        if (this.lessonsFilterByTopic && this.activeProject) {
+          return lessonRows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
+        }
+        return lessonRows;
       }
 
-      rows.sort((a, b) => {
+      lessonRows.sort((a, b) => {
         const diff = rowTs(b) - rowTs(a);
         if (diff !== 0) {
           return diff;
@@ -2405,9 +2600,9 @@ const app = window.Vue.createApp({
         return rowScore(b) - rowScore(a);
       });
       if (this.lessonsFilterByTopic && this.activeProject) {
-        return rows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
+        return lessonRows.filter((r) => String(r.project || "").trim() === String(this.activeProject || "").trim());
       }
-      return rows;
+      return lessonRows;
     },
     waypointBuilderCommandOptions() {
       return [
@@ -2590,6 +2785,18 @@ const app = window.Vue.createApp({
     projectPickerFilteredRows() {
       const rows = Array.isArray(this.projectPickerRows) ? this.projectPickerRows : [];
       const query = String(this.projectPickerSearch || "").trim().toLowerCase();
+      if (!query) {
+        return rows;
+      }
+      return rows.filter((row) => {
+        const project = String(row?.project || "").trim().toLowerCase();
+        const description = String(row?.description || "").trim().toLowerCase();
+        return project.includes(query) || description.includes(query);
+      });
+    },
+    projectBranchFilteredRows() {
+      const rows = Array.isArray(this.projectPickerRows) ? this.projectPickerRows : [];
+      const query = String(this.projectBranchSearch || "").trim().toLowerCase();
       if (!query) {
         return rows;
       }
@@ -2845,6 +3052,136 @@ const app = window.Vue.createApp({
       }
     },
 
+    saveDraftForConversation(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const next = Object.assign({}, this.conversationDrafts || {});
+      const text = String(this.draft || "");
+      if (text.trim()) {
+        next[id] = text;
+      } else {
+        delete next[id];
+      }
+      this.conversationDrafts = next;
+    },
+
+    restoreDraftForConversation(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        this.draft = "";
+        return;
+      }
+      const saved = this.conversationDrafts && typeof this.conversationDrafts === "object"
+        ? this.conversationDrafts[id]
+        : "";
+      this.draft = String(saved || "");
+    },
+
+    clearDraftForConversation(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const next = Object.assign({}, this.conversationDrafts || {});
+      if (Object.prototype.hasOwnProperty.call(next, id)) {
+        delete next[id];
+        this.conversationDrafts = next;
+      }
+      if (String(this.activeConversationId || "").trim() === id) {
+        this.draft = "";
+      }
+    },
+
+    releaseComposerImagePreviews(rows, seen = null) {
+      const list = Array.isArray(rows) ? rows : [];
+      const visited = seen instanceof Set ? seen : new Set();
+      for (const row of list) {
+        const url = String(row?.previewUrl || "").trim();
+        if (!url || visited.has(url)) {
+          continue;
+        }
+        visited.add(url);
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_err) {}
+      }
+      return visited;
+    },
+
+    saveComposerStateForConversation(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const next = Object.assign({}, this.conversationComposerState || {});
+      const images = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      const replyTarget = this.replyTargetMsg && typeof this.replyTargetMsg === "object"
+        ? Object.assign({}, this.replyTargetMsg)
+        : null;
+      if (!images.length && !replyTarget) {
+        delete next[id];
+      } else {
+        next[id] = {
+          images,
+          replyTarget,
+        };
+      }
+      this.conversationComposerState = next;
+    },
+
+    restoreComposerStateForConversation(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        this.composerImages = [];
+        this.replyTargetMsg = null;
+        return;
+      }
+      const row = this.conversationComposerState && typeof this.conversationComposerState === "object"
+        ? this.conversationComposerState[id]
+        : null;
+      this.composerImages = Array.isArray(row?.images) ? row.images.slice() : [];
+      this.replyTargetMsg = row?.replyTarget && typeof row.replyTarget === "object"
+        ? Object.assign({}, row.replyTarget)
+        : null;
+    },
+
+    clearComposerStateForConversation(conversationId, options = {}) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const releaseAssets = options?.releaseAssets !== false;
+      const activeId = String(this.activeConversationId || "").trim();
+      const savedRow = this.conversationComposerState && typeof this.conversationComposerState === "object"
+        ? this.conversationComposerState[id]
+        : null;
+      const savedImages = Array.isArray(savedRow?.images) ? savedRow.images : [];
+      const activeImages = activeId === id && Array.isArray(this.composerImages) ? this.composerImages : [];
+      if (releaseAssets) {
+        const seen = this.releaseComposerImagePreviews(savedImages);
+        this.releaseComposerImagePreviews(activeImages, seen);
+      }
+      const next = Object.assign({}, this.conversationComposerState || {});
+      if (Object.prototype.hasOwnProperty.call(next, id)) {
+        delete next[id];
+        this.conversationComposerState = next;
+      }
+      if (activeId === id) {
+        this.composerImages = [];
+        this.replyTargetMsg = null;
+        const imageInput = this.$refs.imageInput;
+        if (imageInput) {
+          imageInput.value = "";
+        }
+        const fileInput = this.$refs.fileInput;
+        if (fileInput) {
+          fileInput.value = "";
+        }
+      }
+    },
+
     conversationSendingMeta(conversationId) {
       const id = String(conversationId || "").trim();
       if (!id) {
@@ -3018,8 +3355,10 @@ const app = window.Vue.createApp({
       next.push(item);
       this.setConversationQueue(conversationId, next);
       this.draft = "";
+      this.saveDraftForConversation(conversationId);
       this.composerImages = [];
       this.replyTargetMsg = null;
+      this.saveComposerStateForConversation(conversationId);
       this.composerAddMenuOpen = false;
       if (this.$refs.imageInput) {
         this.$refs.imageInput.value = "";
@@ -3074,6 +3413,8 @@ const app = window.Vue.createApp({
       this.replyTargetMsg = item?.replyTarget && typeof item.replyTarget === "object" ? Object.assign({}, item.replyTarget) : null;
       this.inputMode = String(item?.mode || "talk").trim() || "talk";
       this.composerAddMenuOpen = false;
+      this.saveDraftForConversation(conversationId);
+      this.saveComposerStateForConversation(conversationId);
       this.$nextTick(() => {
         this.resizeComposer();
         const node = this.$refs.composerInput;
@@ -3426,6 +3767,13 @@ const app = window.Vue.createApp({
       return status === "approved";
     },
 
+    toggleLessonsView() {
+      if (this.panelKey !== "lessons") {
+        return;
+      }
+      this.lessonsViewMode = this.lessonsViewMode === "archive" ? "current" : "archive";
+    },
+
     async applyLessonAction(row, action) {
       const id = String(row?.id || "").trim();
       const verb = String(action || "").trim().toLowerCase();
@@ -3481,12 +3829,16 @@ const app = window.Vue.createApp({
     updateBodyClasses() {
       const body = document.body;
       const mobile = this.isMobileLayout();
+      const standaloneMode = Boolean(
+        (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches)
+        || window.navigator.standalone
+      );
       body.classList.toggle("sidebar-open", mobile && this.sidebarOpen);
       body.classList.toggle("sidebar-collapsed", !mobile && this.sidebarCollapsed);
+      body.classList.toggle("standalone-mode", standaloneMode);
       body.classList.toggle("md-modal-open", this.mdOverlayOpen);
       body.classList.toggle("actions-modal-open", this.actionsOverlayOpen);
       body.classList.toggle("panel-modal-open", this.panelOverlayOpen);
-      body.classList.toggle("task-reminder-open", this.taskReminderOpen);
       body.classList.toggle(
         "family-modal-open",
         this.familyProfileModalOpen ||
@@ -3495,7 +3847,9 @@ const app = window.Vue.createApp({
           this.videoToolOpen ||
           this.webPushModalOpen ||
           this.projectPickerOpen ||
+          this.projectBranchModalOpen ||
           this.projectTargetModalOpen ||
+          this.projectTopicTypeModalOpen ||
           this.libraryIntakeOpen ||
           this.waypointMemberEditorOpen ||
           this.waypointTaskModalOpen ||
@@ -3521,6 +3875,10 @@ const app = window.Vue.createApp({
       this.updateBodyClasses();
     },
 
+    showWaypointRetiredNotice() {
+      window.alert("Waypoint has been retired from Foxforge.");
+    },
+
     goToLandingHome() {
       this.chatMenuOpen = false;
       this.actionsOverlayOpen = false;
@@ -3536,20 +3894,13 @@ const app = window.Vue.createApp({
 
     setActiveApp(appName) {
       const key = String(appName || "").trim().toLowerCase();
-      this.activeApp = key === "waypoint" ? "waypoint" : key === "home" ? "home" : "chat";
-      if (this.activeApp !== "waypoint") {
-        this.waypointBuilderOpen = false;
-        this.waypointChatExpanded = false;
-        this.closeWaypointEntryModals();
-      } else {
-        this.waypointChatExpanded = !this.isMobileLayout();
-      }
+      this.activeApp = key === "home" ? "home" : "chat";
+      this.waypointBuilderOpen = false;
+      this.waypointChatExpanded = false;
+      this.closeWaypointEntryModals();
       this.updateBodyClasses();
       this.$nextTick(() => {
-        if (this.activeApp === "waypoint") {
-          this.resizeWaypointComposer();
-          this.scrollWaypointMessages();
-        } else if (this.activeApp === "chat") {
+        if (this.activeApp === "chat") {
           this.resizeComposer();
           this.scrollMessages();
         }
@@ -3557,67 +3908,16 @@ const app = window.Vue.createApp({
     },
 
     async openWaypointApp(options = {}) {
-      this.chatMenuOpen = false;
-      this.actionsOverlayOpen = false;
-      this.panelOverlayOpen = false;
-      this.waypointTopTab = "calendar";
-      this.setActiveApp("waypoint");
-      this.waypointChatExpanded = !this.isMobileLayout();
-      if (this.isMobileLayout()) {
-        this.waypointChatExpanded = false;
-      }
-      if (this.isMobileLayout()) {
-        this.closeSidebar();
-      }
-      try {
-        await this.refreshWaypointState();
-      } catch (err) {
-        window.alert(`Waypoints load failed: ${String(err.message || err)}`);
-      }
-      const rawDateKey = String(options?.dateKey || "").trim();
-      const parsedDate = parseDateKey(rawDateKey);
-      if (parsedDate) {
-        this.waypointCalendarDate = startOfLocalDay(parsedDate);
-        this.waypointSelectedDateKey = toDateKey(parsedDate);
-        this.waypointEventForm.date = this.waypointSelectedDateKey;
-      } else {
-        this.waypointCalendarDate = startOfLocalDay(new Date());
-        this.waypointSelectedDateKey = toDateKey(this.waypointCalendarDate);
-      }
-      const requestedView = String(options?.calendarView || "").trim().toLowerCase();
-      if (requestedView) {
-        this.setWaypointCalendarView(requestedView);
-      } else {
-        this.renderWaypointCalendar(this.waypointCalendarEntries());
-      }
-      this.$nextTick(() => {
-        if (options?.focusComposer === false) {
-          return;
-        }
-        if (this.isMobileLayout()) {
-          return;
-        }
-        const node = this.$refs.waypointInput;
-        if (node) {
-          node.focus();
-        }
-      });
+      this.setActiveApp("chat");
+      this.showWaypointRetiredNotice();
     },
 
     async openWaypointMonthFromHome() {
-      await this.openWaypointApp({
-        dateKey: this.homeTodayDateKey,
-        calendarView: "month",
-        focusComposer: false,
-      });
+      this.showWaypointRetiredNotice();
     },
 
     async openWaypointDayFromHome() {
-      await this.openWaypointApp({
-        dateKey: this.homeTodayDateKey,
-        calendarView: "day",
-        focusComposer: false,
-      });
+      this.showWaypointRetiredNotice();
     },
 
     focusWaypointCaptureField(kind) {
@@ -3637,47 +3937,19 @@ const app = window.Vue.createApp({
     },
 
     openWaypointCapturePanel(kind, dateKey = "") {
-      const selected = isIsoDate(String(dateKey || "").trim())
-        ? String(dateKey).trim()
-        : isIsoDate(String(this.waypointSelectedDateKey || "").trim())
-          ? String(this.waypointSelectedDateKey || "").trim()
-          : toDateKey(startOfLocalDay(new Date()));
-      if (kind === "event") {
-        this.openWaypointEventModal(selected);
-      } else if (kind === "task") {
-        this.openWaypointTaskModal({ dueDate: selected });
-      } else if (kind === "shopping") {
-        this.openWaypointShoppingModal("food");
-      } else if (kind === "contact") {
-        this.openWaypointContactModal();
-      }
+      this.showWaypointRetiredNotice();
     },
 
     async openWaypointAddEventFromHome() {
-      await this.openWaypointApp({
-        dateKey: this.homeTodayDateKey,
-        calendarView: "day",
-        focusComposer: false,
-      });
-      this.openWaypointEventModal(this.homeTodayDateKey);
+      this.showWaypointRetiredNotice();
     },
 
     async openWaypointAddTaskFromHome() {
-      await this.openWaypointApp({
-        dateKey: this.homeTodayDateKey,
-        calendarView: "day",
-        focusComposer: false,
-      });
-      this.openWaypointTaskModal({ dueDate: this.homeTodayDateKey });
+      this.showWaypointRetiredNotice();
     },
 
     async openWaypointAddShoppingFromHome() {
-      await this.openWaypointApp({
-        dateKey: this.homeTodayDateKey,
-        calendarView: "day",
-        focusComposer: false,
-      });
-      this.openWaypointShoppingModal("food");
+      this.showWaypointRetiredNotice();
     },
 
     async openLastConversationFromHome() {
@@ -4158,6 +4430,111 @@ const app = window.Vue.createApp({
       this.refreshProjectPipeline().catch(() => {});
     },
 
+    async refreshSidebarProjectLane() {
+      if (this.sidebarProjectsLoading) {
+        return;
+      }
+      this.sidebarProjectsLoading = true;
+      this.sidebarProjectsError = "";
+      try {
+        const [projectsPayload, topicsPayload] = await Promise.all([
+          this.apiGet("/api/panel/projects?limit=200"),
+          this.apiGet("/api/topics"),
+        ]);
+        this.sidebarProjectRows = Array.isArray(projectsPayload?.projects) ? projectsPayload.projects : [];
+        this.sidebarTopicRows = Array.isArray(topicsPayload?.topics) ? topicsPayload.topics : [];
+        this.sidebarProjectsFetchedAt = Date.now();
+      } catch (err) {
+        this.sidebarProjectsError = String(err?.message || err);
+        this.sidebarProjectRows = [];
+        this.sidebarTopicRows = [];
+      } finally {
+        this.sidebarProjectsLoading = false;
+      }
+    },
+
+    async ensureSidebarProjectLaneFresh(options = {}) {
+      const force = Boolean(options?.force);
+      const staleMs = Number(options?.staleMs || 45_000);
+      if (this.sidebarProjectsLoading) {
+        return;
+      }
+      const fetchedAt = Number(this.sidebarProjectsFetchedAt || 0);
+      if (!force && fetchedAt > 0 && Date.now() - fetchedAt < staleMs) {
+        return;
+      }
+      await this.refreshSidebarProjectLane();
+    },
+
+    preferredTopicIdForProject(projectSlug) {
+      const slug = normalizeProjectSlug(projectSlug || "");
+      if (!slug || slug === "general") {
+        return "";
+      }
+      const rows = Array.isArray(this.conversations) ? this.conversations : [];
+      for (const row of rows) {
+        if (normalizeProjectSlug(row?.project || "") !== slug) {
+          continue;
+        }
+        const topicId = String(row?.topic_id || "").trim();
+        if (topicId && topicId !== "general") {
+          return topicId;
+        }
+      }
+      return "";
+    },
+
+    latestConversationForProject(projectSlug) {
+      const slug = normalizeProjectSlug(projectSlug || "");
+      if (!slug) {
+        return null;
+      }
+      const rows = Array.isArray(this.conversations) ? this.conversations : [];
+      for (const row of rows) {
+        if (normalizeProjectSlug(row?.project || "") === slug) {
+          return row;
+        }
+      }
+      return null;
+    },
+
+    async openProjectWorkspace(projectSlug) {
+      const slug = normalizeProjectSlug(projectSlug || "general");
+      if (!slug || slug === "general") {
+        return;
+      }
+      this.setActiveProject(slug);
+      const existing = this.latestConversationForProject(slug);
+      if (existing?.id) {
+        await this.openConversation(existing.id, { activateApp: true });
+        return;
+      }
+      const topicId = this.preferredTopicIdForProject(slug);
+      await this.createConversation("project", {
+        project: slug,
+        topicId: topicId || undefined,
+        activateApp: true,
+      });
+    },
+
+    async openProjectDetailFromSidebar(projectSlug) {
+      const slug = normalizeProjectSlug(projectSlug || "general");
+      if (!slug || slug === "general") {
+        return;
+      }
+      this.setActiveProject(slug);
+      await this.openSystemPanel("project_detail");
+    },
+
+    async openProjectContentFromSidebar(projectSlug) {
+      const slug = normalizeProjectSlug(projectSlug || "general");
+      if (!slug || slug === "general") {
+        return;
+      }
+      this.setActiveProject(slug);
+      await this.openSystemPanel("content");
+    },
+
     projectModeTitle(mode) {
       const key = String(mode || "").trim().toLowerCase();
       const row = PROJECT_PIPELINE_MODES.find((x) => x.value === key);
@@ -4168,6 +4545,25 @@ const app = window.Vue.createApp({
       const key = String(type || "").trim().toLowerCase();
       const row = TOPIC_TYPES.find((x) => x.value === key);
       return row ? row.label : "General";
+    },
+
+    conversationTopicType(conversation) {
+      const topicId = String(conversation?.topic_id || "").trim();
+      if (topicId && topicId !== "general") {
+        const topic = (Array.isArray(this.sidebarTopicRowsEffective) ? this.sidebarTopicRowsEffective : []).find(
+          (row) => String(row?.id || "").trim() === topicId
+        );
+        const type = String(topic?.type || "").trim().toLowerCase();
+        if (type) {
+          return type;
+        }
+      }
+      return "general";
+    },
+
+    conversationProjectTagText(conversation) {
+      const text = String(conversation?.path || conversation?.project || "").trim();
+      return text || "general";
     },
 
     projectTargetTitle(target) {
@@ -4235,6 +4631,55 @@ const app = window.Vue.createApp({
 
     async setProjectBuildTarget() {
       this.openProjectBuildTargetModal();
+    },
+
+    openProjectTopicTypeModal() {
+      this.chatMenuOpen = false;
+      this.projectTopicTypeError = "";
+      this.projectTopicTypeSubmitting = false;
+      this.projectTopicTypeForm = {
+        topic_type: String(this.projectPipeline?.topic_type || "general").trim().toLowerCase() || "general",
+      };
+      this.projectTopicTypeModalOpen = true;
+      this.updateBodyClasses();
+      this.$nextTick(() => {
+        const node = this.$refs.projectTopicTypeSelect;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    closeProjectTopicTypeModal() {
+      this.projectTopicTypeModalOpen = false;
+      this.projectTopicTypeSubmitting = false;
+      this.projectTopicTypeError = "";
+      this.updateBodyClasses();
+    },
+
+    async submitProjectTopicTypeModal() {
+      const topicType = String(this.projectTopicTypeForm?.topic_type || "general").trim().toLowerCase() || "general";
+      const project = normalizeProjectSlug(this.activeProject);
+      try {
+        this.projectTopicTypeSubmitting = true;
+        this.projectTopicTypeError = "";
+        const payload = await this.apiPost(`/api/projects/${encodeURIComponent(project)}/mode`, {
+          topic_type: topicType,
+        });
+        this.projectPipeline = {
+          project,
+          mode: String(payload?.mode || "discovery").trim().toLowerCase() || "discovery",
+          target: String(payload?.target || "auto").trim().toLowerCase() || "auto",
+          topic_type: String(payload?.topic_type || topicType).trim().toLowerCase() || "general",
+          updated_at: String(payload?.updated_at || "").trim(),
+        };
+        await this.refreshSystemPanel();
+        this.closeProjectTopicTypeModal();
+      } catch (err) {
+        this.projectTopicTypeError = String(err.message || err);
+      } finally {
+        this.projectTopicTypeSubmitting = false;
+      }
     },
 
     openProjectBuildTargetModal() {
@@ -4371,6 +4816,7 @@ const app = window.Vue.createApp({
           updated_at: String(payload?.updated_at || "").trim(),
         };
         this.activeTopicId = topicId;
+        await this.ensureSidebarProjectLaneFresh({ force: true });
       } catch (err) {
         window.alert(`Set topic failed: ${String(err.message || err)}`);
       }
@@ -4400,6 +4846,7 @@ const app = window.Vue.createApp({
         });
         this.topicForm = { name: "", type: "", description: "", seed_question: "", parent_id: "" };
         await this.refreshSystemPanel();
+        await this.ensureSidebarProjectLaneFresh({ force: true });
       } catch (err) {
         window.alert(`Create topic failed: ${String(err.message || err)}`);
       }
@@ -4410,6 +4857,7 @@ const app = window.Vue.createApp({
       try {
         await this.apiDelete(`/api/topics/${encodeURIComponent(topicId)}`);
         await this.refreshSystemPanel();
+        await this.ensureSidebarProjectLaneFresh({ force: true });
       } catch (err) {
         window.alert(`Delete topic failed: ${String(err.message || err)}`);
       }
@@ -5542,6 +5990,7 @@ const app = window.Vue.createApp({
         });
       }
       this.composerImages = current;
+      this.saveComposerStateForConversation(this.activeConversationId);
       if (input) {
         input.value = "";
       }
@@ -5560,6 +6009,7 @@ const app = window.Vue.createApp({
         next.push(row);
       }
       this.composerImages = next;
+      this.saveComposerStateForConversation(this.activeConversationId);
     },
 
     clearComposerImages() {
@@ -5578,6 +6028,7 @@ const app = window.Vue.createApp({
       if (fileInput) {
         fileInput.value = "";
       }
+      this.saveComposerStateForConversation(this.activeConversationId);
     },
 
     initVoice() {
@@ -5649,16 +6100,28 @@ const app = window.Vue.createApp({
       const actions = [];
 
       for (const id of targets.reflectionIds) {
-        actions.push({
+        const action = {
           kind: "reflection_answer",
           id,
           label: `✓ Answer ${id.slice(0, 8)}`,
           style: "accent",
-        });
+        };
+        if (this.isQuickActionCompleted(action)) {
+          action.label = "Answered";
+          action.style = "subtle";
+          action.completed = true;
+        }
+        actions.push(action);
       }
 
       for (const id of targets.pendingIds) {
-        actions.push({ kind: "pending_answer", id, label: "Answer", icon: "check", style: "ok" });
+        const answerAction = { kind: "pending_answer", id, label: "Answer", icon: "check", style: "ok" };
+        if (this.isQuickActionCompleted(answerAction)) {
+          answerAction.label = "Answered";
+          answerAction.style = "subtle";
+          answerAction.completed = true;
+        }
+        actions.push(answerAction);
         actions.push({ kind: "pending_ignore", id, label: "Ignore", icon: "x", style: "subtle" });
       }
 
@@ -5673,7 +6136,14 @@ const app = window.Vue.createApp({
       if (Boolean(msg?.foraging)) {
         const cardId = String(msg?.request_id || msg?.id || "").trim();
         if (cardId) {
-          actions.push({ kind: "save_forage_card", id: cardId, label: "Save Research", icon: "pin", style: "accent" });
+          const saved = this.isForageCardSaved(cardId);
+          actions.push({
+            kind: "save_forage_card",
+            id: cardId,
+            label: saved ? "Unsave Research" : "Save Research",
+            icon: "pin",
+            style: saved ? "subtle" : "accent",
+          });
         }
       }
 
@@ -5686,6 +6156,59 @@ const app = window.Vue.createApp({
       const kind = String(action?.kind || "action");
       const id = String(action?.id || "");
       return `${msgKey}:${kind}:${id}`;
+    },
+
+    quickActionCompletionKey(action) {
+      const kind = String(action?.kind || "").trim().toLowerCase();
+      const id = String(action?.id || "").trim();
+      if (!kind || !id) {
+        return "";
+      }
+      return `${kind}:${id}`;
+    },
+
+    isQuickActionCompleted(action) {
+      const key = this.quickActionCompletionKey(action);
+      if (!key) {
+        return false;
+      }
+      return Boolean(this.completedQuickActions?.[key]);
+    },
+
+    setQuickActionCompleted(action, completed = true) {
+      const key = this.quickActionCompletionKey(action);
+      if (!key) {
+        return;
+      }
+      const next = Object.assign({}, this.completedQuickActions || {});
+      if (completed) {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      this.completedQuickActions = next;
+    },
+
+    isForageCardSaved(cardId) {
+      const key = String(cardId || "").trim();
+      if (!key) {
+        return false;
+      }
+      return Boolean(this.forageCardSavedState?.[key]);
+    },
+
+    setForageCardSaved(cardId, saved = true) {
+      const key = String(cardId || "").trim();
+      if (!key) {
+        return;
+      }
+      const next = Object.assign({}, this.forageCardSavedState || {});
+      if (saved) {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      this.forageCardSavedState = next;
     },
 
     isMessageActionBusy(msg, action) {
@@ -5712,6 +6235,7 @@ const app = window.Vue.createApp({
         role: msg?.role || "assistant",
         excerpt,
       };
+      this.saveComposerStateForConversation(this.activeConversationId);
       this.$nextTick(() => {
         this.resizeComposer();
         const node = this.$refs.composerInput;
@@ -5721,6 +6245,7 @@ const app = window.Vue.createApp({
 
     cancelReply() {
       this.replyTargetMsg = null;
+      this.saveComposerStateForConversation(this.activeConversationId);
     },
 
     async runAssistantAction(msg, action) {
@@ -5750,15 +6275,29 @@ const app = window.Vue.createApp({
 
       if (action.kind === "save_forage_card") {
         const cardId = String(action.id || "").trim();
-        if (cardId) {
-          await this.apiPost(`/api/forage-cards/${encodeURIComponent(cardId)}/pin`, {});
+        if (!cardId || this.isMessageActionBusy(msg, action)) {
+          return;
+        }
+        this.setMessageActionBusy(msg, action, true);
+        try {
+          const payload = await this.apiPost(`/api/forage-cards/${encodeURIComponent(cardId)}/pin`, {});
+          const pinned = Number(payload?.card?.is_pinned || 0) > 0;
+          this.setForageCardSaved(cardId, pinned);
           await this.refreshPanelBadges();
+        } catch (err) {
+          window.alert(`Quick action failed: ${String(err.message || err)}`);
+        } finally {
+          this.setMessageActionBusy(msg, action, false);
         }
         return;
       }
 
       if (action.kind === "add_task" || action.kind === "add_event" || action.kind === "add_shopping" || action.kind === "add_routine") {
         throw new Error("Waypoint lane is not available in this Foxforge build.");
+      }
+
+      if (action.completed || this.isQuickActionCompleted(action)) {
+        return;
       }
 
       if (this.isMessageActionBusy(msg, action)) {
@@ -5777,6 +6316,7 @@ const app = window.Vue.createApp({
           const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(action.id)}/answer`, {
             answer,
           });
+          this.setQuickActionCompleted(action, true);
           if (this.actionsOverlayOpen) {
             await this.refreshPendingActions();
           }
@@ -5793,6 +6333,7 @@ const app = window.Vue.createApp({
           const payload = await this.apiPost(`/api/pending-actions/${encodeURIComponent(action.id)}/answer`, {
             answer,
           });
+          this.setQuickActionCompleted(action, true);
           if (this.actionsOverlayOpen) {
             await this.refreshPendingActions();
           }
@@ -6550,13 +7091,32 @@ const app = window.Vue.createApp({
       return detail || fallback;
     },
 
-    async apiRequest(method, path, data = null) {
+    async apiRequest(method, path, data = null, requestOptions = null) {
+      const timeoutMs = Number(requestOptions && requestOptions.timeoutMs || 0);
+      const controller = timeoutMs > 0 ? new AbortController() : null;
+      let timeoutId = null;
       const options = { method };
       if (data !== null) {
         options.headers = { "Content-Type": "application/json" };
         options.body = JSON.stringify(data || {});
       }
-      const response = await fetch(path, options);
+      if (controller) {
+        options.signal = controller.signal;
+        timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      }
+      let response = null;
+      try {
+        response = await fetch(path, options);
+      } catch (err) {
+        if (err && String(err.name || "").trim() === "AbortError" && timeoutMs > 0) {
+          throw new Error(`${method} ${path} timed out (${timeoutMs}ms)`);
+        }
+        throw err;
+      } finally {
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+        }
+      }
       if (response.status === 401) {
         this.auth.authenticated = false;
         this.auth.profile = null;
@@ -6600,7 +7160,7 @@ const app = window.Vue.createApp({
       const deadline = Date.now() + maxWaitMs;
       while (Date.now() < deadline) {
         try {
-          const jobPayload = await this.apiGet(`/api/jobs/${encodeURIComponent(rid)}`);
+          const jobPayload = await this.apiGet(`/api/jobs/${encodeURIComponent(rid)}`, { timeoutMs: 4500 });
           if (jobPayload && jobPayload.job && String(jobPayload.job.conversation_id || "").trim() !== convoId) {
             return false;
           }
@@ -6608,6 +7168,11 @@ const app = window.Vue.createApp({
             const job = jobPayload.job;
             if (job.web_stack && Object.keys(job.web_stack).length > 0) {
               this.jobWebStack[rid] = job.web_stack;
+            }
+            if (Array.isArray(job.live_sources) && job.live_sources.length > 0) {
+              const next = Object.assign({}, this.pendingLiveSources);
+              next[convoId] = job.live_sources;
+              this.pendingLiveSources = next;
             }
             const nextStage = Object.assign({}, this.sendingJobStage);
             nextStage[convoId] = { stage: job.stage || "", label: this._humanizeJobStage(job) };
@@ -6617,13 +7182,19 @@ const app = window.Vue.createApp({
           // If job lookup fails, continue; request might still have completed and been persisted.
         }
         try {
-          const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(convoId)}`);
+          const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(convoId)}`, { timeoutMs: 4500 });
           const convo = payload && payload.conversation ? payload.conversation : null;
           if (convo && Array.isArray(convo.messages)) {
             const hasAssistantReply = convo.messages.some(
               (row) => String(row?.role || "").trim().toLowerCase() === "assistant" && String(row?.request_id || "").trim() === rid
             );
               if (hasAssistantReply) {
+                // Clear live source bubbles now that the reply has arrived
+                if (this.pendingLiveSources[convoId]) {
+                  const next = Object.assign({}, this.pendingLiveSources);
+                  delete next[convoId];
+                  this.pendingLiveSources = next;
+                }
                 if (String(this.activeConversationId || "").trim() === convoId) {
                   this.activeConversation = convo;
                   this.activeConversationId = convo.id;
@@ -6650,35 +7221,82 @@ const app = window.Vue.createApp({
     _humanizeJobStage(job) {
       const stage = String(job?.stage || "").trim().toLowerCase();
       const tracker = job?.agent_tracker;
-      if (!stage || stage === "queued") return "Queued…";
-      if (stage === "foraging_run" || stage === "research_pool_started") return "Starting research…";
+      if (!stage || stage === "queued") return "Queued.";
+
+      // Talk-mode stages
+      if (stage === "message_received") return "Got it.";
+      if (stage === "orchestrator_ready") return "Routing.";
+      if (stage === "attachment_analysis") return "Reading your files.";
+      if (stage === "attachment_analysis_done") return "Files digested.";
+      if (stage === "image_gen_queued") return "Image queued.";
+      if (stage === "image_gen_done") return "Image ready.";
+      if (stage === "talk_mode") return "Drafting a reply.";
+      if (stage === "web_stack_ready") return "Web context ready.";
+      if (stage === "talk_mode_done") return "Finishing up.";
+      if (stage === "command_mode") return "Running command.";
+      if (stage === "command_mode_done") return "Done.";
+      if (stage === "pipeline_error") return "Hit a snag.";
+
+      // Foraging kick-off
+      if (stage === "foraging_started") return "Kicking off Foraging.";
+      if (stage === "foraging_yield_requested") return "Stepping back temporarily.";
+      if (stage === "foraging_run") return "Deploying the council.";
+      if (stage === "foraging_run_done") return "Wrapping up.";
+      if (stage === "foraging_paused") return "Paused.";
+
+      // Agent lifecycle — use real tracker data
+      if (stage === "research_pool_started") {
+        const total = Number(tracker?.total || 0);
+        const profile = String(tracker?.profile || "").trim().replace(/_/g, " ");
+        if (total && profile) return `${total} agents deployed — ${profile}.`;
+        if (total) return `${total} agents deployed.`;
+        return "Deploying agents.";
+      }
       if (stage === "research_agent_started") {
         const active = Array.isArray(tracker?.active) ? tracker.active : [];
-        if (active.length) {
-          const name = active.map(a => typeof a === "object" ? String(a.persona || "agent").replace(/_/g, " ") : String(a)).join(", ");
-          return `Researching: ${name}`;
-        }
-        return "Agents working…";
+        const done = Array.isArray(tracker?.done) ? tracker.done.length : 0;
+        const total = Number(tracker?.total || 0);
+        const names = active.slice(0, 2).map(a => {
+          const p = typeof a === "object" ? String(a?.persona || "") : String(a);
+          return p.replace(/_gap_fill$/, " (fill)").replace(/_/g, " ");
+        });
+        const progress = total ? ` — ${done}/${total} done` : "";
+        if (names.length === 1) return `${names[0]}: on it${progress}.`;
+        if (names.length >= 2) return `${names.join(" + ")}: on it${progress}.`;
+        return `Agents working${progress}.`;
       }
       if (stage === "research_agent_completed") {
         const done = Array.isArray(tracker?.done) ? tracker.done.length : 0;
         const total = Number(tracker?.total || 0);
-        return total ? `${done} / ${total} agents complete` : "Agents completing…";
+        const failed = Array.isArray(tracker?.done) ? tracker.done.filter(d => d?.failed).length : 0;
+        const failNote = failed ? ` (${failed} weak)` : "";
+        return total ? `${done}/${total} done${failNote}.` : "Agent done.";
       }
-      if (stage === "synthesizing" || stage === "synthesis") return "Synthesizing findings…";
-      if (stage === "tool_pool_started") return "Building tool…";
-      if (stage === "tool_agent_started") return "Running tool agent…";
-      if (stage === "cancel_requested") return "Cancelling…";
-      if (stage === "completed") return "Finishing up…";
-      return stage.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) + "…";
+      if (stage === "research_raw_written") return "Notes collected.";
+      if (stage === "research_summary_written") return "Synthesis written.";
+      if (stage === "research_cancel_requested") return "Cancelling agents.";
+      if (stage === "research_cancelled") return "Run cancelled.";
+
+      // Gap fill
+      if (stage === "gap_fill_started") return "Filling in the gaps.";
+      if (stage === "gap_fill_completed") return "Gap fill done.";
+
+      // Synthesis
+      if (stage === "synthesizing" || stage === "synthesis") return "Synthesizing.";
+
+      // Terminal states
+      if (stage === "cancel_requested" || stage === "cancel_acknowledged") return "Stopping.";
+      if (stage === "completed" || stage === "done") return "Done.";
+
+      return stage.replace(/_/g, " ") + ".";
     },
 
-    apiGet(path) {
-      return this.apiRequest("GET", path);
+    apiGet(path, requestOptions = null) {
+      return this.apiRequest("GET", path, null, requestOptions);
     },
 
-    apiPost(path, data) {
-      return this.apiRequest("POST", path, data);
+    apiPost(path, data, requestOptions = null) {
+      return this.apiRequest("POST", path, data, requestOptions);
     },
 
     async apiPostForm(path, formData) {
@@ -6694,21 +7312,24 @@ const app = window.Vue.createApp({
       return response.json();
     },
 
-    apiPatch(path, data) {
-      return this.apiRequest("PATCH", path, data);
+    apiPatch(path, data, requestOptions = null) {
+      return this.apiRequest("PATCH", path, data, requestOptions);
     },
 
-    apiPut(path, data) {
-      return this.apiRequest("PUT", path, data);
+    apiPut(path, data, requestOptions = null) {
+      return this.apiRequest("PUT", path, data, requestOptions);
     },
 
-    apiDelete(path) {
-      return this.apiRequest("DELETE", path);
+    apiDelete(path, requestOptions = null) {
+      return this.apiRequest("DELETE", path, null, requestOptions);
     },
 
     async refreshPanelBadges() {
+      const lastStatus = this.panelStatus ? { ...this.panelStatus } : null;
+      const lastLessonsUnread = Number(this.lessonsUnreadCount || 0);
+      const lastReflectionsUnread = Number(this.reflectionsUnreadCount || 0);
       try {
-        const payload = await this.apiGet("/api/panel/status");
+        const payload = await this.apiGet("/api/panel/status", { timeoutMs: 5000 });
         this.panelStatus = {
           pending_actions: Number(payload.pending_actions || 0),
           open_reflections: Number(payload.open_reflections || 0),
@@ -6724,6 +7345,8 @@ const app = window.Vue.createApp({
           foraging_paused: Boolean(payload.foraging_paused),
           foraging_active_jobs: Number(payload.foraging_active_jobs || 0),
           foraging_yielding: Boolean(payload.foraging_yielding),
+          building_paused: Boolean(payload.building_paused),
+          building_active_jobs: Number(payload.building_active_jobs || 0),
           briefings_unread: Number(payload.briefings_unread || 0),
           watchtower_active: Number(payload.watchtower_active || 0),
           topics_with_research: Number(payload.topics_with_research || 0),
@@ -6733,33 +7356,19 @@ const app = window.Vue.createApp({
         };
         await this.refreshLessonsUnreadCount();
         await this.refreshReflectionsUnreadCount();
-        if (Number.isFinite(Number(payload.waypoint_open_tasks))) {
-          this.waypoint.open_tasks_count = Number(payload.waypoint_open_tasks || 0);
+      } catch (err) {
+        // Keep last-known counters instead of clearing badges to zero during
+        // transient backend stalls/errors.
+        console.warn("refreshPanelBadges failed; preserving last known panel status:", err);
+        if (lastStatus) {
+          this.panelStatus = lastStatus;
         }
-      } catch (_err) {
-        this.panelStatus = {
-          pending_actions: 0,
-          open_reflections: 0,
-          learned_lessons: 0,
-          handoff_waiting_output: 0,
-          handoff_ready_for_ingest: 0,
-          pending_handoffs: 0,
-          active_projects: 0,
-          web_mode: "auto",
-          cloud_mode: "off",
-          external_tools_mode: "off",
-          open_external_requests: 0,
-          foraging_paused: false,
-          foraging_active_jobs: 0,
-          foraging_yielding: false,
-          briefings_unread: 0,
-          watchtower_active: 0,
-          topics_with_research: 0,
-          library_items_total: 0,
-          library_items_pending: 0,
-        };
-        this.lessonsUnreadCount = 0;
-        this.reflectionsUnreadCount = 0;
+        if (Number.isFinite(lastLessonsUnread)) {
+          this.lessonsUnreadCount = lastLessonsUnread;
+        }
+        if (Number.isFinite(lastReflectionsUnread)) {
+          this.reflectionsUnreadCount = lastReflectionsUnread;
+        }
       }
     },
 
@@ -6807,6 +7416,40 @@ const app = window.Vue.createApp({
       }
     },
 
+    async toggleBuildingPause() {
+      this.chatMenuOpen = false;
+      try {
+        const nextPaused = !Boolean(this.panelStatus.building_paused);
+        const payload = await this.apiPost("/api/settings/building", { paused: nextPaused });
+        this.panelStatus.building_paused = Boolean(payload.paused);
+        this.panelStatus.building_active_jobs = Number(payload.active_jobs || this.panelStatus.building_active_jobs || 0);
+        await this.refreshPanelBadges();
+      } catch (err) {
+        window.alert(`Could not update Building state: ${String(err.message || err)}`);
+      }
+    },
+
+    selectMakeType(typeId) {
+      this.makeType = String(typeId || "").trim();
+      localStorage.setItem("foxforge_make_type", this.makeType);
+      this.makeTypeModalOpen = false;
+    },
+
+    makeLabelForType(typeId) {
+      const entry = this.makeTypeCatalog.find(e => e.type_id === typeId);
+      return entry ? entry.label : String(typeId || "").replace(/_/g, " ");
+    },
+
+    async loadMakeTypeCatalog() {
+      if (this.makeTypeCatalog.length > 0) return;
+      try {
+        const payload = await this.apiGet("/api/make/catalog");
+        this.makeTypeCatalog = Array.isArray(payload.catalog) ? payload.catalog : [];
+      } catch (err) {
+        console.warn("Could not load Make type catalog:", err);
+      }
+    },
+
     closeActionsOverlay() {
       this.actionsOverlayOpen = false;
       this.updateBodyClasses();
@@ -6841,12 +7484,14 @@ const app = window.Vue.createApp({
       this.closeWebPushSettingsModal();
       this.closeEmailSettingsModal();
       this.closeProjectPickerModal();
+      this.closeProjectBranchModal();
       this.closeProjectBuildTargetModal();
       this.closeLibraryIntakeModal();
       this.closeWaypointMemberEditor();
       this.closeTopicPickerModal();
       this.closeResetModal();
       this.closeWaypointEntryModals();
+      this.makeTypeModalOpen = false;
     },
 
     isWorkspacePatchProposal(prop) {
@@ -6902,9 +7547,9 @@ const app = window.Vue.createApp({
     async refreshPendingActions() {
       this.pendingActionsLoading = true;
       try {
-        const payload = await this.apiGet("/api/pending-actions?limit=50");
+        const payload = await this.apiGet("/api/pending-actions?limit=50", { timeoutMs: 5000 });
         this.pendingActions = Array.isArray(payload.pending_actions) ? payload.pending_actions : [];
-        const apPayload = await this.apiGet("/api/action-proposals");
+        const apPayload = await this.apiGet("/api/action-proposals", { timeoutMs: 5000 });
         this.actionProposals = Array.isArray(apPayload.proposals) ? apPayload.proposals : [];
       } finally {
         this.pendingActionsLoading = false;
@@ -7089,13 +7734,12 @@ const app = window.Vue.createApp({
     },
 
     // ------------------------------------------------------------------
-    // Life Admin methods
+    // Personal context methods
     // ------------------------------------------------------------------
     lifeAdminDetailFieldDefs(section) {
       if (section === "profile") return LIFE_ADMIN_PROFILE_DETAIL_FIELDS;
       if (section === "family") return LIFE_ADMIN_FAMILY_DETAIL_FIELDS;
       if (section === "pet") return LIFE_ADMIN_PET_DETAIL_FIELDS;
-      if (section === "reminder") return LIFE_ADMIN_REMINDER_DETAIL_FIELDS;
       return [];
     },
     lifeAdminDetailItems(section, row) {
@@ -7133,11 +7777,6 @@ const app = window.Vue.createApp({
       this.lifeAdminState.petEditingKey = "";
       this.lifeAdminState.petDetailsOpen = false;
     },
-    resetReminderForm() {
-      this.lifeAdminForms.reminder = blankLifeAdminReminderForm();
-      this.lifeAdminState.reminderEditingKey = "";
-      this.lifeAdminState.reminderDetailsOpen = false;
-    },
     startEditFamilyMember(row) {
       this.lifeAdminForms.family = cloneLifeAdminRecord(row, blankLifeAdminFamilyForm);
       this.lifeAdminState.familyEditingKey = String(row?.name || "").trim();
@@ -7147,11 +7786,6 @@ const app = window.Vue.createApp({
       this.lifeAdminForms.pet = cloneLifeAdminRecord(row, blankLifeAdminPetForm);
       this.lifeAdminState.petEditingKey = String(row?.name || "").trim();
       this.lifeAdminState.petDetailsOpen = this.lifeAdminHasDetails("pet", row);
-    },
-    startEditReminder(row) {
-      this.lifeAdminForms.reminder = cloneLifeAdminRecord(row, blankLifeAdminReminderForm);
-      this.lifeAdminState.reminderEditingKey = String(row?.label || "").trim();
-      this.lifeAdminState.reminderDetailsOpen = this.lifeAdminHasDetails("reminder", row);
     },
     async saveUserProfile() {
       const payload = cloneLifeAdminRecord(this.lifeAdminForms.profile, blankLifeAdminProfileForm);
@@ -7199,24 +7833,6 @@ const app = window.Vue.createApp({
       await this.apiDelete(`/api/personal-memory/pets/${encodeURIComponent(name)}`);
       if (String(this.lifeAdminState.petEditingKey || "").trim().toLowerCase() === String(name || "").trim().toLowerCase()) {
         this.resetPetForm();
-      }
-      await this.refreshSystemPanel();
-    },
-    async saveRecurringReminder() {
-      const f = cloneLifeAdminRecord(this.lifeAdminForms.reminder, blankLifeAdminReminderForm);
-      if (!String(f.label || "").trim()) return;
-      if (this.lifeAdminState.reminderEditingKey) {
-        await this.apiPatch(`/api/personal-memory/reminders/${encodeURIComponent(this.lifeAdminState.reminderEditingKey)}`, f);
-      } else {
-        await this.apiPost("/api/personal-memory/reminders", f);
-      }
-      this.resetReminderForm();
-      await this.refreshSystemPanel();
-    },
-    async removeRecurringReminder(label) {
-      await this.apiDelete(`/api/personal-memory/reminders/${encodeURIComponent(label)}`);
-      if (String(this.lifeAdminState.reminderEditingKey || "").trim().toLowerCase() === String(label || "").trim().toLowerCase()) {
-        this.resetReminderForm();
       }
       await this.refreshSystemPanel();
     },
@@ -7419,6 +8035,16 @@ const app = window.Vue.createApp({
           }
           return;
         }
+        if (this.panelKey === "building") {
+          const payload = await this.apiGet("/api/panel/building?limit=80");
+          const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+          this.panelData = jobs;
+          if (payload.building && typeof payload.building === "object") {
+            this.panelStatus.building_paused = Boolean(payload.building.paused);
+            this.panelStatus.building_active_jobs = Number(payload.building.active_jobs || jobs.length || 0);
+          }
+          return;
+        }
         if (this.panelKey === "project_detail") {
           const project = normalizeProjectSlug(this.activeProject);
           const payload = await this.apiGet(
@@ -7511,17 +8137,16 @@ const app = window.Vue.createApp({
           return;
         }
         if (this.panelKey === "life-admin") {
-          const payload = await this.apiGet("/api/personal-memory");
+          const [payload, brainPayload] = await Promise.all([
+            this.apiGet("/api/personal-memory"),
+            this.apiGet("/api/second-brain"),
+          ]);
           const ctx = payload.context || {};
           ctx.records = Array.isArray(payload.records) ? payload.records : [];
+          ctx.second_brain = brainPayload && typeof brainPayload === "object" ? brainPayload : {};
           this.panelData = [ctx];
           this.lifeAdminForms.profile = cloneLifeAdminRecord(ctx.user_profile || {}, blankLifeAdminProfileForm);
           this.lifeAdminForms.notes = String(ctx.household_notes || "");
-          return;
-        }
-        if (this.panelKey === "second-brain") {
-          const payload = await this.apiGet("/api/second-brain");
-          this.panelData = [payload || {}];
           return;
         }
         if (this.panelKey === "topics") {
@@ -7549,13 +8174,19 @@ const app = window.Vue.createApp({
     },
 
     async openSystemPanel(panelKey) {
-      const key = String(panelKey || "").trim().toLowerCase();
-      if (!["foraging", "reflections", "lessons", "handoffs", "outbox", "projects", "project_detail", "content", "watchtower", "briefings", "library", "library_detail", "forage-cards", "life-admin", "second-brain", "topics", "topic_detail", "system"].includes(key)) {
+      let key = String(panelKey || "").trim().toLowerCase();
+      if (key === "second-brain") {
+        key = "life-admin";
+      }
+      if (!["foraging", "building", "reflections", "lessons", "handoffs", "outbox", "projects", "project_detail", "content", "watchtower", "briefings", "library", "library_detail", "forage-cards", "life-admin", "topics", "topic_detail", "system"].includes(key)) {
         return;
       }
       this.chatMenuOpen = false;
       this.actionsOverlayOpen = false;
       this.setActiveApp("chat");
+      if (key === "lessons") {
+        this.lessonsViewMode = "current";
+      }
       this.panelKey = key;
       this.panelData = [];
       this.panelOverlayOpen = true;
@@ -7800,6 +8431,31 @@ const app = window.Vue.createApp({
       }
     },
 
+    async cancelBuildingJob(row) {
+      const requestId = String(row?.id || "").trim();
+      const conversationId = String(row?.conversation_id || "").trim();
+      if (!requestId || !conversationId) {
+        return;
+      }
+      const confirmed = window.confirm(`Cancel Build job ${requestId}?`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        const payload = await this.apiPost(`/api/jobs/${encodeURIComponent(requestId)}/cancel`, {
+          conversation_id: conversationId,
+        });
+        window.alert(payload.message || "Cancel requested.");
+      } catch (err) {
+        window.alert(`Cancel failed: ${String(err.message || err)}`);
+      } finally {
+        try {
+          await this.refreshSystemPanel();
+          await this.refreshPanelBadges();
+        } catch (_err) {}
+      }
+    },
+
     async ingestOutbox(row) {
       const threadId = String(row?.id || "").trim();
       const target = String(row?.target || "").trim();
@@ -7911,16 +8567,50 @@ const app = window.Vue.createApp({
       }
     },
 
-    async refreshConversations() {
+    async refreshConversations(options = {}) {
       const payload = await this.apiGet("/api/conversations");
       this.conversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+      if (options?.refreshSidebarLane !== false) {
+        this.ensureSidebarProjectLaneFresh().catch(() => {});
+      }
+      if (options?.skipAutoRead === true) {
+        return;
+      }
+      const activeId = String(this.activeConversationId || "").trim();
+      if (String(this.activeApp || "").trim() !== "chat" || !activeId) {
+        return;
+      }
+      const activeRow = this.conversations.find((row) => String(row?.id || "").trim() === activeId);
+      if (Number(activeRow?.unread_count || 0) <= 0) {
+        return;
+      }
+      const marked = await this.markConversationRead(activeId, { refreshList: false });
+      if (!marked) {
+        return;
+      }
+      this.conversations = this.conversations.map((row) => {
+        if (String(row?.id || "").trim() !== activeId) {
+          return row;
+        }
+        return {
+          ...row,
+          unread_count: 0,
+          has_unread: false,
+        };
+      });
     },
 
     async openConversation(id, options = {}) {
-      if (!id) {
+      const targetId = String(id || "").trim();
+      if (!targetId) {
         return;
       }
-      const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+      const previousId = String(this.activeConversationId || "").trim();
+      if (previousId) {
+        this.saveDraftForConversation(previousId);
+        this.saveComposerStateForConversation(previousId);
+      }
+      const payload = await this.apiGet(`/api/conversations/${encodeURIComponent(targetId)}`);
       const convo = payload.conversation || null;
       if (!convo) {
         return;
@@ -7934,6 +8624,8 @@ const app = window.Vue.createApp({
       this.composerAddMenuOpen = false;
       this.actionsOverlayOpen = false;
       this.panelOverlayOpen = false;
+      this.restoreDraftForConversation(convo.id);
+      this.restoreComposerStateForConversation(convo.id);
       const activateApp = options?.activateApp !== false;
       if (activateApp) {
         this.setActiveApp("chat");
@@ -7943,6 +8635,7 @@ const app = window.Vue.createApp({
       }
       location.hash = `#${convo.id}`;
       this.$nextTick(() => {
+        this.resizeComposer();
         if (activateApp) {
           this.scrollMessages();
         }
@@ -7972,23 +8665,28 @@ const app = window.Vue.createApp({
         return;
       }
       await this.refreshConversations();
+      await this.ensureSidebarProjectLaneFresh({ force: true });
       await this.openConversation(convo.id, options);
     },
 
     async deleteConversation(id) {
-      if (!id) {
+      const conversationId = String(id || "").trim();
+      if (!conversationId) {
         return;
       }
       const confirmed = window.confirm("Delete this project?");
       if (!confirmed) {
         return;
       }
-      await this.apiDelete(`/api/conversations/${encodeURIComponent(id)}`);
-      if (this.activeConversationId === id) {
+      await this.apiDelete(`/api/conversations/${encodeURIComponent(conversationId)}`);
+      this.clearDraftForConversation(conversationId);
+      this.clearComposerStateForConversation(conversationId, { releaseAssets: true });
+      if (this.activeConversationId === conversationId) {
         this.activeConversationId = null;
         this.activeConversation = null;
       }
       await this.refreshConversations();
+      await this.ensureSidebarProjectLaneFresh({ force: true });
       if (!this.activeConversationId && this.conversations.length > 0) {
         await this.openConversation(this.conversations[0].id);
       }
@@ -8086,6 +8784,113 @@ const app = window.Vue.createApp({
       this.updateBodyClasses();
     },
 
+    defaultProjectBranchSlug() {
+      const sourceProject = normalizeProjectSlug(this.activeConversation?.project || this.activeProject || "project");
+      const titleSlug = normalizeProjectSlug(this.activeConversation?.title || "branch");
+      let candidate = normalizeProjectSlug(`${sourceProject}_${titleSlug || "branch"}`);
+      if (!candidate || candidate === "general" || candidate === sourceProject) {
+        candidate = normalizeProjectSlug(`${sourceProject}_branch`);
+      }
+      const existing = new Set(
+        (this.projectPickerRows || []).map((row) => normalizeProjectSlug(row?.project || "")).filter((x) => Boolean(x))
+      );
+      if (!existing.has(candidate)) {
+        return candidate;
+      }
+      for (let idx = 2; idx <= 99; idx += 1) {
+        const nextCandidate = normalizeProjectSlug(`${candidate}_${idx}`);
+        if (!existing.has(nextCandidate)) {
+          return nextCandidate;
+        }
+      }
+      return normalizeProjectSlug(`${candidate}_${Date.now().toString().slice(-5)}`);
+    },
+
+    openProjectBranchModal() {
+      this.chatMenuOpen = false;
+      if (!this.activeConversationId) {
+        window.alert("Open a branch first.");
+        return;
+      }
+      const sourceProject = normalizeProjectSlug(this.activeConversation?.project || this.activeProject || "general");
+      const sourceRow = (this.projectPickerRows || []).find(
+        (row) => normalizeProjectSlug(row?.project || "") === sourceProject
+      );
+      this.projectBranchSearch = "";
+      this.projectBranchError = "";
+      this.projectBranchSubmitting = false;
+      this.projectBranchForm = {
+        project: this.defaultProjectBranchSlug(),
+        description: String(sourceRow?.description || "").trim(),
+        mode: "clone",
+        copy_project_data: false,
+      };
+      this.projectBranchModalOpen = true;
+      this.updateBodyClasses();
+      this.refreshProjectPickerRows().catch(() => {});
+      this.$nextTick(() => {
+        const node = this.$refs.projectBranchNameInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    closeProjectBranchModal() {
+      this.projectBranchModalOpen = false;
+      this.projectBranchSubmitting = false;
+      this.projectBranchError = "";
+      this.updateBodyClasses();
+    },
+
+    selectProjectBranchRow(row) {
+      const slug = normalizeProjectSlug(row?.project || "");
+      if (!slug) {
+        return;
+      }
+      this.projectBranchForm.project = slug;
+      this.projectBranchForm.description = String(row?.description || "").trim();
+    },
+
+    normalizeProjectBranchProject() {
+      this.projectBranchForm.project = normalizeProjectSlug(this.projectBranchForm.project || "");
+    },
+
+    async submitProjectBranchPromotion() {
+      try {
+        this.projectBranchSubmitting = true;
+        this.normalizeProjectBranchProject();
+        const targetProject = normalizeProjectSlug(this.projectBranchForm.project || "");
+        if (!targetProject || targetProject === "general") {
+          window.alert("Choose a non-general target project.");
+          return;
+        }
+        if (!this.activeConversationId) {
+          window.alert("Open a branch first.");
+          return;
+        }
+        const payload = await this.apiPost("/api/projects/promote-branch", {
+          source_conversation_id: this.activeConversationId,
+          target_project: targetProject,
+          mode: String(this.projectBranchForm.mode || "clone").trim().toLowerCase(),
+          copy_project_data: Boolean(this.projectBranchForm.copy_project_data),
+          description: String(this.projectBranchForm.description || "").trim(),
+        });
+        const conversationId = String(payload?.conversation?.id || this.activeConversationId || "").trim();
+        this.closeProjectBranchModal();
+        await this.refreshConversations();
+        await this.refreshPanelBadges();
+        await this.ensureSidebarProjectLaneFresh({ force: true });
+        if (conversationId) {
+          await this.openConversation(conversationId, { activateApp: true });
+        }
+      } catch (err) {
+        this.projectBranchError = String(err.message || err);
+      } finally {
+        this.projectBranchSubmitting = false;
+      }
+    },
+
     selectProjectPickerRow(row) {
       const slug = normalizeProjectSlug(row?.project || "");
       if (!slug) {
@@ -8110,6 +8915,7 @@ const app = window.Vue.createApp({
         description: String(this.projectPickerForm.description || "").trim(),
       });
       await this.refreshProjectPickerRows();
+      await this.ensureSidebarProjectLaneFresh({ force: true });
       const latest = (this.projectPickerRows || []).find((row) => String(row?.project || "").trim() === slug);
       if (latest) {
         this.projectPickerForm.description = String(latest.description || "").trim();
@@ -8152,6 +8958,7 @@ const app = window.Vue.createApp({
       const slug = normalizeProjectSlug(project);
       if (!this.activeConversationId) {
         this.setActiveProject(slug);
+        await this.ensureSidebarProjectLaneFresh({ force: true });
         return slug;
       }
       const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(this.activeConversationId)}`, {
@@ -8165,6 +8972,7 @@ const app = window.Vue.createApp({
       this.setActiveProject(slug);
       await this.refreshConversations();
       await this.refreshPanelBadges();
+      await this.ensureSidebarProjectLaneFresh({ force: true });
       return slug;
     },
 
@@ -8174,6 +8982,7 @@ const app = window.Vue.createApp({
       if (!this.activeConversationId) {
         this.activeTopicId = normalizedTopicId;
         this.setActiveProject(slug);
+        await this.ensureSidebarProjectLaneFresh({ force: true });
         return normalizedTopicId;
       }
       const payload = await this.apiPatch(`/api/conversations/${encodeURIComponent(this.activeConversationId)}`, {
@@ -8188,6 +8997,7 @@ const app = window.Vue.createApp({
       this.setActiveProject(slug);
       await this.refreshConversations();
       await this.refreshPanelBadges();
+      await this.ensureSidebarProjectLaneFresh({ force: true });
       return normalizedTopicId;
     },
 
@@ -8601,6 +9411,11 @@ const app = window.Vue.createApp({
         foraging: likelyForagingRequest,
         imageGen: likelyImageGenRequest,
       });
+      if (sendMode === "forage" || sendMode === "make") {
+        // Reset globally to Talk as soon as a Discovery/Make request is sent.
+        // This avoids accidentally sending subsequent turns in the wrong mode.
+        this.resetComposerMode();
+      }
       this.chatMenuOpen = false;
       const replyTarget = fromQueue
         ? (queuedItem?.replyTarget && typeof queuedItem.replyTarget === "object" ? Object.assign({}, queuedItem.replyTarget) : null)
@@ -8608,8 +9423,10 @@ const app = window.Vue.createApp({
       if (!fromQueue) {
         this.composerAddMenuOpen = false;
         this.draft = "";
+        this.saveDraftForConversation(conversationId);
         this.composerImages = [];
         this.replyTargetMsg = null;
+        this.saveComposerStateForConversation(conversationId);
         if (this.$refs.imageInput) {
           this.$refs.imageInput.value = "";
         }
@@ -8654,6 +9471,9 @@ const app = window.Vue.createApp({
           formData.append("request_id", requestId);
           formData.append("image_style", imageStyle);
           formData.append("selected_loras", JSON.stringify(selectedLoras));
+          if (sendMode === "make" && this.makeType) {
+            formData.append("make_type", this.makeType);
+          }
           for (const row of imageRows) {
             if (row?.file) {
               formData.append("images", row.file, row.name || "image");
@@ -8668,6 +9488,9 @@ const app = window.Vue.createApp({
             image_style: imageStyle,
             selected_loras: selectedLoras,
           };
+          if (sendMode === "make" && this.makeType) {
+            jsonBody.make_type = this.makeType;
+          }
           if (replyTarget) jsonBody.reply_to = replyTarget;
           payload = await this.apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, jsonBody);
         }
@@ -8720,6 +9543,10 @@ const app = window.Vue.createApp({
             } else {
               this.composerImages = imageRows;
             }
+          }
+          if (!fromQueue) {
+            this.replyTargetMsg = replyTarget && typeof replyTarget === "object" ? Object.assign({}, replyTarget) : null;
+            this.saveComposerStateForConversation(conversationId);
           }
           if (!sentSuccessfully && String(this.activeConversationId || "").trim() === conversationId) {
             const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
@@ -9869,13 +10696,14 @@ const app = window.Vue.createApp({
         this.mdOverlayOpen ||
         this.actionsOverlayOpen ||
         this.panelOverlayOpen ||
-        this.taskReminderOpen ||
         this.imageToolStyleModalOpen ||
         this.imageToolPromptModalOpen ||
         this.familyProfileModalOpen ||
         this.webPushModalOpen ||
         this.projectPickerOpen ||
+        this.projectBranchModalOpen ||
         this.projectTargetModalOpen ||
+        this.projectTopicTypeModalOpen ||
         this.waypointMemberEditorOpen ||
         this.waypointTaskModalOpen ||
         this.waypointEventModalOpen ||
@@ -10209,20 +11037,12 @@ const app = window.Vue.createApp({
     },
 
     async refreshWaypointState() {
-      const payload = await this.apiGet("/api/waypoint/state");
-      this.setWaypointState(payload || {});
-      this.waypointLoaded = true;
-      await this.refreshPanelBadges();
-      this.fetchPurchaseRecos();
+      this.waypointLoaded = false;
+      this.purchaseRecos = [];
     },
 
     async fetchPurchaseRecos() {
-      try {
-        const payload = await this.apiGet("/api/waypoint/purchase-recommendations");
-        this.purchaseRecos = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
-      } catch (_) {
-        this.purchaseRecos = [];
-      }
+      this.purchaseRecos = [];
     },
 
     addRecommendedShoppingItem(reco) {
@@ -10978,134 +11798,35 @@ const app = window.Vue.createApp({
     },
 
     openTaskReminderDialog(task) {
-      const row = task && typeof task === "object" ? task : {};
-      const taskId = String(row.id || "").trim();
-      if (!taskId) {
-        return;
-      }
-      this.closeWaypointEntryModals();
-      this.taskReminderDialog.taskId = taskId;
-      this.taskReminderDialog.taskTitle = String(row.title || "").trim() || "Task";
-      this.taskReminderOpen = true;
-      this.updateBodyClasses();
-      this.setTaskReminderFromNow(15);
+      this.showWaypointRetiredNotice();
     },
 
     closeTaskReminderDialog() {
-      this.taskReminderOpen = false;
-      this.taskReminderSubmitting = false;
-      this.taskReminderDialog.taskId = "";
-      this.taskReminderDialog.taskTitle = "";
-      this.taskReminderDialog.date = "";
-      this.taskReminderDialog.time = "";
-      this.taskReminderDialog.sliderMinutes = 0;
-      this.updateBodyClasses();
+      return;
     },
 
     setTaskReminderFromNow(minutes) {
-      const delta = Math.max(1, Number(minutes || 15));
-      const target = new Date(Date.now() + delta * 60000);
-      const dateKey = toDateKey(startOfLocalDay(target));
-      const hh = pad2(target.getHours());
-      const mm = pad2(target.getMinutes());
-      this.taskReminderDialog.date = dateKey;
-      this.taskReminderDialog.time = `${hh}:${mm}`;
-      this.taskReminderDialog.sliderMinutes = target.getHours() * 60 + target.getMinutes();
+      return;
     },
 
     setTaskReminderCustomMinutes() {
-      const raw = window.prompt("Reminder in how many minutes from now?", "90");
-      if (raw === null) {
-        return;
-      }
-      const minutes = Number(String(raw || "").trim());
-      if (!Number.isFinite(minutes) || minutes <= 0) {
-        window.alert("Enter a valid number of minutes.");
-        return;
-      }
-      this.setTaskReminderFromNow(Math.floor(minutes));
+      return;
     },
 
     syncTaskReminderSliderFromTime() {
-      const timeText = normalizeTimeText(this.taskReminderDialog.time || "");
-      if (!timeText) {
-        return;
-      }
-      const [hh, mm] = timeText.split(":").map((x) => Number(x));
-      const minutes = Math.max(0, Math.min(1439, (Number(hh) || 0) * 60 + (Number(mm) || 0)));
-      this.taskReminderDialog.sliderMinutes = minutes;
+      return;
     },
 
     syncTaskReminderTimeFromSlider() {
-      const minutes = Math.max(0, Math.min(1439, Number(this.taskReminderDialog.sliderMinutes || 0)));
-      const hh = Math.floor(minutes / 60);
-      const mm = minutes % 60;
-      this.taskReminderDialog.time = `${pad2(hh)}:${pad2(mm)}`;
+      return;
     },
 
     async applyTaskReminder() {
-      const taskId = String(this.taskReminderDialog.taskId || "").trim();
-      const dateText = String(this.taskReminderDialog.date || "").trim();
-      const timeText = normalizeTimeText(this.taskReminderDialog.time || "");
-      if (!taskId) {
-        return;
-      }
-      if (!isIsoDate(dateText) || !timeText) {
-        window.alert("Select a valid reminder date and time.");
-        return;
-      }
-      this.taskReminderSubmitting = true;
-      try {
-        const payload = await this.apiPost(`/api/waypoint/tasks/${encodeURIComponent(taskId)}/snooze`, {
-          spec: `${dateText} ${timeText}`,
-        });
-        if (payload?.state) {
-          this.setWaypointState(payload.state);
-        }
-        if (payload?.ok === false) {
-          window.alert(payload.message || "Reminder save failed.");
-          return;
-        }
-        await this.refreshPanelBadges();
-        this.closeTaskReminderDialog();
-      } catch (err) {
-        window.alert(`Reminder save failed: ${String(err.message || err)}`);
-      } finally {
-        this.taskReminderSubmitting = false;
-      }
+      this.showWaypointRetiredNotice();
     },
 
     async snoozeWaypointTask(taskId) {
-      if (!taskId) {
-        return;
-      }
-      const spec = window.prompt(
-        "Snooze until when?\nExamples: 30m, 2h, 1d, tomorrow at 9am, 2026-03-05 14:30",
-        "tomorrow at 9am"
-      );
-      if (spec === null) {
-        return;
-      }
-      const trimmed = String(spec || "").trim();
-      if (!trimmed) {
-        window.alert("Snooze value is required.");
-        return;
-      }
-      try {
-        const payload = await this.apiPost(`/api/waypoint/tasks/${encodeURIComponent(taskId)}/snooze`, {
-          spec: trimmed,
-        });
-        if (payload?.state) {
-          this.setWaypointState(payload.state);
-        }
-        if (payload?.ok === false) {
-          window.alert(payload.message || "Snooze failed.");
-          return;
-        }
-        await this.refreshPanelBadges();
-      } catch (err) {
-        window.alert(`Waypoints snooze failed: ${String(err.message || err)}`);
-      }
+      this.showWaypointRetiredNotice();
     },
 
     async deleteWaypointTask(taskId) {
@@ -11464,6 +12185,7 @@ const app = window.Vue.createApp({
     } catch (_e) {}
     await this.refreshPanelBadges();
     await this.refreshProjectPipeline();
+    this.loadMakeTypeCatalog().catch(() => {});
     try {
       await this.initializeHomeWeather();
     } catch (_err) {}

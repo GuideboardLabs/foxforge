@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from agents_research.deep_researcher import _gap_assess, _run_fill_agents, _reliability_summary
+from agents_research.synthesizer import synthesize, run_skeptic_pass
+from shared_tools.file_store import ProjectStore
+from shared_tools.inference_router import InferenceRouter
+from shared_tools.model_routing import lane_model_config
 from shared_tools.web_research import build_web_progress_payload
 from .agent_contracts import AgentTask
+
+LOGGER = logging.getLogger(__name__)
+
+# Tracks project slugs that currently have a heavy Foraging run in progress.
+# Keyed by project_slug (single-user system — slug is sufficient).
+_active_foraging_lock = threading.Lock()
+_active_foraging: set[str] = set()
 
 
 class ResearchService:
@@ -84,47 +98,73 @@ class ResearchService:
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before project-research execution started."
-        web_note, web_context, web_details = host._prepare_web_context(text=text, lane="project", topic_type=topic_type, force=True)
-        self._emit_web_progress(progress_callback, web_details)
-        out = self._run_research_pool(
-            text=text,
-            host=host,
-            history=history,
-            topic_type=topic_type,
-            project_context=project_context,
-            web_context=web_context,
-            cancel_checker=cancel_checker,
-            pause_checker=pause_checker,
-            yield_checker=yield_checker,
-            progress_callback=progress_callback,
-        )
-        if web_details:
-            out["web_details"] = web_details
-        host._postprocess_research_summary(question=text, worker_result=out, topic_type=topic_type)
-        if bool(out.get("canceled", False)):
-            return str(
-                out.get("cancel_summary")
-                or (
-                    "Request cancelled during project research. "
-                    f"Partial summary saved to {out.get('summary_path', '')}."
+        slug = str(getattr(host, "project_slug", "") or "").strip()
+        with _active_foraging_lock:
+            if slug and slug in _active_foraging:
+                return (
+                    f"A Foraging run is already in progress for project **{slug}**. "
+                    "Wait for it to complete or cancel it before starting another."
                 )
+            if slug:
+                _active_foraging.add(slug)
+        try:
+            web_note, web_context, web_details = host._prepare_web_context(text=text, lane="project", topic_type=topic_type, force=True, progress_callback=progress_callback)
+            self._emit_web_progress(progress_callback, web_details)
+            out = self._run_research_pool(
+                text=text,
+                host=host,
+                history=history,
+                topic_type=topic_type,
+                project_context=project_context,
+                web_context=web_context,
+                cancel_checker=cancel_checker,
+                pause_checker=pause_checker,
+                yield_checker=yield_checker,
+                progress_callback=progress_callback,
             )
-        fallback = (
-            "I treated this as project strategy and asked the Foraging pool for a baseline synthesis. "
-            f"Summary: {out['summary_path']}"
-        )
-        return self._finalize_research_reply(
-            host,
-            text=text,
-            lane="project",
-            topic_type=topic_type,
-            out=out,
-            fallback=fallback,
-            web_note=web_note,
-            reminder_note=reminder_note,
-            event_note=event_note,
-            queue_proposals=True,
-        )
+            if web_details:
+                out["web_details"] = web_details
+            host._postprocess_research_summary(question=text, worker_result=out, topic_type=topic_type)
+            if not bool(out.get("canceled", False)):
+                out = self._gap_fill_pass(
+                    host,
+                    out,
+                    text=text,
+                    web_context=web_context,
+                    project_context=project_context,
+                    topic_type=topic_type,
+                    cancel_checker=cancel_checker,
+                    pause_checker=pause_checker,
+                    progress_callback=progress_callback,
+                )
+            if bool(out.get("canceled", False)):
+                return str(
+                    out.get("cancel_summary")
+                    or (
+                        "Request cancelled during project research. "
+                        f"Partial summary saved to {out.get('summary_path', '')}."
+                    )
+                )
+            fallback = (
+                "I treated this as project strategy and asked the Foraging pool for a baseline synthesis. "
+                f"Summary: {out['summary_path']}"
+            )
+            return self._finalize_research_reply(
+                host,
+                text=text,
+                lane="project",
+                topic_type=topic_type,
+                out=out,
+                fallback=fallback,
+                web_note=web_note,
+                reminder_note=reminder_note,
+                event_note=event_note,
+                queue_proposals=True,
+            )
+        finally:
+            if slug:
+                with _active_foraging_lock:
+                    _active_foraging.discard(slug)
 
     def _execute_light_research(
         self,
@@ -184,7 +224,52 @@ class ResearchService:
         reminder_note: str = "",
         event_note: str = "",
     ) -> str:
-        web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type, force=True)
+        slug = str(getattr(host, "project_slug", "") or "").strip()
+        with _active_foraging_lock:
+            if slug and slug in _active_foraging:
+                return (
+                    f"A Foraging run is already in progress for project **{slug}**. "
+                    "Wait for it to complete or cancel it before starting another."
+                )
+            if slug:
+                _active_foraging.add(slug)
+        try:
+            return self._execute_full_research_inner(
+                host,
+                text=text,
+                lane=lane,
+                history=history,
+                topic_type=topic_type,
+                project_context=project_context,
+                cancel_checker=cancel_checker,
+                pause_checker=pause_checker,
+                yield_checker=yield_checker,
+                progress_callback=progress_callback,
+                reminder_note=reminder_note,
+                event_note=event_note,
+            )
+        finally:
+            if slug:
+                with _active_foraging_lock:
+                    _active_foraging.discard(slug)
+
+    def _execute_full_research_inner(
+        self,
+        host: Any,
+        *,
+        text: str,
+        lane: str,
+        history: list[dict[str, str]] | None,
+        topic_type: str,
+        project_context: str,
+        cancel_checker=None,
+        pause_checker=None,
+        yield_checker=None,
+        progress_callback=None,
+        reminder_note: str = "",
+        event_note: str = "",
+    ) -> str:
+        web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type, force=True, progress_callback=progress_callback)
         self._emit_web_progress(progress_callback, web_details)
         out = self._run_research_pool(
             text=text,
@@ -201,6 +286,18 @@ class ResearchService:
         if web_details:
             out["web_details"] = web_details
         host._postprocess_research_summary(question=text, worker_result=out, topic_type=topic_type)
+        if not bool(out.get("canceled", False)):
+            out = self._gap_fill_pass(
+                host,
+                out,
+                text=text,
+                web_context=web_context,
+                project_context=project_context,
+                topic_type=topic_type,
+                cancel_checker=cancel_checker,
+                pause_checker=pause_checker,
+                progress_callback=progress_callback,
+            )
         if bool(out.get("canceled", False)):
             return str(
                 out.get("cancel_summary")
@@ -308,6 +405,206 @@ class ResearchService:
         reply = host._append_daymarker_note(reply, event_note)
         reply = host._append_daymarker_note(reply, reminder_note)
         return host._complete_turn(user_text=text, lane=lane, reply_text=reply, worker_result=out)
+
+    def _gap_fill_pass(
+        self,
+        host: Any,
+        out: dict[str, Any],
+        *,
+        text: str,
+        web_context: str,
+        project_context: str,
+        topic_type: str,
+        cancel_checker=None,
+        pause_checker=None,
+        progress_callback=None,
+    ) -> dict[str, Any]:
+        """Run a targeted gap-fill pass after initial synthesis if trigger conditions are met.
+
+        Reads trigger signals from the reliability dict and synthesis text.
+        Returns the original `out` unchanged when the loop is skipped.
+        When triggered, returns an updated `out` with a new filled summary path.
+        """
+        # Kill switch — check before any work.
+        model_cfg = lane_model_config(self.repo_root, "research_pool") or {}
+        if not bool(model_cfg.get("gap_fill_enabled", False)):
+            return out
+
+        if self._is_cancelled(cancel_checker):
+            return out
+
+        # Read the synthesis that was written to disk.
+        summary_path = str(out.get("summary_path", "")).strip()
+        if not summary_path:
+            return out
+        try:
+            summary_md = Path(summary_path).read_text(encoding="utf-8")
+        except Exception:
+            return out
+
+        # Evaluate trigger conditions — rule-based, zero LLM cost.
+        reliability = out.get("reliability") or {}
+        weak = int(reliability.get("weak", 0))
+        failed = int(reliability.get("failed", 0))
+        agents_total = int(reliability.get("agents_total", 0))
+        good = int(reliability.get("good", 0))
+
+        findings = list(out.get("findings") or [])
+        _all_scores = [f.get("confidence") for f in findings]
+        _scored = [int(s) for s in _all_scores if isinstance(s, (int, float)) and int(s) > 0]
+        avg_conf = sum(_scored) / len(_scored) if _scored else 0.0
+
+        synth_low = summary_md.lower()
+        has_low_confidence = (
+            "evidence confidence: low" in synth_low
+            or "evidence confidence: mixed" in synth_low
+        )
+
+        # Skip when all agents are good and avg confidence is high.
+        if good == agents_total and agents_total > 0 and avg_conf >= 4.0:
+            return out
+
+        # Fire if any trigger condition is met.
+        trigger = (
+            (weak + failed >= 2)
+            or (avg_conf > 0 and avg_conf < 3.0)
+            or has_low_confidence
+        )
+        if not trigger:
+            return out
+
+        # Gap assessment — identify specific gaps via a fast LLM call.
+        client = InferenceRouter(self.repo_root)
+        gap_queries = _gap_assess(client, model_cfg, text, summary_md)
+        if not gap_queries:
+            return out
+
+        # Emit progress so the UI can show the gap-fill phase.
+        trigger_reason = (
+            "weak_agents" if weak + failed >= 2
+            else "low_avg_confidence" if avg_conf > 0 and avg_conf < 3.0
+            else "synthesis_low_confidence"
+        )
+        if callable(progress_callback):
+            try:
+                progress_callback("gap_fill_started", {
+                    "gap_queries": gap_queries,
+                    "trigger_reason": trigger_reason,
+                })
+            except Exception:
+                pass
+
+        LOGGER.info(
+            "gap_fill trigger=%s weak=%d failed=%d avg_conf=%.2f gaps=%d",
+            trigger_reason, weak, failed, avg_conf, len(gap_queries),
+        )
+
+        # Run exactly 2 fill agents targeting the identified gaps.
+        fill_findings = _run_fill_agents(
+            client=client,
+            model_cfg=model_cfg,
+            question=text,
+            gap_queries=gap_queries,
+            web_context=web_context,
+            project_context=project_context,
+            prior_messages=None,
+            findings=findings,
+            cancel_checker=cancel_checker,
+            pause_checker=pause_checker,
+        )
+        if not fill_findings:
+            return out
+
+        merged_findings = findings + fill_findings
+
+        # Re-synthesize with the prior synthesis as focused context.
+        synth_lane = lane_model_config(self.repo_root, "synthesis") or {}
+        synth_cfg = dict(synth_lane)
+        synth_cfg.setdefault("synthesis_timeout_sec", int(synth_cfg.get("timeout_sec", 480)))
+        synth_cfg.setdefault("synthesis_retry_attempts", 4)
+        synth_cfg.setdefault("synthesis_retry_backoff_sec", 2.0)
+        synth_cfg.setdefault("synthesis_validation_cycles", 1)
+        fb = list(model_cfg.get("fallback_models") or [])
+        main_model = str(model_cfg.get("model", "")).strip()
+        if main_model:
+            fb.append(main_model)
+        synth_cfg.setdefault("synthesis_fallback_models", fb)
+        if str(topic_type).strip().lower() == "underground":
+            synth_cfg["model"] = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
+            synth_cfg["synthesis_fallback_models"] = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
+
+        new_summary_md = synthesize(
+            text,
+            merged_findings,
+            client=client,
+            model_cfg=synth_cfg,
+            project_context=project_context,
+            prior_synthesis=summary_md,
+        )
+
+        # Adversarial skeptic pass on the updated synthesis.
+        skeptic_md = run_skeptic_pass(text, new_summary_md, client=client, model_cfg=synth_cfg)
+        if skeptic_md:
+            new_summary_md = f"{new_summary_md}\n\n---\n\n{skeptic_md}"
+
+        # Append source quality block with merged confidence scores.
+        new_reliability = _reliability_summary(merged_findings)
+        _new_all_scores = [f.get("confidence") for f in merged_findings]
+        _new_scored = [int(s) for s in _new_all_scores if isinstance(s, (int, float)) and int(s) > 0]
+        _new_unscored_count = sum(
+            1 for s in _new_all_scores if not isinstance(s, (int, float)) or int(s) == 0
+        )
+        if _new_scored:
+            _new_avg_conf = sum(_new_scored) / len(_new_scored)
+            _conf_labels = {1: "very low", 2: "low", 3: "medium", 4: "high", 5: "very high"}
+            _agent_conf_lines = "\n".join(
+                f"- {str(f.get('agent', 'agent'))}: {int(f.get('confidence', 0))}/5"
+                + (" (unscored)" if int(f.get("confidence", 0)) == 0 else "")
+                for f in merged_findings
+            )
+            _unscored_note = f" | {_new_unscored_count} agent(s) unscored" if _new_unscored_count else ""
+            new_summary_md = (
+                f"{new_summary_md}\n\n---\n\n"
+                f"**Source Quality** — avg confidence {_new_avg_conf:.1f}/5 "
+                f"({_conf_labels.get(round(_new_avg_conf), 'unknown')})"
+                f" | scored: {len(_new_scored)}/{len(merged_findings)}{_unscored_note}"
+                f" | gap-fill pass applied\n\n"
+                f"{_agent_conf_lines}"
+            )
+        elif _new_unscored_count:
+            new_summary_md = (
+                f"{new_summary_md}\n\n---\n\n"
+                f"**Source Quality** — agent self-scoring unavailable "
+                f"({_new_unscored_count} agent(s) did not return a score)"
+                f" | gap-fill pass applied"
+            )
+
+        # Write the filled summary to a new file.
+        store = ProjectStore(self.repo_root)
+        filled_name = store.timestamped_name("research_summary_filled")
+        project_slug = str(getattr(host, "project_slug", "") or "").strip()
+        filled_path = store.write_project_file(
+            project_slug, "research_summaries", filled_name, new_summary_md
+        )
+
+        LOGGER.info("gap_fill completed filled_summary=%s fill_agents=%d", filled_path, len(fill_findings))
+
+        if callable(progress_callback):
+            try:
+                progress_callback("gap_fill_completed", {
+                    "filled_summary_path": str(filled_path),
+                    "fill_agents_used": len(fill_findings),
+                    "gap_queries": gap_queries,
+                })
+            except Exception:
+                pass
+
+        updated_out = dict(out)
+        updated_out["summary_path"] = str(filled_path)
+        updated_out["gap_fill_used"] = True
+        updated_out["reliability"] = new_reliability
+        updated_out["findings"] = merged_findings
+        return updated_out
 
     def _emit_web_progress(self, progress_callback, web_details: dict[str, Any] | None) -> None:
         details = web_details if isinstance(web_details, dict) else {}

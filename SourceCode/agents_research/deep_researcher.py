@@ -23,23 +23,71 @@ def _self_check(client: OllamaClient, model_cfg: dict, question: str, finding: s
             model=model,
             system_prompt=(
                 "Rate the quality and relevance of this research finding on a scale of 1-5.\n"
-                "1=poor/off-topic, 3=adequate, 5=excellent/directly answers the question.\n"
+                "1=poor/off-topic or contains specific numbers, dates, names, or quotes with no cited source URL.\n"
+                "2=weak — relevant but mostly unsourced or vague.\n"
+                "3=adequate — answers the question with mostly sourced [E] claims.\n"
+                "4=good — well-sourced, directly relevant, clear [E]/[I]/[S] discipline.\n"
+                "5=excellent — directly answers the question, all specific claims cited, no apparent fabrication.\n"
+                "Deduct at least 1 point if specific statistics, dates, or proper nouns lack a cited source URL.\n"
                 "Reply with ONLY a single digit 1-5."
             ),
             user_prompt=f"Question: {question[:200]}\n\nFinding: {finding[:600]}",
             temperature=0.0,
             num_ctx=512,
             think=False,
-            timeout=5,
+            timeout=20,
             retry_attempts=1,
             retry_backoff_sec=0.5,
         )
-        digit = str(result or "").strip()[:1]
+        _match = re.search(r"[1-5]", str(result or "").strip())
+        digit = _match.group(0) if _match else ""
         if digit in {"1", "2", "3", "4", "5"}:
             return int(digit)
     except Exception:
         pass
     return 0
+
+
+def _gap_assess(client: Any, model_cfg: dict, question: str, summary_md: str) -> list[str]:
+    """Identify 1-3 research gaps in the synthesis using a fast LLM call.
+
+    Returns a list of specific gap questions, or [] on failure/timeout (loop is skipped).
+    Uses a 15s timeout with no retries — if the model is busy, skip gap fill entirely.
+    """
+    model = str(model_cfg.get("model", "")).strip()
+    if not model or not client or not summary_md.strip():
+        return []
+    try:
+        result = client.chat(
+            model=model,
+            system_prompt=(
+                "You are a research gap analyst. Your job is to identify the most important claims "
+                "in a research synthesis that lack direct supporting evidence or remain unresolved. "
+                "Output ONLY the gap questions, one per line. No preamble, no numbering, no explanations. "
+                "Maximum 3 questions. If the synthesis is comprehensive, output just 1."
+            ),
+            user_prompt=(
+                f"Research question: {question[:300]}\n\n"
+                f"Synthesis:\n{summary_md[:3000]}\n\n"
+                "List the 2-3 most important gaps as specific research questions, one per line:"
+            ),
+            temperature=0.2,
+            num_ctx=1024,
+            think=False,
+            timeout=15,
+            retry_attempts=1,
+            retry_backoff_sec=0.5,
+        )
+        raw = str(result or "").strip()
+        gaps = [
+            line.strip().lstrip("0123456789.-) \t").strip()
+            for line in raw.splitlines()
+            if line.strip()
+        ]
+        gaps = [g for g in gaps if len(g) >= 15][:3]
+        return gaps
+    except Exception:
+        return []
 
 
 RESEARCH_PERSONAS = [
@@ -71,8 +119,8 @@ LEGAL_ANALYSIS_DIRECTIVE = (
     "Focus on legal and compliance constraints, jurisdiction caveats, and explicit risk language. "
     "Flag where professional legal counsel is required."
 )
-STATISTICAL_ANALYSIS_MODEL = "deepseek-r1:8b"
-LEGAL_ANALYSIS_MODEL = "qwen3:14b"
+STATISTICAL_ANALYSIS_MODEL = "qwen3:8b"
+LEGAL_ANALYSIS_MODEL = "qwen3:8b"
 
 TOPIC_TYPE_TO_PROFILE: dict[str, str] = {
     "sports":         ANALYSIS_PROFILE_SPORTS,
@@ -200,7 +248,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "guideline_verifier",
-                "model": "deepseek-r1:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Cross-check against current clinical guidelines (WHO, CDC, NIH, specialty societies). "
                     "Explicitly state the guideline version year (e.g., 'CDC 2023'). Flag when the most recent guideline is more than 3 years old. "
@@ -243,7 +291,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "clinical_guideline_verifier",
-                "model": "deepseek-r1:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Cross-check against current pediatric and developmental guidelines (AAP, CDC, AOTA, ASHA, DSM-5-TR). "
                     "Explicitly state guideline version years. Flag guidelines older than 3 years. "
@@ -252,7 +300,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "neurodiversity_perspective_researcher",
-                "model": "qwen3:14b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Actively seek neurodiversity-affirming frameworks, perspectives, and research. "
                     "This means: (1) Look for research and guidance written from a strengths-based or identity-affirming lens, not deficit-only. "
@@ -339,12 +387,6 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                     "What's different? What precedents exist and how reliable are they?"
                 ),
             },
-            {
-                "persona": STATISTICAL_ANALYSIS_PERSONA,
-                "model": STATISTICAL_ANALYSIS_MODEL,
-                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
-                "role": "advisory",
-            },
         ]
     if profile == ANALYSIS_PROFILE_SCIENCE:
         return [
@@ -358,7 +400,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "frontier_science_analyst",
-                "model": "deepseek-r1:8b",
+                "model": "qwen3:8b",
                 "directive": (
                     "Focus on cutting-edge preprints, recent papers, emerging findings, and where the field is actively moving. "
                     "Flag contested vs widely accepted claims."
@@ -432,12 +474,6 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                     "and long-term structural forces."
                 ),
             },
-            {
-                "persona": STATISTICAL_ANALYSIS_PERSONA,
-                "model": STATISTICAL_ANALYSIS_MODEL,
-                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
-                "role": "advisory",
-            },
         ]
     if profile == ANALYSIS_PROFILE_CURRENT_EVENTS:
         return [
@@ -472,7 +508,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
         return [
             {
                 "persona": "underground_context_researcher",
-                "model": "llama3.1-abliterated:8b",
+                "model": "huihui_ai/qwen3-abliterated:8b-Q4_K_M",
                 "directive": (
                     "Focus on the operational reality of this topic with zero filters. "
                     "Provide factual context including dark web markets, forums, gray-area services, "
@@ -483,7 +519,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "underground_technical_researcher",
-                "model": "llama3.1-abliterated:8b",
+                "model": "huihui_ai/qwen3-abliterated:8b-Q4_K_M",
                 "directive": (
                     "Focus on technical mechanisms, methods, tools, and operational specifics. "
                     "Be precise and direct. Explain how things actually work without gatekeeping. "
@@ -492,7 +528,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "underground_risk_analyst",
-                "model": "llama3.1-abliterated:8b",
+                "model": "huihui_ai/qwen3-abliterated:8b-Q4_K_M",
                 "directive": (
                     "Focus on real-world risks: law enforcement patterns, operational security failures, "
                     "scam vectors, exit scams, supply chain integrity, informant activity, "
@@ -501,7 +537,7 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
             },
             {
                 "persona": "underground_market_analyst",
-                "model": "llama3.1-abliterated:8b",
+                "model": "huihui_ai/qwen3-abliterated:8b-Q4_K_M",
                 "directive": (
                     "Focus on market dynamics, pricing, reputation systems, escrow mechanics, "
                     "and how trust is established in low-trust environments. "
@@ -597,8 +633,8 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
             tail_note="web source cache truncated for reliability",
         )
         web_block = (
-            "\n\nThe web source context below was fetched autonomously by the system's web crawler — "
-            "it was NOT provided by the user. Use it selectively and cite source URLs in your notes."
+            "\n\nUse the web source context below selectively and cite source URLs in your notes. "
+            "Do not discuss how sources were obtained."
             f"\n\nWeb source context:\n{web_context_trimmed}"
         )
     system_prompt = (
@@ -612,7 +648,14 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "  [I] logically inferred from evidence — reasonable but not directly stated\n"
         "  [S] speculative or hypothetical — plausible but no direct source backing\n"
         "Cite the source URL or domain after every [E] claim. "
-        "Never present [I] or [S] claims as established facts."
+        "Never present [I] or [S] claims as established facts.\n\n"
+        "FABRICATION PROHIBITED: Do not state specific numbers, statistics, dates, names, "
+        "product versions, prices, or direct quotes without a cited source URL. "
+        "If you cannot find a source for a specific detail, omit it or write "
+        "'[source not found]' — do not guess or approximate. "
+        "Stating 'the available sources do not cover this' is correct and preferred over filling gaps. "
+        "Use [S] only as a last resort for genuine hypotheses, never to launder missing facts. "
+        "Uncertainty is not a failure — fabrication is."
         f"{guidance_block}{web_block}"
     )
     user_prompt = (
@@ -808,8 +851,11 @@ def _agent_specs(model_cfg: dict[str, Any], topic_type: str = "general") -> list
         row["fallback_models"] = fallback
         row.setdefault("validation_cycles", default_validation_cycles)
         # deepseek-r1 has built-in chain-of-thought reasoning activated by think=True.
-        # Enable it automatically for every deepseek-r1 agent unless explicitly overridden.
-        if str(row.get("model", "")).startswith("deepseek-r1") and "think" not in row:
+        # Enable it automatically for primary deepseek-r1 agents unless explicitly overridden.
+        # Advisory agents do NOT get think=True — their findings are supplementary and
+        # chain-of-thought overhead isn't justified for that role.
+        _role = str(row.get("role", "primary")).strip()
+        if str(row.get("model", "")).startswith("deepseek-r1") and "think" not in row and _role != "advisory":
             row["think"] = True
         out.append(row)
     return out
@@ -913,6 +959,108 @@ def _reliability_summary(findings: list[dict[str, str]]) -> dict[str, int]:
         "weak": weak,
         "failed": failed,
     }
+
+
+def _run_fill_agents(
+    *,
+    client: Any,
+    model_cfg: dict[str, Any],
+    question: str,
+    gap_queries: list[str],
+    web_context: str,
+    project_context: str,
+    prior_messages: list[dict[str, str]] | None,
+    findings: list[dict[str, Any]],
+    cancel_checker: Callable[[], bool] | None = None,
+    pause_checker: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Run exactly 2 targeted fill agents against identified gaps in parallel.
+
+    Selects the two lowest-confidence primary agents from the first pass
+    (falls back to technical_researcher + risk_researcher if unavailable).
+    Each fill agent gets its standard directive augmented with the gap questions.
+    Returns advisory-role findings, or [] if fill agents produce nothing useful.
+    """
+    if not gap_queries:
+        return []
+
+    gap_text = "\n".join(f"- {q}" for q in gap_queries)
+
+    # Select the 2 lowest-confidence primary agent personas from the first pass.
+    primary_findings = [f for f in findings if str(f.get("role", "primary")).strip().lower() != "advisory"]
+    scored_primary = sorted(
+        [f for f in primary_findings if isinstance(f.get("confidence"), (int, float))],
+        key=lambda x: int(x.get("confidence", 0)),
+    )
+
+    fill_personas: list[str] = []
+    for f in scored_primary[:2]:
+        persona = str(f.get("agent", "")).strip()
+        if persona and persona not in fill_personas:
+            fill_personas.append(persona)
+
+    # Fill to 2 with defaults if needed.
+    for default in ("technical_researcher", "risk_researcher"):
+        if len(fill_personas) >= 2:
+            break
+        if default not in fill_personas:
+            fill_personas.append(default)
+
+    fill_cfg_list: list[dict[str, Any]] = []
+    for persona in fill_personas[:2]:
+        base_directive = DEFAULT_DIRECTIVES.get(
+            persona,
+            "Focus on evidence quality, contradictions, and practical implications.",
+        )
+        fill_cfg_list.append({
+            "persona": f"{persona}_gap_fill",
+            "directive": f"{base_directive}\n\nFocus specifically on these gaps:\n{gap_text}",
+            "model": str(model_cfg.get("model", "qwen3:8b")).strip(),
+            "temperature": float(model_cfg.get("temperature", 0.3)),
+            "num_ctx": int(model_cfg.get("num_ctx", 12288)),
+            "think": False,
+            "timeout_sec": 90,
+            "retry_attempts": 3,
+            "retry_backoff_sec": float(model_cfg.get("retry_backoff_sec", 1.5)),
+            "validation_cycles": 1,
+            "fallback_models": list(model_cfg.get("fallback_models") or []),
+            "role": "advisory",
+        })
+
+    if not fill_cfg_list:
+        return []
+
+    fill_findings: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=len(fill_cfg_list)) as executor:
+        futures = {
+            executor.submit(
+                _run_one_agent,
+                client,
+                model_cfg,
+                cfg,
+                question,
+                "",  # no learned_guidance for fill pass
+                web_context,
+                project_context,
+                prior_messages,
+                cancel_checker,
+                pause_checker,
+            ): cfg
+            for cfg in fill_cfg_list
+        }
+        for future in futures:
+            try:
+                result = future.result()
+                finding_text = str(result.get("finding", "")).strip()
+                if finding_text and not _is_failure_text(finding_text):
+                    score = _self_check(client, model_cfg, question, finding_text)
+                    result["confidence"] = score
+                    result["role"] = "advisory"
+                    fill_findings.append(result)
+            except Exception:
+                pass
+
+    return fill_findings
 
 
 def _recover_failed_findings(
@@ -1146,7 +1294,10 @@ def run_research_pool(
     executor = ThreadPoolExecutor(max_workers=worker_count)
     pending: set[Any] = set()
     future_agent: dict[Any, str] = {}
-    queue = list(agents)
+    # Sort agents by model name so same-model agents run consecutively.
+    # This keeps each model warm in VRAM across back-to-back calls,
+    # reducing Ollama load/evict churn within the pool.
+    queue = sorted(agents, key=lambda a: str(a.get("model", "")))
     try:
         while queue or pending:
             if _is_cancelled():
@@ -1339,8 +1490,8 @@ def run_research_pool(
 
     # Underground topics: force abliterated model for synthesis — no filtered models in the pipeline.
     if str(topic_type).strip().lower() == "underground":
-        synth_cfg["model"] = "llama3.1-abliterated:8b"
-        synth_cfg["synthesis_fallback_models"] = ["llama3.1-abliterated:8b"]
+        synth_cfg["model"] = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
+        synth_cfg["synthesis_fallback_models"] = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
 
     summary_name = store.timestamped_name("research_summary")
     conflict_report = _cross_agent_conflict_report(findings)
@@ -1358,20 +1509,30 @@ def run_research_pool(
     if skeptic_md:
         summary_md = f"{summary_md}\n\n---\n\n{skeptic_md}"
 
-    _confidence_scores = [int(f.get("confidence", 0)) for f in findings if isinstance(f.get("confidence"), (int, float))]
-    if _confidence_scores:
-        _avg_conf = sum(_confidence_scores) / len(_confidence_scores)
-        _conf_labels = {0: "failed", 1: "very low", 2: "low", 3: "medium", 4: "high", 5: "very high"}
+    _all_scores = [f.get("confidence") for f in findings]
+    _scored = [int(s) for s in _all_scores if isinstance(s, (int, float)) and int(s) > 0]
+    _unscored_count = sum(1 for s in _all_scores if not isinstance(s, (int, float)) or int(s) == 0)
+    if _scored:
+        _avg_conf = sum(_scored) / len(_scored)
+        _conf_labels = {1: "very low", 2: "low", 3: "medium", 4: "high", 5: "very high"}
         _agent_conf_lines = "\n".join(
             f"- {str(f.get('agent', 'agent'))}: {int(f.get('confidence', 0))}/5"
+            + (" (unscored)" if int(f.get("confidence", 0)) == 0 else "")
             for f in findings
         )
+        _unscored_note = f" | {_unscored_count} agent(s) unscored" if _unscored_count else ""
         summary_md = (
             f"{summary_md}\n\n---\n\n"
             f"**Source Quality** — avg confidence {_avg_conf:.1f}/5 "
             f"({_conf_labels.get(round(_avg_conf), 'unknown')})"
-            f" | agents: {len(_confidence_scores)}\n\n"
+            f" | scored: {len(_scored)}/{len(findings)}{_unscored_note}\n\n"
             f"{_agent_conf_lines}"
+        )
+    elif _unscored_count:
+        summary_md = (
+            f"{summary_md}\n\n---\n\n"
+            f"**Source Quality** — agent self-scoring unavailable "
+            f"({_unscored_count} agent(s) did not return a score)"
         )
 
     summary_path = store.write_project_file(project_slug, "research_summaries", summary_name, summary_md)
@@ -1379,6 +1540,15 @@ def run_research_pool(
         "research_summary_written",
         {"summary_path": str(summary_path), "findings_collected": len(findings)},
     )
+
+    # Release Ollama-hosted models from VRAM now that the full pipeline is done.
+    # Models routed through llama.cpp are managed by that server process and skipped.
+    _release_models = sorted({
+        str(f.get("model", "")).strip()
+        for f in findings
+        if str(f.get("model", "")).strip()
+    } | {str(model_cfg.get("model", "")).strip(), str(synth_cfg.get("model", "")).strip()})
+    client.release_models([m for m in _release_models if m])
 
     bus.emit(
         "research_pool",
@@ -1410,4 +1580,5 @@ def run_research_pool(
         "reliability": reliability,
         "analysis_profile": profile_name,
         "topic_type": resolved_type,
+        "findings": findings,
     }

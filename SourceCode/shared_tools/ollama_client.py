@@ -65,6 +65,7 @@ class OllamaClient:
         retry_attempts: int = 1,
         retry_backoff_sec: float = 1.25,
         fallback_models: list[str] | None = None,
+        keep_alive: str = "10m",
     ) -> str:
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         if prior_messages:
@@ -107,6 +108,7 @@ class OllamaClient:
                 "model": model_name,
                 "stream": False,
                 "messages": messages,
+                "keep_alive": str(keep_alive) if keep_alive is not None else "10m",
                 "options": {
                     "temperature": temperature,
                     "num_ctx": num_ctx,
@@ -136,6 +138,17 @@ class OllamaClient:
 
         tail = " | ".join(errors[-6:]) if errors else "unknown failure"
         raise RuntimeError(f"Ollama chat failed after retries/fallbacks: {tail}")
+
+    def release_model(self, model: str) -> None:
+        """Tell Ollama to immediately unload a model from VRAM (keep_alive=0)."""
+        try:
+            self._post_json(
+                "/api/generate",
+                {"model": model, "prompt": "", "keep_alive": 0},
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     def embed(self, model: str, text: str, *, timeout: int = 60) -> list[float]:
         response = self._post_json("/api/embed", {"model": model, "input": text}, timeout=timeout)

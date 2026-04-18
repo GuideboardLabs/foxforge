@@ -109,6 +109,7 @@ def synthesize(
     project_context: str = "",
     prior_messages: list[dict[str, str]] | None = None,
     conflict_report: str = "",
+    prior_synthesis: str = "",
 ) -> str:
     if client is None or not model_cfg:
         return _fallback_synthesis(question, findings)
@@ -168,7 +169,11 @@ def synthesize(
         "- [E]: state confidently, include source domain or URL.\n"
         "- [I]: frame as inference — 'this suggests...'\n"
         "- [S]: frame as hypothesis — 'one possibility is...'\n"
-        "Never launder [I] or [S] into presented facts. "
+        "Never launder [I] or [S] into presented facts.\n\n"
+        "NO NEW CLAIMS: Only assert facts, statistics, names, dates, or conclusions that appear "
+        "in the agent findings above. Do NOT introduce details that are not traceable to at least "
+        "one finding — not even plausible-sounding ones. If coverage is thin, state that explicitly "
+        "in Uncertainties & Risks rather than filling the gap. Fabrication is worse than a short answer.\n\n"
         "End Executive Summary with: 'Evidence Confidence: [High/Mixed/Low] — [one-line reason].' "
         "For time-sensitive topics, state whether events are upcoming, ongoing, or past relative to today."
     )
@@ -190,10 +195,18 @@ def synthesize(
             f"(state which position has stronger evidence or note genuine uncertainty):\n"
             f"{conflict_report.strip()}"
         )
+    _prior_block = ""
+    if prior_synthesis and prior_synthesis.strip():
+        _prior_block = (
+            f"Prior synthesis (for reference — refine, don't repeat):\n"
+            f"{prior_synthesis.strip()[:1200]}\n\n"
+            "New and supplementary findings below — use these to fill gaps the prior synthesis left open:\n"
+        )
     user_prompt = (
         f"Question:\n{question}\n\n"
         f"Known project facts (if any):\n{project_context.strip() or '(none)'}\n\n"
         f"Recent command-thread history (if any):\n{history_block or '(none)'}\n\n"
+        f"{_prior_block}"
         f"Research outputs:\n{findings_blob}"
         f"{_conflict_section}\n\n"
         "Return markdown only, not inside ``` fences."
@@ -283,11 +296,13 @@ def run_skeptic_pass(
         "research conclusions before they reach the user. You are not trying to be balanced or "
         "reassuring. You are trying to find every crack.\n\n"
         "For the synthesis provided, produce a structured critique covering:\n"
-        "  1. Unsupported claims — assertions presented as fact with no [E] backing\n"
-        "  2. Weak evidence — claims resting on a single source, low-tier source, or wire-laundered reporting\n"
-        "  3. Missing perspectives — what expert voices, data types, or opposing viewpoints are absent\n"
-        "  4. Conclusion vulnerabilities — what single piece of contradicting evidence would overturn the main findings\n"
-        "  5. Confidence adjustment — one direct sentence on whether the reader's confidence should be "
+        "  1. Fabricated specifics — any numbers, dates, names, URLs, version strings, or direct quotes "
+        "that do not appear in the agent findings; flag each one explicitly\n"
+        "  2. Unsupported claims — assertions presented as fact with no [E] backing in the findings\n"
+        "  3. Weak evidence — claims resting on a single source, low-tier source, or wire-laundered reporting\n"
+        "  4. Missing perspectives — what expert voices, data types, or opposing viewpoints are absent\n"
+        "  5. Conclusion vulnerabilities — what single piece of contradicting evidence would overturn the main findings\n"
+        "  6. Confidence adjustment — one direct sentence on whether the reader's confidence should be "
         "higher, lower, or unchanged, and exactly why\n\n"
         "Format strictly as markdown. Be direct and specific. "
         "Do not summarise the synthesis back. Do not hedge. Attack the reasoning."

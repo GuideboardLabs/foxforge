@@ -14,9 +14,12 @@ from shared_tools.personal_memory_records import PersonalMemoryRecordStore
 _PROFILE_DEFAULTS: dict[str, str] = {
     "preferred_name": "",
     "full_name": "",
+    "age": "",
     "gender": "",
     "birthday": "",
     "location": "",
+    "ancestry": "",
+    "health": "",
     "work": "",
     "likes": "",
     "dislikes": "",
@@ -51,23 +54,10 @@ _PET_DEFAULTS: dict[str, str] = {
     "microchip": "",
     "behavior_notes": "",
 }
-_REMINDER_DEFAULTS: dict[str, str] = {
-    "label": "",
-    "frequency": "",
-    "time": "",
-    "notes": "",
-    "person": "",
-    "start_date": "",
-    "end_date": "",
-    "location": "",
-    "channel": "",
-    "priority": "",
-}
 _EMPTY_SCHEMA: dict[str, Any] = {
     "user_profile": {},
     "family_members": [],
     "pets": [],
-    "recurring_reminders": [],
     "household_notes": "",
 }
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
@@ -107,13 +97,10 @@ _PET_QUERY_HINTS = {
     "pet", "pets", "dog", "cat", "puppy", "kitten", "vet", "veterinarian", "food", "walk",
     "groom", "grooming", "neuter", "spay", "animal", "flea", "tick", "medication", "medications",
 }
-_REMINDER_QUERY_HINTS = {
-    "remind", "reminder", "schedule", "calendar", "appointment", "due", "renew", "followup",
-    "follow-up", "birthday", "anniversary",
-}
 _PROFILE_QUERY_HINTS = {
     "name", "birthday", "location", "near", "local", "travel", "trip", "vacation", "weather",
-    "work", "job", "career", "gift", "restaurant", "movie", "music", "food",
+    "work", "job", "career", "gift", "restaurant", "movie", "music", "food", "age", "ancestry",
+    "health",
 }
 def _atomic_write(path: Path, data: dict) -> None:
     tmp = path.with_suffix(".tmp")
@@ -287,7 +274,6 @@ class PersonalMemory:
         result["user_profile"] = _normalize_object(payload.get("user_profile", {}), _PROFILE_DEFAULTS)
         result["family_members"] = _normalize_rows(payload.get("family_members", []), _FAMILY_DEFAULTS, "name")
         result["pets"] = _normalize_rows(payload.get("pets", []), _PET_DEFAULTS, "name")
-        result["recurring_reminders"] = _normalize_rows(payload.get("recurring_reminders", []), _REMINDER_DEFAULTS, "label")
         result["household_notes"] = _clean_text(payload.get("household_notes", ""))
         return result
 
@@ -437,7 +423,6 @@ class PersonalMemory:
             "forgotten": len([row for row in records if _clean_text(row.get("status", "")).lower() == "forgotten"]),
             "family_members": len(context.get("family_members", [])) if isinstance(context.get("family_members", []), list) else 0,
             "pets": len(context.get("pets", [])) if isinstance(context.get("pets", []), list) else 0,
-            "recurring_reminders": len(context.get("recurring_reminders", [])) if isinstance(context.get("recurring_reminders", []), list) else 0,
         }
 
         briefing_lines: list[str] = []
@@ -510,8 +495,6 @@ class PersonalMemory:
             return f"Family: {subject} | {field}: {value}"
         if category == "pet":
             return f"Pet: {subject} | {field}: {value}"
-        if category == "reminder":
-            return f"Reminder: {subject} | {field}: {value}"
         if category == "household":
             return f"Household: {value}"
         return f"Memory: {subject or category} | {field}: {value}"
@@ -731,8 +714,6 @@ class PersonalMemory:
                 score += 0.08
             if category == "pet" and query_terms & _PET_QUERY_HINTS:
                 score += 0.08
-            if category == "reminder" and query_terms & _REMINDER_QUERY_HINTS:
-                score += 0.1
             if subject and _name_key(subject) in _name_key(low):
                 score += 0.18
             if field and field.replace("_", " ") in low:
@@ -786,8 +767,11 @@ class PersonalMemory:
             extras = _detail_parts(
                 profile,
                 [
+                    ("age", "age"),
                     ("birthday", "birthday"),
                     ("location", "location"),
+                    ("ancestry", "ancestry"),
+                    ("health", "health"),
                     ("work", "work"),
                     ("likes", "likes"),
                     ("dislikes", "dislikes"),
@@ -851,32 +835,8 @@ class PersonalMemory:
                 lines.append(line)
             sections.append("\n".join(lines))
 
-        reminders = [r for r in data.get("recurring_reminders", []) if isinstance(r, dict) and r.get("label")]
-        if reminders:
-            lines = ["### Recurring Reminders"]
-            for r in reminders:
-                extras = _detail_parts(
-                    r,
-                    [
-                        ("frequency", "frequency"),
-                        ("time", "time"),
-                        ("person", "person"),
-                        ("start_date", "start"),
-                        ("end_date", "end"),
-                        ("location", "location"),
-                        ("channel", "channel"),
-                        ("priority", "priority"),
-                        ("notes", "notes"),
-                    ],
-                )
-                line = f"- {r['label']}"
-                if extras:
-                    line += " | " + "; ".join(extras)
-                lines.append(line)
-            sections.append("\n".join(lines))
-
         notes = str(data.get("household_notes", "")).strip()
         if notes:
-            sections.append(f"### Household Notes\n{notes}")
+            sections.append(f"### Context Notes\n{notes}")
 
         return "\n\n".join(sections)

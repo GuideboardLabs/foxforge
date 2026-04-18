@@ -361,6 +361,28 @@ class ForageCardRepository:
             row = conn.execute("SELECT * FROM forage_cards WHERE id = ?;", (card_id,)).fetchone()
         return row_to_dict(row) if row is not None else None
 
+    def resolve_card_id(self, card_id_or_request_id: str) -> str:
+        raw = str(card_id_or_request_id or "").strip()
+        if not raw:
+            return ""
+        # Primary path: caller already passed a forage card id.
+        if self.get_card(raw) is not None:
+            return raw
+        # Compatibility path: chat quick-actions pass request_id while card ids are fc_<request[:12]>_<suffix>.
+        req_prefix = raw[:12].strip()
+        if not req_prefix:
+            return ""
+        like_pattern = f"fc_{req_prefix}_%"
+        with connect_db(self.repo_root) as conn:
+            row = conn.execute(
+                "SELECT id FROM forage_cards WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1;",
+                (like_pattern,),
+            ).fetchone()
+        if row is None:
+            return ""
+        payload = row_to_dict(row) or {}
+        return str(payload.get("id", "")).strip()
+
     def pin_card(self, card_id: str) -> bool:
         with connect_db(self.repo_root) as conn, transaction(conn, immediate=True):
             cur = conn.execute(

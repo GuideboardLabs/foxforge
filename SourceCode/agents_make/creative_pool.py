@@ -1,13 +1,13 @@
 """Creative writing pool — novels, memoirs, books, screenplays.
 
 Pipeline:
-    1. Story Planner  — qwen3:14b outlines narrative arc, scenes, character beats.
-    2. Scene Writer    — qwen3:14b (temp 0.7) drafts scenes sequentially with
+    1. Story Planner  — qwen3:8b outlines narrative arc, scenes, character beats.
+    2. Scene Writer    — qwen3:8b (temp 0.7) drafts scenes sequentially with
                          prior scene context for continuity.
-    3. Voice Critic    — qwen3:14b checks tense drift, POV breaks, pacing,
+    3. Voice Critic    — qwen3:8b checks tense drift, POV breaks, pacing,
                          dialogue authenticity.
-    4. Revision Pass   — qwen3:14b applies critic notes to flagged scenes.
-    5. Compositor      — qwen3:14b assembles final chapter with smooth transitions.
+    4. Revision Pass   — qwen3:8b applies critic notes to flagged scenes.
+    5. Compositor      — qwen3:8b assembles final chapter with smooth transitions.
 
 Kind-specific formatting:
     - novel:      scene headers, dialogue, interior monologue, chapter hooks
@@ -25,10 +25,10 @@ from typing import Any, Callable
 from shared_tools.ollama_client import OllamaClient
 
 
-_MODEL_PLANNER    = "qwen3:14b"
-_MODEL_WRITER     = "qwen3:14b"
-_MODEL_CRITIC     = "qwen3:14b"
-_MODEL_COMPOSITOR = "qwen3:14b"
+_MODEL_PLANNER    = "qwen3:8b"
+_MODEL_WRITER     = "qwen3:8b"
+_MODEL_CRITIC     = "qwen3:8b"
+_MODEL_COMPOSITOR = "qwen3:8b"
 
 
 def _today() -> str:

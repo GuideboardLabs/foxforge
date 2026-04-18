@@ -2,11 +2,11 @@
 
 Pipeline:
     1. Research Integration — reads all project research context
-    2. Outline             — qwen3:14b uses domain-specific section templates
-    3. Section Writer      — qwen3:14b writes sections in parallel (max 3)
+    2. Outline             — qwen3:8b uses domain-specific section templates
+    3. Section Writer      — qwen3:8b writes sections in parallel (max 3)
     4. Domain Critic       — deepseek-r1:8b (think mode) validates domain-specific requirements
-    5. Revision Pass       — qwen3:14b applies critic notes
-    6. Compositor          — qwen3:14b assembles final document
+    5. Revision Pass       — qwen3:8b applies critic notes
+    6. Compositor          — qwen3:8b assembles final document
     7. Quality Gate        — validates length, disclaimers, truncation
 
 Reuses section templates from essay_pool for domain-specific structure.
@@ -22,10 +22,10 @@ from typing import Any, Callable
 from shared_tools.ollama_client import OllamaClient
 
 
-_MODEL_OUTLINE    = "qwen3:14b"
-_MODEL_WRITER     = "qwen3:14b"
+_MODEL_OUTLINE    = "qwen3:8b"
+_MODEL_WRITER     = "qwen3:8b"
 _MODEL_CRITIC     = "deepseek-r1:8b"
-_MODEL_COMPOSITOR = "qwen3:14b"
+_MODEL_COMPOSITOR = "qwen3:8b"
 
 
 def _today() -> str:

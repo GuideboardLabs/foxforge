@@ -115,7 +115,7 @@ ensure_container "searxng" \
     "-p 8080:8080 --name searxng -v ${SEARX_SETTINGS_PATH}:/etc/searxng/settings.yml searxng/searxng"
 
 ensure_container "crawl4ai" \
-    "--platform linux/amd64 -p 11235:11235 --name crawl4ai --shm-size=1g --cpus=4 --memory=4g -e MAX_CONCURRENT_TASKS=5 -e BROWSER_POOL_SIZE=10 unclecode/crawl4ai:latest"
+    "--platform linux/amd64 -p 11235:11235 --name crawl4ai --shm-size=2g --cpus=4 --memory=4g -e MAX_CONCURRENT_TASKS=5 -e BROWSER_POOL_SIZE=10 unclecode/crawl4ai:latest"
 
 sleep 4
 

@@ -144,6 +144,7 @@ class InferenceRouter:
         retry_attempts: int = 1,
         retry_backoff_sec: float = 1.25,
         fallback_models: list[str] | None = None,
+        keep_alive: str = "10m",
     ) -> str:
         kwargs: dict[str, Any] = dict(
             prior_messages=prior_messages,
@@ -156,36 +157,81 @@ class InferenceRouter:
             retry_backoff_sec=retry_backoff_sec,
         )
         errors: list[str] = []
-        for candidate in self._candidate_models(model, fallback_models):
+        _call_start = time.perf_counter()
+        for _cand_idx, candidate in enumerate(self._candidate_models(model, fallback_models)):
             routed_to_llama = self._server_declares_model(candidate)
             client = self._llama_clients[self._model_map[candidate]] if routed_to_llama else self._ollama
+            _route = "llama.cpp" if routed_to_llama else "ollama"
+            _attempt_start = time.perf_counter()
+            # keep_alive is Ollama-specific — only include it when routing to Ollama
+            call_kwargs = dict(kwargs, fallback_models=[])
+            if not routed_to_llama:
+                call_kwargs["keep_alive"] = keep_alive
             try:
-                return client.chat(
+                result = client.chat(
                     candidate,
                     system_prompt,
                     user_prompt,
-                    **dict(kwargs, fallback_models=[]),
+                    **call_kwargs,
                 )
+                LOGGER.info(
+                    "inference_call model=%s route=%s elapsed=%.3fs total=%.3fs attempts=%d fallback=%s status=ok",
+                    candidate, _route,
+                    round(time.perf_counter() - _attempt_start, 3),
+                    round(time.perf_counter() - _call_start, 3),
+                    _cand_idx + 1, _cand_idx > 0,
+                )
+                return result
             except RuntimeError as exc:
-                errors.append(f"{candidate} via {'llama.cpp' if routed_to_llama else 'ollama'}: {exc}")
+                _attempt_elapsed = round(time.perf_counter() - _attempt_start, 3)
+                errors.append(f"{candidate} via {_route}: {exc}")
+                LOGGER.warning(
+                    "inference_call model=%s route=%s elapsed=%.3fs attempt=%d status=fail error=%s",
+                    candidate, _route, _attempt_elapsed, _cand_idx + 1, str(exc)[:120],
+                )
                 if routed_to_llama:
                     server_key = self._model_map.get(candidate, "")
                     self._mark_server_backoff(server_key)
                     if self._should_fallback(candidate):
+                        _fb_start = time.perf_counter()
                         try:
                             LOGGER.warning("llama.cpp server failed for %s, falling back to Ollama", candidate)
-                            return self._ollama.chat(
+                            result = self._ollama.chat(
                                 candidate,
                                 system_prompt,
                                 user_prompt,
-                                **dict(kwargs, fallback_models=[]),
+                                **dict(kwargs, fallback_models=[], keep_alive=keep_alive),
                             )
+                            LOGGER.info(
+                                "inference_call model=%s route=ollama_fallback elapsed=%.3fs total=%.3fs attempts=%d fallback=true status=ok",
+                                candidate,
+                                round(time.perf_counter() - _fb_start, 3),
+                                round(time.perf_counter() - _call_start, 3),
+                                _cand_idx + 1,
+                            )
+                            return result
                         except RuntimeError as ollama_exc:
                             errors.append(f"{candidate} via ollama fallback: {ollama_exc}")
+                            LOGGER.warning(
+                                "inference_call model=%s route=ollama_fallback elapsed=%.3fs attempt=%d status=fail",
+                                candidate, round(time.perf_counter() - _fb_start, 3), _cand_idx + 1,
+                            )
                 continue
 
         tail = " | ".join(errors[-8:]) if errors else "No model candidates were available."
         raise RuntimeError(f"InferenceRouter chat failed after routed retries/fallbacks: {tail}")
+
+    def release_models(self, models: list[str]) -> None:
+        """Release Ollama-hosted models from VRAM after a pool run completes.
+
+        Only releases models NOT in the llama.cpp model map — those are managed
+        by the external server process, not Ollama's VRAM scheduler.
+        """
+        for model in models:
+            if not model:
+                continue
+            if model not in self._model_map:
+                self._ollama.release_model(model)
 
     def embed(self, model: str, text: str, *, timeout: int = 60) -> list[float]:
         return self._ollama.embed(model, text, timeout=timeout)

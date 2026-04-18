@@ -81,6 +81,7 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
             project_rows = _project_panel_rows(ctx, orch, limit=200)
             pending_actions_count = len(orch.pending_actions_data(limit=500))
             foraging = ctx.foraging_manager.snapshot(profile_id=str(profile.get("id", "")))
+            building = ctx.building_manager.snapshot(profile_id=str(profile.get("id", "")))
             try:
                 wt_local = ctx.get_watchtower()
                 briefings_unread = wt_local.unread_count()
@@ -106,6 +107,16 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
                 library_counts = ctx.library_service_for(profile).counts()
             except Exception:
                 library_counts = {"total": 0, "pending": 0}
+            try:
+                external_mode = orch.external_tools_settings.get_mode()
+            except Exception:
+                external_mode = "off"
+            open_external_requests = 0
+            if external_mode != "off":
+                try:
+                    open_external_requests = len(orch.external_request_store.list_open(limit=500))
+                except Exception:
+                    open_external_requests = 0
             return {
                 "pending_actions": pending_actions_count,
                 "open_reflections": orch.reflection_engine.count_open(),
@@ -114,12 +125,8 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
                 "web_mode": orch.web_engine.get_mode(),
                 "open_cloud_requests": 0,
                 "cloud_mode": "off",
-                "open_external_requests": (
-                    len(orch.external_request_store.list_open(limit=500))
-                    if orch.external_tools_settings.get_mode() != "off"
-                    else 0
-                ),
-                "external_tools_mode": orch.external_tools_settings.get_mode(),
+                "open_external_requests": open_external_requests,
+                "external_tools_mode": external_mode,
                 "pending_handoffs": len(monitored),
                 "handoff_waiting_output": waiting_output,
                 "handoff_ready_for_ingest": ready_for_ingest,
@@ -128,6 +135,9 @@ def register_health_routes(bp: Blueprint, ctx: AppContext) -> None:
                 "foraging_active_jobs": int(foraging.get("active_jobs", 0)),
                 "foraging_yielding": bool(foraging.get("yielding", False)),
                 "foraging_updated_at": str(foraging.get("updated_at", "")).strip(),
+                "building_paused": bool(building.get("paused", False)),
+                "building_active_jobs": int(building.get("active_jobs", 0)),
+                "building_updated_at": str(building.get("updated_at", "")).strip(),
                 "briefings_unread": briefings_unread,
                 "action_proposals_pending": action_proposals_pending,
                 "watchtower_active": watchtower_active,

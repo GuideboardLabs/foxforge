@@ -264,6 +264,7 @@ class ConversationStore:
         mode: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         foraging: bool | None = None,
+        building: bool | None = None,
         request_id: str | None = None,
         meta: dict[str, Any] | None = None,
         reply_to: dict[str, Any] | None = None,
@@ -283,6 +284,8 @@ class ConversationStore:
                 message["mode"] = str(mode).strip().lower()
             if foraging is not None:
                 message["foraging"] = bool(foraging)
+            if building is not None:
+                message["building"] = bool(building)
             if request_id:
                 message["request_id"] = str(request_id).strip()
             if attachments:
@@ -323,6 +326,31 @@ class ConversationStore:
 
             self._save(data)
             return message
+
+    def replace_messages(
+        self,
+        conversation_id: str,
+        messages: list[dict[str, Any]] | None,
+        *,
+        summary: str | None = None,
+        last_read_message_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            data = self._load(conversation_id)
+            if data is None:
+                return None
+            safe_messages: list[dict[str, Any]] = []
+            for row in messages or []:
+                if isinstance(row, dict):
+                    safe_messages.append(json.loads(json.dumps(row, ensure_ascii=True)))
+            data["messages"] = safe_messages
+            if summary is not None:
+                data["summary"] = str(summary).strip()[:600]
+            if last_read_message_id is not None:
+                data["last_read_message_id"] = str(last_read_message_id or "").strip()
+            data["updated_at"] = _now_iso()
+            self._save(data)
+            return self._decorate(data)
 
     def mark_read(self, conversation_id: str) -> dict[str, Any] | None:
         with self.lock:

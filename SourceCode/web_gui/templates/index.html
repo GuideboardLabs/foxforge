@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Foxforge</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='branding/logo.png', v=asset_v) }}" />
-    <link rel="apple-touch-icon" href="{{ url_for('static', filename='branding/logo.png', v=asset_v) }}" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='branding/foxforge-appicon.png', v=asset_v) }}" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -35,17 +35,25 @@
                     <button class="new-chat-btn new-general-btn" type="button" @click="beginProjectCreation()">+ Project</button>
                 </div>
 
-                <div class="conversation-list">
-                    <article v-for="conv in conversations" :key="conv.id" class="conv-item" :class="{ active: conv.id === activeConversationId }">
-                        <button type="button" class="conv-open-btn" @click="openConversation(conv.id)">
-              <h3 class="conv-title">[[ conv.title || 'New Chat' ]]</h3>
-              <span class="panel-badge" v-if="conv.unread_count">[[ conv.unread_count ]]</span>
-              <p class="conv-project-tag">[[ conv.path || conv.project || 'general' ]]</p>
-              <p class="conv-preview">[[ conv.last_preview || '' ]]</p>
-            </button>
-                        <button type="button" class="conv-delete-btn" aria-label="Delete conversation" @click="deleteConversation(conv.id)">&times;</button>
-                    </article>
-                </div>
+                <section class="sidebar-chat-lane">
+                    <header class="sidebar-section-head">
+                        <h2>Chats</h2>
+                        <span class="sidebar-section-count" v-if="conversations.length">[[ conversations.length ]]</span>
+                    </header>
+                    <div class="conversation-list">
+                        <article v-for="conv in conversations" :key="conv.id" class="conv-item" :class="{ active: conv.id === activeConversationId }">
+                            <button type="button" class="conv-open-btn" @click="openConversation(conv.id)">
+                  <h3 class="conv-title">[[ conv.title || 'New Chat' ]]</h3>
+                  <span class="panel-badge" v-if="conv.id !== activeConversationId && panelBadgeValue(conv.unread_count)">[[ panelBadgeValue(conv.unread_count) ]]</span>
+                  <div v-if="normalizeProjectSlug(conv.project || 'general') !== 'general'" class="conv-meta-row">
+                    <span class="conv-project-badge topic-type-badge" :class="'is-' + conversationTopicType(conv)">[[ conversationProjectTagText(conv) ]]</span>
+                  </div>
+                  <p class="conv-preview">[[ conv.last_preview || '' ]]</p>
+                </button>
+                            <button type="button" class="conv-delete-btn" aria-label="Delete conversation" @click="deleteConversation(conv.id)">&times;</button>
+                        </article>
+                    </div>
+                </section>
 
                 <div class="sidebar-dock" :class="{ 'is-collapsed': sidebarPanelsCollapsed }">
                     <div class="sidebar-dock-header">
@@ -79,6 +87,17 @@
                 [[ panelBadgeValue(panelStatus.foraging_active_jobs) ]]
               </span>
             </button>
+                            <button class="panel-btn panel-btn-building" type="button" @click="openSystemPanel('building')">
+              <span class="panel-btn-main">
+                <span class="junction-icon junction-icon-building" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><path d="M21.2 7.4a5.2 5.2 0 0 1-6.83 6.4l-6.55 6.55a1.8 1.8 0 0 1-2.54-2.54l6.55-6.55a5.2 5.2 0 0 1 6.4-6.83l-3.1 3.1.94 1.88 1.88.94 3.25-3.25z"/></svg>
+                </span>
+                <span class="panel-btn-label">Building</span>
+              </span>
+              <span class="panel-badge" v-if="panelBadgeValue(panelStatus.building_active_jobs)">
+                [[ panelBadgeValue(panelStatus.building_active_jobs) ]]
+              </span>
+            </button>
                             <button class="panel-btn panel-btn-reflections" type="button" @click="openSystemPanel('reflections')">
               <span class="panel-btn-main">
                 <span class="junction-icon junction-icon-reflections" aria-hidden="true">
@@ -95,7 +114,7 @@
                 <span class="junction-icon junction-icon-guideposts" aria-hidden="true">
                   <svg viewBox="0 0 24 24" focusable="false"><path d="M8 3h8l3 4-3 4H8V3zm0 10h8l3 4-3 4H8v-8zM5 2h2v20H5z"/></svg>
                 </span>
-                <span class="panel-btn-label">Guideposts</span>
+                <span class="panel-btn-label">Guidance</span>
               </span>
               <span class="panel-badge" v-if="panelBadgeValue(lessonsUnreadCount)">
                 [[ panelBadgeValue(lessonsUnreadCount) ]]
@@ -106,7 +125,7 @@
                 <span class="junction-icon junction-icon-fieldbook" aria-hidden="true">
                   <svg viewBox="0 0 24 24" focusable="false"><path d="M6 4.5A2.5 2.5 0 0 1 8.5 2H18v18h-9.5A2.5 2.5 0 0 0 6 22V4.5zm12 13.7V3.8H8.5A.7.7 0 0 0 7.8 4.5v14.13c.24-.07.47-.1.7-.1H18zM9.8 7h5.8v1.7H9.8V7zm0 3.4h5.8v1.7H9.8v-1.7zm0 3.4h4.2v1.7H9.8v-1.7z"/></svg>
                 </span>
-                <span class="panel-btn-label">Fieldbook</span>
+                <span class="panel-btn-label">Topics</span>
               </span>
               <span class="panel-badge" v-if="panelBadgeValue(panelStatus.topics_with_research)">
                 [[ panelBadgeValue(panelStatus.topics_with_research) ]]
@@ -159,15 +178,7 @@
 <button class="panel-btn panel-btn-life-admin" type="button" @click="openSystemPanel('life-admin')">
               <span class="panel-btn-main">
                 <span class="road-icon" aria-hidden="true">h</span>
-                <span class="panel-btn-label">Life Admin</span>
-              </span>
-            </button>
-                            <button class="panel-btn panel-btn-second-brain" type="button" @click="openSystemPanel('second-brain')">
-              <span class="panel-btn-main">
-                <span class="junction-icon junction-icon-memory" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false"><path d="M8.5 5.5A3.5 3.5 0 0 1 12 2a3.9 3.9 0 0 1 3 1.3A3.4 3.4 0 0 1 19.5 7c1.4.7 2.3 2.1 2.3 3.8 0 1.8-1 3.3-2.6 4v2.2c0 .8-.7 1.5-1.5 1.5H15v2h-2v-2h-2v2H9v-2H6.3c-.8 0-1.5-.7-1.5-1.5v-2.2c-1.6-.7-2.6-2.2-2.6-4C2.2 9 3 7.6 4.5 6.9A3.6 3.6 0 0 1 8.5 5.5zm-.7 4.3a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4zm8.4 0a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4zM9 14.1c.7.7 1.7 1.1 3 1.1s2.3-.4 3-1.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </span>
-                <span class="panel-btn-label">Second Brain</span>
+                <span class="panel-btn-label">Personal Context</span>
               </span>
             </button>
                             <button class="panel-btn panel-btn-system" type="button" @click="openSystemPanel('system')">
@@ -273,12 +284,16 @@
                     <span>Foraging</span>
                     <strong>[[ Number(panelStatus.foraging_active_jobs || 0) ]]</strong>
                   </button>
+                                    <button class="home-junction-btn" type="button" @click="openSystemPanel('building')">
+                    <span>Building</span>
+                    <strong>[[ Number(panelStatus.building_active_jobs || 0) ]]</strong>
+                  </button>
                                     <button class="home-junction-btn" type="button" @click="openSystemPanel('reflections')">
                     <span>Reflections</span>
                     <strong>[[ Number(reflectionsUnreadCount || 0) ]]</strong>
                   </button>
                                     <button class="home-junction-btn" type="button" @click="openSystemPanel('lessons')">
-                    <span>Guideposts</span>
+                    <span>Guidance</span>
                     <strong>[[ Number(lessonsUnreadCount || 0) ]]</strong>
                   </button>
                                     <button class="home-junction-btn" type="button" @click="openSystemPanel('library')">
@@ -333,6 +348,12 @@
               </button>
                         </div>
                         <div class="chat-header-right">
+                            <div v-show="inputMode === 'make'" class="make-type-picker-wrap">
+                                <button class="make-type-picker-btn" type="button" @click="makeTypeModalOpen = true" :title="makeType ? 'Change Make type' : 'Pick a Make type'">
+                                    <span class="make-type-picker-label">[[ makeType ? makeLabelForType(makeType) : '— Pick type —' ]]</span>
+                                    <span class="make-type-picker-caret" aria-hidden="true">&#9662;</span>
+                                </button>
+                            </div>
                             <div class="composer-mode-segment" role="tablist" aria-label="Composer mode">
                                 <button class="composer-mode-btn" type="button" :class="{ 'is-active': inputMode === 'talk' }" @click="setComposerMode('talk')" title="Talk" aria-label="Talk">
                   <span class="composer-mode-icon composer-mode-icon-aa" aria-hidden="true">Aa</span>
@@ -362,11 +383,21 @@
                                 <button class="chat-menu-btn" type="button" aria-label="Conversation actions" title="Conversation actions" @click="chatMenuOpen = !chatMenuOpen">...</button>
                                 <div class="chat-menu" :aria-hidden="chatMenuOpen ? 'false' : 'true'">
                                     <button class="chat-menu-item" type="button" @click="renameConversation">Rename Conversation</button>
-                                    <button class="chat-menu-item" type="button" @click="openTopicPickerModal">Set Topic</button>
+                                    <button class="chat-menu-item" type="button" @click="openProjectPickerModal">[[ activeConversationIsProject ? 'Change Project' : 'Assign Project' ]]</button>
+                                    <button v-if="activeConversationIsProject" class="chat-menu-item" type="button" @click="openProjectBranchModal">Promote Branch to Project</button>
                                 </div>
                             </div>
                         </div>
                     </header>
+
+                    <section class="chat-project-toolbar" v-if="activeConversationIsProject">
+                        <span class="chat-project-chip">Project: [[ activeConversationProjectSlug ]]</span>
+                        <button type="button" class="chat-project-btn" @click="openSystemPanel('project_detail')">Project</button>
+                        <button type="button" class="chat-project-btn" @click="openSystemPanel('content')">Make</button>
+                        <button type="button" class="chat-project-btn" @click="toggleProjectMode">Mode: [[ projectModeLabel ]]</button>
+                        <button type="button" class="chat-project-btn" @click="setProjectBuildTarget">Target: [[ projectBuildTargetLabel ]]</button>
+                        <button type="button" class="chat-project-btn" @click="openProjectTopicTypeModal">Topic: [[ topicTypeLabel(projectPipeline?.topic_type) ]]</button>
+                    </section>
 
                     <section id="messages" class="messages" ref="messages" @click="onMessagesClick">
                         <template v-for="(msg, idx) in activeMessagesWithDividers" :key="msg._isDayMarker ? ('day-' + msg.day) : (msg.id || msg.ts || idx)">
@@ -378,6 +409,7 @@
               :data-msg-id="msg.id || ''"
             >
               <div v-if="msg.foraging" class="foraging-msg-tag">Foraging</div>
+              <div v-if="msg.building" class="building-msg-tag">Building</div>
               <button
                 v-if="msg.role === 'user' && msg.reply_to && msg.reply_to.id"
                 class="msg-reply-quote"
@@ -483,7 +515,7 @@
                   class="msg-action-btn"
                   :class="`is-${action.style || 'subtle'}`"
                   type="button"
-                  :disabled="isMessageActionBusy(msg, action)"
+                  :disabled="isMessageActionBusy(msg, action) || action.completed"
                   @click.stop="runAssistantAction(msg, action)"
                 >
                   <template v-if="!isMessageActionBusy(msg, action)">
@@ -522,11 +554,34 @@
                                     <span></span><span></span><span></span>
                                 </span>
                                 <span class="foraging-stage-label">
-                                    [[ activeConversationThinkingPhrase ]]
+                                    [[ activeConversationSendingLabel || activeConversationThinkingPhrase ]]
                                 </span>
                                 <span class="thinking-elapsed">
                                     [[ activeConversationElapsedSec > 0 ? activeConversationElapsedSec + 's' : '' ]]
                                 </span>
+                                <div v-if="pendingLiveSources[activeConversationId] && pendingLiveSources[activeConversationId].length" class="msg-source-row pending-sources">
+                                    <span class="msg-source-label">Reading</span>
+                                    <div class="msg-source-stack" role="list" aria-label="Live sources being read">
+                                        <a
+                                            v-for="(src, srcIdx) in pendingLiveSources[activeConversationId].slice(0, 6)"
+                                            :key="`live_${src.domain}_${srcIdx}`"
+                                            class="msg-source-bubble live-discovery"
+                                            :style="sourceBubbleStyle(src, srcIdx)"
+                                            :href="src.url || ('https://' + src.domain)"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            :title="src.title || src.domain"
+                                            :aria-label="src.domain || 'Source site'"
+                                            @click.stop
+                                        >
+                                            <span class="msg-source-bubble-letter">[[ src.domain.slice(0,1).toUpperCase() ]]</span>
+                                            <img :src="'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(src.domain)" :alt="src.domain" :data-domain="src.domain" loading="lazy" @error="onSourceBubbleIconError" />
+                                        </a>
+                                        <span v-if="pendingLiveSources[activeConversationId].length > 6" class="msg-source-bubble is-more">
+                                            +[[ pendingLiveSources[activeConversationId].length - 6 ]]
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                             <div class="msg-actions">
                                 <button type="button" class="msg-cancel-btn" @click.stop="cancelActiveThinking" title="Stop">
@@ -546,6 +601,29 @@
                                 <span class="thinking-elapsed">
                                     [[ activeConversationElapsedSec > 0 ? activeConversationElapsedSec + 's' : '' ]]
                                 </span>
+                                <div v-if="pendingLiveSources[activeConversationId] && pendingLiveSources[activeConversationId].length" class="msg-source-row pending-sources">
+                                    <span class="msg-source-label">Reading</span>
+                                    <div class="msg-source-stack" role="list" aria-label="Live sources being read">
+                                        <a
+                                            v-for="(src, srcIdx) in pendingLiveSources[activeConversationId].slice(0, 6)"
+                                            :key="`live_${src.domain}_${srcIdx}`"
+                                            class="msg-source-bubble live-discovery"
+                                            :style="sourceBubbleStyle(src, srcIdx)"
+                                            :href="src.url || ('https://' + src.domain)"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            :title="src.title || src.domain"
+                                            :aria-label="src.domain || 'Source site'"
+                                            @click.stop
+                                        >
+                                            <span class="msg-source-bubble-letter">[[ src.domain.slice(0,1).toUpperCase() ]]</span>
+                                            <img :src="'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(src.domain)" :alt="src.domain" :data-domain="src.domain" loading="lazy" @error="onSourceBubbleIconError" />
+                                        </a>
+                                        <span v-if="pendingLiveSources[activeConversationId].length > 6" class="msg-source-bubble is-more">
+                                            +[[ pendingLiveSources[activeConversationId].length - 6 ]]
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                             <div class="msg-actions">
                                 <button type="button" class="msg-cancel-btn" @click.stop="cancelActiveThinking" title="Stop">
@@ -902,77 +980,13 @@
             </section>
         </div>
 
-        <div class="task-reminder-overlay" :aria-hidden="taskReminderOpen ? 'false' : 'true'" v-show="taskReminderOpen">
-            <div class="task-reminder-backdrop" @click="closeTaskReminderDialog"></div>
-            <section class="task-reminder-modal" role="dialog" aria-modal="true" aria-label="Set task reminder">
-                <header class="task-reminder-header">
-                    <div>
-                        <h3>Set Task Reminder</h3>
-                        <p>[[ taskReminderDialog.taskTitle || 'Task' ]]</p>
-                    </div>
-                    <button type="button" class="task-reminder-close" @click="closeTaskReminderDialog">&times;</button>
-                </header>
-
-                <section class="task-reminder-quick">
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderFromNow(15)">+15m</button>
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderFromNow(30)">+30m</button>
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderFromNow(60)">+1h</button>
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderFromNow(360)">+6h</button>
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderFromNow(1440)">+24h</button>
-                    <button type="button" class="task-reminder-chip" @click="setTaskReminderCustomMinutes()">Custom</button>
-                </section>
-
-                <section class="task-reminder-plusnow">
-                    <span>From now:</span>
-                    <button type="button" class="task-reminder-mini" @click="setTaskReminderFromNow(5)">+5m</button>
-                    <button type="button" class="task-reminder-mini" @click="setTaskReminderFromNow(10)">+10m</button>
-                    <button type="button" class="task-reminder-mini" @click="setTaskReminderFromNow(20)">+20m</button>
-                    <button type="button" class="task-reminder-mini" @click="setTaskReminderFromNow(45)">+45m</button>
-                </section>
-
-                <section class="task-reminder-manual">
-                    <label>
-            <span>Date</span>
-            <input type="date" v-model="taskReminderDialog.date" @input="syncTaskReminderSliderFromTime" />
-          </label>
-                    <label>
-            <span>Time</span>
-            <input type="time" v-model="taskReminderDialog.time" @input="syncTaskReminderSliderFromTime" />
-          </label>
-                    <label>
-            <span>Clock slider</span>
-            <input
-              type="range"
-              min="0"
-              max="1439"
-              step="1"
-              v-model.number="taskReminderDialog.sliderMinutes"
-              @input="syncTaskReminderTimeFromSlider"
-            />
-          </label>
-                </section>
-
-                <div class="task-reminder-preview">
-                    <p class="task-reminder-preview-date">[[ taskReminderPreviewDateLabel ]]</p>
-                    <p class="task-reminder-preview-time">[[ taskReminderPreviewTimeLabel ]]</p>
-                </div>
-
-                <footer class="task-reminder-actions">
-                    <button type="button" class="task-reminder-btn" @click="closeTaskReminderDialog">Cancel</button>
-                    <button type="button" class="task-reminder-btn is-primary" :disabled="taskReminderSubmitting" @click="applyTaskReminder">
-            [[ taskReminderSubmitting ? 'Saving...' : 'Set Reminder' ]]
-          </button>
-                </footer>
-            </section>
-        </div>
-
     <div class="modal-form-overlay" :aria-hidden="projectPickerOpen ? 'false' : 'true'" v-show="projectPickerOpen">
         <div class="modal-form-backdrop" @click="closeProjectPickerModal"></div>
-        <section class="modal-form-modal project-picker-modal" role="dialog" aria-modal="true" aria-label="Project picker">
+        <section class="modal-form-modal project-picker-modal" role="dialog" aria-modal="true" aria-label="Assign project">
             <header class="modal-form-header">
                 <div>
-                    <h3>Set Project</h3>
-                    <p>Pick from current projects or create a new one with optional description.</p>
+                    <h3>Assign Project</h3>
+                    <p>Attach this chat to an existing project or create a new one.</p>
                 </div>
                 <button type="button" class="modal-form-close" @click="closeProjectPickerModal">&times;</button>
             </header>
@@ -1017,10 +1031,88 @@
                 <div class="modal-form-actions">
                     <button type="button" class="modal-form-btn" @click="closeProjectPickerModal">Cancel</button>
                     <button type="button" class="modal-form-btn" :disabled="projectPickerSubmitting" @click="submitProjectPickerUse">
-              [[ projectPickerSubmitting ? 'Working...' : 'Use Project' ]]
+              [[ projectPickerSubmitting ? 'Working...' : 'Assign Project' ]]
             </button>
                     <button type="button" class="modal-form-btn is-primary" :disabled="projectPickerSubmitting" @click="submitProjectPickerCreate">
               [[ projectPickerSubmitting ? 'Saving...' : 'Create / Save Project' ]]
+            </button>
+                </div>
+            </section>
+        </section>
+    </div>
+
+    <div class="modal-form-overlay" :aria-hidden="projectBranchModalOpen ? 'false' : 'true'" v-show="projectBranchModalOpen">
+        <div class="modal-form-backdrop" @click="closeProjectBranchModal"></div>
+        <section class="modal-form-modal project-picker-modal project-branch-modal" role="dialog" aria-modal="true" aria-label="Promote branch">
+            <header class="modal-form-header">
+                <div>
+                    <h3>Promote Branch to Project</h3>
+                    <p>Source branch: [[ activeConversation?.title || 'Untitled branch' ]]</p>
+                </div>
+                <button type="button" class="modal-form-close" @click="closeProjectBranchModal">&times;</button>
+            </header>
+            <section class="modal-form-body modal-form project-picker-body">
+                <label class="modal-form-field modal-form-field-full">
+            <span class="modal-form-label">Search existing projects</span>
+            <input v-model="projectBranchSearch" type="text" placeholder="Search project..." />
+          </label>
+
+                <div class="project-picker-list" v-if="!projectPickerLoading">
+                    <article v-for="row in projectBranchFilteredRows" :key="`project_branch_pick_${row.project}`" class="project-picker-item" :class="{ 'is-active': normalizeProjectSlug(projectBranchForm.project) === row.project }" @click="selectProjectBranchRow(row)">
+                        <h4>[[ row.project ]]</h4>
+                        <p v-if="row.description">[[ row.description ]]</p>
+                        <p v-else class="is-muted">No description yet.</p>
+                    </article>
+                    <div v-if="!(projectBranchFilteredRows || []).length" class="modal-empty">No matching projects.</div>
+                </div>
+                <div v-else class="modal-empty">Loading projects...</div>
+
+                <label class="modal-form-field modal-form-field-full">
+            <span class="modal-form-label">Target project</span>
+            <input
+              ref="projectBranchNameInput"
+              v-model="projectBranchForm.project"
+              type="text"
+              placeholder="project_slug"
+              @blur="normalizeProjectBranchProject"
+            />
+          </label>
+
+                <label class="modal-form-field modal-form-field-full">
+            <span class="modal-form-label">Description (optional)</span>
+            <textarea
+              v-model="projectBranchForm.description"
+              class="project-picker-description"
+              placeholder="Short description for the promoted project..."
+            ></textarea>
+          </label>
+
+                <label class="modal-form-field modal-form-field-full">
+            <span class="modal-form-label">Promotion mode</span>
+            <select v-model="projectBranchForm.mode">
+              <option value="clone">Clone: keep this branch here and copy it into the new project</option>
+              <option value="move">Move: cut this branch over to the new project</option>
+            </select>
+          </label>
+
+                <label class="toggle-inline-check">
+            <input type="checkbox" v-model="projectBranchForm.copy_project_data" />
+            <span>Copy existing project files into the promoted project</span>
+          </label>
+
+                <p class="modal-empty project-branch-mode-note" v-if="String(projectBranchForm.mode || '').toLowerCase() === 'move'">
+                    Move mode removes this branch from the current project and rehomes it in the new one.
+                </p>
+                <p class="modal-empty project-branch-mode-note" v-else>
+                    Clone mode keeps this branch and creates a promoted copy in the new project.
+                </p>
+
+                <p v-if="projectBranchError" class="project-picker-error">[[ projectBranchError ]]</p>
+
+                <div class="modal-form-actions">
+                    <button type="button" class="modal-form-btn" @click="closeProjectBranchModal">Cancel</button>
+                    <button type="button" class="modal-form-btn is-primary" :disabled="projectBranchSubmitting" @click="submitProjectBranchPromotion">
+              [[ projectBranchSubmitting ? 'Promoting...' : 'Promote Branch' ]]
             </button>
                 </div>
             </section>
@@ -1052,6 +1144,35 @@
                     <button type="button" class="modal-form-btn is-primary" :disabled="projectTargetSubmitting" @click="submitProjectBuildTargetModal">
               [[ projectTargetSubmitting ? 'Saving...' : 'Save Target' ]]
             </button>
+                </div>
+            </section>
+        </section>
+    </div>
+
+    <!-- Project Topic Type Modal -->
+    <div class="modal-form-overlay" :aria-hidden="projectTopicTypeModalOpen ? 'false' : 'true'" v-show="projectTopicTypeModalOpen">
+        <div class="modal-form-backdrop" @click="closeProjectTopicTypeModal"></div>
+        <section class="modal-form-modal" role="dialog" aria-modal="true" aria-label="Project topic type">
+            <header class="modal-form-header">
+                <div>
+                    <h3>Set Topic Type</h3>
+                    <p>Project: [[ activeProject ]]</p>
+                </div>
+                <button type="button" class="modal-form-close" @click="closeProjectTopicTypeModal">&times;</button>
+            </header>
+            <section class="modal-form-body modal-form">
+                <label class="modal-form-field modal-form-field-full">
+                    <span class="modal-form-label">Topic type</span>
+                    <select ref="projectTopicTypeSelect" v-model="projectTopicTypeForm.topic_type">
+                        <option v-for="opt in topicTypeOptions" :key="`project_topic_${opt.value}`" :value="opt.value">[[ opt.label ]]</option>
+                    </select>
+                </label>
+                <p class="project-picker-error" v-if="projectTopicTypeError">[[ projectTopicTypeError ]]</p>
+                <div class="modal-form-actions">
+                    <button type="button" class="modal-form-btn" @click="closeProjectTopicTypeModal">Cancel</button>
+                    <button type="button" class="modal-form-btn is-primary" :disabled="projectTopicTypeSubmitting" @click="submitProjectTopicTypeModal">
+                        [[ projectTopicTypeSubmitting ? 'Saving...' : 'Save Topic Type' ]]
+                    </button>
                 </div>
             </section>
         </section>
@@ -1188,7 +1309,7 @@
             <header class="family-profile-header">
                 <div>
                     <h3>Email Notifications</h3>
-                    <p>Send event reminders to your email via Gmail App Password.</p>
+                    <p>Configure Foxforge email notifications via Gmail App Password.</p>
                 </div>
                 <button type="button" class="family-profile-close" @click="closeEmailSettingsModal">&times;</button>
             </header>
@@ -1262,7 +1383,7 @@
                 <button type="button" class="family-profile-close" @click="closeMorningDigestModal">&times;</button>
             </header>
             <div class="family-profile-form">
-                <p style="margin:0 0 12px;font-size:0.88rem;opacity:0.8;">Get a push notification each morning with your day's events, due tasks, and unread briefings.</p>
+                <p style="margin:0 0 12px;font-size:0.88rem;opacity:0.8;">Get a push notification each morning with unread briefings and your saved weather snapshot.</p>
                 <label class="toggle-chip" style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;padding:6px 0;">
                     <input type="checkbox" v-model="digestSettings.enabled" @change="saveDigestSettings" />
                     <span>Enable morning digest</span>
@@ -1530,8 +1651,14 @@
                     <button v-if="panelKey === 'reflections' && reflectionsUnreadCount > 0" class="panel-refresh-btn" type="button" @click="markReflectionsAsRead(panelData)">Mark All Read</button>
                     <button v-if="panelKey === 'lessons' && lessonsUnreadCount > 0" class="panel-refresh-btn" type="button" @click="markLessonsAsRead(panelData)">Mark All Read</button>
                     <button class="panel-refresh-btn" type="button" @click="refreshSystemPanel">Refresh</button>
+                    <button v-if="panelKey === 'lessons'" class="panel-refresh-btn" type="button" @click="toggleLessonsView">
+              [[ lessonsViewMode === 'archive' ? 'Current' : 'Archive' ]]
+            </button>
                     <button v-if="panelKey === 'foraging'" class="panel-refresh-btn" type="button" @click="toggleForagingPause">
               [[ panelStatus.foraging_paused ? 'Resume Foraging' : 'Pause Foraging' ]]
+            </button>
+                    <button v-if="panelKey === 'building'" class="panel-refresh-btn" type="button" @click="toggleBuildingPause">
+              [[ panelStatus.building_paused ? 'Resume Building' : 'Pause Building' ]]
             </button>
                     <button class="panel-close-btn" type="button" aria-label="Close panel" @click="closeSystemPanel">&times;</button>
                 </div>
@@ -1779,23 +1906,57 @@
                   <div v-else class="panel-empty">Library detail unavailable.</div>
                 </template>
 
-                <template v-else-if="panelKey === 'second-brain'">
+                <template v-else-if="panelKey === 'life-admin'">
                   <div v-if="panelData.length">
                     <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">Weekly Briefing</h4>
-                      <div class="second-brain-briefing">
-                        <article class="second-brain-briefing-card" v-for="(line, idx) in (secondBrainContext.briefing_lines || [])" :key="'brain_brief_' + idx">
-                          <p>[[ line ]]</p>
-                        </article>
+                      <h4 class="life-admin-section-title">About You</h4>
+                      <div class="life-admin-form-card">
+                        <div class="life-admin-form-grid">
+                          <input v-model="lifeAdminForms.profile.preferred_name" class="watch-input" type="text" placeholder="Preferred name" />
+                          <input v-model="lifeAdminForms.profile.full_name" class="watch-input" type="text" placeholder="Full name" />
+                        </div>
+                        <button class="life-admin-details-toggle" type="button" @click="toggleLifeAdminDetails('profile')">
+                          [[ lifeAdminState.profileDetailsOpen ? 'Hide Details' : 'Add Details' ]]
+                        </button>
+                        <div v-if="lifeAdminState.profileDetailsOpen" class="life-admin-details-panel">
+                          <div class="life-admin-form-grid">
+                            <input v-model="lifeAdminForms.profile.age" class="watch-input" type="text" placeholder="Age" />
+                            <input v-model="lifeAdminForms.profile.gender" class="watch-input" type="text" placeholder="Gender" />
+                            <input v-model="lifeAdminForms.profile.birthday" class="watch-input" type="date" placeholder="Birthday" />
+                            <input v-model="lifeAdminForms.profile.location" class="watch-input" type="text" placeholder="Location" />
+                            <input v-model="lifeAdminForms.profile.ancestry" class="watch-input" type="text" placeholder="Ancestry / background" />
+                            <input v-model="lifeAdminForms.profile.work" class="watch-input" type="text" placeholder="Work / role" />
+                            <input v-model="lifeAdminForms.profile.likes" class="watch-input" type="text" placeholder="Likes" />
+                            <input v-model="lifeAdminForms.profile.dislikes" class="watch-input" type="text" placeholder="Dislikes" />
+                          </div>
+                          <textarea v-model="lifeAdminForms.profile.health" class="watch-input" rows="2" placeholder="Health context" style="width:100%;resize:vertical;"></textarea>
+                          <textarea v-model="lifeAdminForms.profile.notes" class="watch-input" rows="2" placeholder="Personal notes" style="width:100%;resize:vertical;"></textarea>
+                        </div>
+                        <div class="watch-row-actions">
+                          <button class="panel-action-btn is-small" type="button" @click="saveUserProfile">Save Profile</button>
+                        </div>
                       </div>
                     </div>
-
                     <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">Overview</h4>
+                      <h4 class="life-admin-section-title">Context Notes</h4>
+                      <textarea class="watch-input" v-model="lifeAdminForms.notes" rows="3" placeholder="Useful background context Foxforge should remember..." style="width:100%;resize:vertical;"></textarea>
+                      <button class="panel-action-btn is-small" type="button" @click="saveHouseholdNotes">Save Notes</button>
+                    </div>
+                    <div class="life-admin-section">
+                      <h4 class="life-admin-section-title">Memory Briefing</h4>
+                      <div class="second-brain-briefing">
+                        <article class="second-brain-briefing-card" v-for="(line, idx) in (secondBrainContext.briefing_lines || [])" :key="'brain_brief_merged_' + idx">
+                          [[ line ]]
+                        </article>
+                        <div v-if="!(secondBrainContext.briefing_lines || []).length" class="modal-empty">No briefing yet.</div>
+                      </div>
+                    </div>
+                    <div class="life-admin-section">
+                      <h4 class="life-admin-section-title">Memory Overview</h4>
                       <div class="second-brain-stat-grid">
                         <article class="second-brain-stat-card">
                           <strong>[[ Number(secondBrainContext.overview?.active_records || 0) ]]</strong>
-                          <span>Active memories</span>
+                          <span>Active records</span>
                         </article>
                         <article class="second-brain-stat-card">
                           <strong>[[ Number(secondBrainContext.overview?.pinned || 0) ]]</strong>
@@ -1815,26 +1976,23 @@
                         </article>
                       </div>
                     </div>
-
                     <div class="life-admin-section">
                       <h4 class="life-admin-section-title">Source Map</h4>
                       <div class="second-brain-chip-row">
-                        <span v-for="row in secondBrainSourceRows" :key="'brain_source_' + row.key" class="second-brain-chip">
+                        <span v-for="row in secondBrainSourceRows" :key="'brain_source_merged_' + row.key" class="second-brain-chip">
                           [[ row.key.replace(/_/g, ' ') ]] · [[ row.count ]]
                         </span>
                       </div>
                       <div class="second-brain-chip-row second-brain-chip-row--soft">
-                        <span v-for="row in secondBrainStatusRows" :key="'brain_status_' + row.key" class="second-brain-chip second-brain-chip--soft">
+                        <span v-for="row in secondBrainStatusRows" :key="'brain_status_merged_' + row.key" class="second-brain-chip second-brain-chip--soft">
                           [[ row.key.replace(/_/g, ' ') ]] · [[ row.count ]]
                         </span>
                       </div>
                     </div>
-
-
                     <div class="life-admin-section">
                       <h4 class="life-admin-section-title">Pinned Context</h4>
                       <div class="second-brain-memory-grid">
-                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.pinned_records || [])" :key="'brain_pinned_' + record.id">
+                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.pinned_records || [])" :key="'brain_pinned_merged_' + record.id">
                           <div class="life-admin-memory-head">
                             <div>
                               <strong>[[ record.subject || record.category ]]</strong>
@@ -1853,12 +2011,10 @@
                         <div v-if="!(secondBrainContext.pinned_records || []).length" class="modal-empty">No pinned memories yet.</div>
                       </div>
                     </div>
-
-
                     <div class="life-admin-section">
                       <h4 class="life-admin-section-title">Needs Review</h4>
                       <div class="second-brain-memory-grid">
-                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.needs_review_records || [])" :key="'brain_review_' + record.id">
+                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.needs_review_records || [])" :key="'brain_review_merged_' + record.id">
                           <div class="life-admin-memory-head">
                             <div>
                               <strong>[[ record.subject || record.category ]]</strong>
@@ -1878,11 +2034,10 @@
                         <div v-if="!(secondBrainContext.needs_review_records || []).length" class="modal-empty">Nothing needs review right now.</div>
                       </div>
                     </div>
-
                     <div class="life-admin-section">
                       <h4 class="life-admin-section-title">Fading Context</h4>
                       <div class="second-brain-memory-grid">
-                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.fading_records || [])" :key="'brain_fading_' + record.id">
+                        <div class="life-admin-memory-card" v-for="record in (secondBrainContext.fading_records || [])" :key="'brain_fading_merged_' + record.id">
                           <div class="life-admin-memory-head">
                             <div>
                               <strong>[[ record.subject || record.category ]]</strong>
@@ -1900,57 +2055,6 @@
                         </div>
                         <div v-if="!(secondBrainContext.fading_records || []).length" class="modal-empty">No fading context yet.</div>
                       </div>
-                    </div>
-
-                    <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">Memory Timeline</h4>
-                      <div class="second-brain-timeline">
-                        <article class="second-brain-timeline-item" v-for="row in (secondBrainContext.timeline || [])" :key="'brain_timeline_' + row.id">
-                          <div class="second-brain-timeline-head">
-                            <strong>[[ row.subject || row.category ]]</strong>
-                            <span class="life-admin-inline-tag">[[ String(row.field || '').replace(/_/g, ' ') ]]</span>
-                          </div>
-                          <div class="life-admin-memory-value">[[ row.value ]]</div>
-                          <div class="life-admin-memory-meta">[[ secondBrainTimelineSummary(row) ]]</div>
-                        </article>
-                        <div v-if="!(secondBrainContext.timeline || []).length" class="modal-empty">No timeline yet.</div>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-
-                <template v-else-if="panelKey === 'life-admin'">
-                  <div v-if="panelData.length">
-                    <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">About You</h4>
-                      <div class="life-admin-form-card">
-                        <div class="life-admin-form-grid">
-                          <input v-model="lifeAdminForms.profile.preferred_name" class="watch-input" type="text" placeholder="Preferred name" />
-                          <input v-model="lifeAdminForms.profile.full_name" class="watch-input" type="text" placeholder="Full name" />
-                        </div>
-                        <button class="life-admin-details-toggle" type="button" @click="toggleLifeAdminDetails('profile')">
-                          [[ lifeAdminState.profileDetailsOpen ? 'Hide Details' : 'Add Details' ]]
-                        </button>
-                        <div v-if="lifeAdminState.profileDetailsOpen" class="life-admin-details-panel">
-                          <div class="life-admin-form-grid">
-                            <input v-model="lifeAdminForms.profile.gender" class="watch-input" type="text" placeholder="Gender" />
-                            <input v-model="lifeAdminForms.profile.birthday" class="watch-input" type="date" placeholder="Birthday" />
-                            <input v-model="lifeAdminForms.profile.location" class="watch-input" type="text" placeholder="Location" />
-                            <input v-model="lifeAdminForms.profile.work" class="watch-input" type="text" placeholder="Work / role" />
-                            <input v-model="lifeAdminForms.profile.likes" class="watch-input" type="text" placeholder="Likes" />
-                            <input v-model="lifeAdminForms.profile.dislikes" class="watch-input" type="text" placeholder="Dislikes" />
-                          </div>
-                          <textarea v-model="lifeAdminForms.profile.notes" class="watch-input" rows="2" placeholder="Profile notes" style="width:100%;resize:vertical;"></textarea>
-                        </div>
-                        <div class="watch-row-actions">
-                          <button class="panel-action-btn is-small" type="button" @click="saveUserProfile">Save Profile</button>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">Household Notes</h4>
-                      <textarea class="watch-input" v-model="lifeAdminForms.notes" rows="3" placeholder="Free-form household context..." style="width:100%;resize:vertical;"></textarea>
-                      <button class="panel-action-btn is-small" type="button" @click="saveHouseholdNotes">Save Notes</button>
                     </div>
                     <div class="life-admin-section">
                       <h4 class="life-admin-section-title">Memory Ledger</h4>
@@ -2079,49 +2183,17 @@
                       </div>
                     </div>
                     <div class="life-admin-section">
-                      <h4 class="life-admin-section-title">Recurring Reminders</h4>
-                      <div class="life-admin-entry-row" v-for="r in (panelData[0].recurring_reminders || [])" :key="r.label + '|' + (r.frequency || '') + '|' + (r.time || '')">
-                        <div class="life-admin-entry-body">
-                          <div class="life-admin-entry-mainline">
-                            <strong>[[ r.label ]]</strong>
-                            <span v-if="r.frequency" class="life-admin-inline-tag">[[ r.frequency ]]</span>
-                            <span v-if="r.time" class="life-admin-inline-tag">@ [[ r.time ]]</span>
+                      <h4 class="life-admin-section-title">Memory Timeline</h4>
+                      <div class="second-brain-timeline">
+                        <article class="second-brain-timeline-item" v-for="row in (secondBrainContext.timeline || [])" :key="'brain_timeline_merged_' + row.id">
+                          <div class="second-brain-timeline-head">
+                            <strong>[[ row.subject || row.category ]]</strong>
+                            <span class="life-admin-inline-tag">[[ String(row.field || '').replace(/_/g, ' ') ]]</span>
                           </div>
-                          <p v-if="r.notes" class="life-admin-entry-notes">[[ r.notes ]]</p>
-                          <div v-if="lifeAdminDetailItems('reminder', r).length" class="life-admin-detail-list">
-                            <span v-for="detail in lifeAdminDetailItems('reminder', r)" :key="'reminder_detail_' + r.label + detail" class="life-admin-detail-chip">[[ detail ]]</span>
-                          </div>
-                        </div>
-                        <div class="watch-row-actions">
-                          <button class="panel-action-btn is-small" type="button" @click="startEditReminder(r)">Edit</button>
-                          <button class="panel-action-btn is-small is-danger" type="button" @click="removeRecurringReminder(r.label)">Remove</button>
-                        </div>
-                      </div>
-                      <div class="life-admin-form-card">
-                        <div class="life-admin-form-title">[[ lifeAdminState.reminderEditingKey ? 'Edit Reminder' : 'Add Reminder' ]]</div>
-                        <div class="life-admin-form-grid">
-                          <input v-model="lifeAdminForms.reminder.label" class="watch-input" type="text" placeholder="Label" />
-                          <input v-model="lifeAdminForms.reminder.frequency" class="watch-input" type="text" placeholder="Frequency" />
-                          <input v-model="lifeAdminForms.reminder.time" class="watch-input" type="text" placeholder="Time" />
-                        </div>
-                        <textarea v-model="lifeAdminForms.reminder.notes" class="watch-input" rows="2" placeholder="Notes" style="width:100%;resize:vertical;"></textarea>
-                        <button class="life-admin-details-toggle" type="button" @click="toggleLifeAdminDetails('reminder')">
-                          [[ lifeAdminState.reminderDetailsOpen ? 'Hide Details' : 'Add Details' ]]
-                        </button>
-                        <div v-if="lifeAdminState.reminderDetailsOpen" class="life-admin-details-panel">
-                          <div class="life-admin-form-grid">
-                            <input v-model="lifeAdminForms.reminder.person" class="watch-input" type="text" placeholder="Person / owner" />
-                            <input v-model="lifeAdminForms.reminder.start_date" class="watch-input" type="date" placeholder="Start date" />
-                            <input v-model="lifeAdminForms.reminder.end_date" class="watch-input" type="date" placeholder="End date" />
-                            <input v-model="lifeAdminForms.reminder.location" class="watch-input" type="text" placeholder="Location" />
-                            <input v-model="lifeAdminForms.reminder.channel" class="watch-input" type="text" placeholder="Channel" />
-                            <input v-model="lifeAdminForms.reminder.priority" class="watch-input" type="text" placeholder="Priority" />
-                          </div>
-                        </div>
-                        <div class="watch-row-actions">
-                          <button class="panel-action-btn is-small" type="button" @click="saveRecurringReminder">[[ lifeAdminState.reminderEditingKey ? 'Save Changes' : 'Add Reminder' ]]</button>
-                          <button v-if="lifeAdminState.reminderEditingKey" class="panel-action-btn is-small" type="button" @click="resetReminderForm">Cancel</button>
-                        </div>
+                          <div class="life-admin-memory-value">[[ row.value ]]</div>
+                          <div class="life-admin-memory-meta">[[ secondBrainTimelineSummary(row) ]]</div>
+                        </article>
+                        <div v-if="!(secondBrainContext.timeline || []).length" class="modal-empty">No timeline yet.</div>
                       </div>
                     </div>
                   </div>
@@ -2305,9 +2377,9 @@
                   </div>
                 </template>
 
-                <div v-else-if="!(panelData || []).length" class="panel-empty">No items found for this panel.</div>
+                <div v-else-if="Array.isArray(panelData) ? panelRows.length === 0 : !(panelData || []).length" class="panel-empty">No items found for this panel.</div>
 
-                <template v-if="!['watchtower','briefings','library','library_detail','life-admin','second-brain','topics','topic_detail','system'].includes(panelKey)">
+                <template v-if="!['watchtower','briefings','library','library_detail','life-admin','topics','topic_detail','system'].includes(panelKey)">
                 <article v-for="(row, idx) in panelRows" :key="row.id || row.created_at || idx" class="panel-card" :class="{ 'is-unread': panelKey === 'reflections' && !reflectionIsRead(row) }">
                     <template v-if="panelKey === 'reflections'">
               <header class="panel-card-head">
@@ -2508,6 +2580,71 @@
     </div>
     </template>
 
+    <template v-else-if="panelKey === 'building'">
+              <header class="panel-card-head">
+                <h4><span class="road-icon" aria-hidden="true">B</span>Build Job</h4>
+                <p>[[ formatDate(row.started_at || row.updated_at) || 'n/a' ]]</p>
+              </header>
+              <div class="panel-card-meta">
+                <span>id: [[ row.id || '' ]]</span>
+                <span>type: [[ row.make_type || row.lane || '' ]]</span>
+                <span>project: [[ row.project || '' ]]</span>
+                <span>status: [[ row.status || 'running' ]]</span>
+                <template v-if="row.agent_tracker && row.agent_tracker.profile">
+                  <span>type: [[ row.agent_tracker.profile ]]</span>
+                  <span v-if="row.agent_tracker.topic_type">dest: [[ row.agent_tracker.topic_type ]]</span>
+                </template>
+              </div>
+
+              <!-- Agent status board (reuses foraging CSS) -->
+              <template v-if="row.agent_tracker && row.agent_tracker.total > 0">
+                <div class="foraging-agent-board">
+                  <div class="foraging-progress-bar">
+                    <div class="foraging-progress-fill build-progress-fill" :style="{ width: Math.round(((row.agent_tracker.done || []).length / row.agent_tracker.total) * 100) + '%' }"></div>
+                    <span class="foraging-progress-label">[[ (row.agent_tracker.done || []).length ]] / [[ row.agent_tracker.total ]] stages done</span>
+                  </div>
+
+                  <template v-if="(row.agent_tracker.active || []).length > 0">
+                    <p class="foraging-section-label">Running now</p>
+                    <div v-for="agent in (row.agent_tracker.active || [])" :key="agent.persona || agent" class="foraging-agent-row is-active">
+                      <div class="foraging-agent-header">
+                        <span class="foraging-agent-name">[[ agent.persona || agent ]]</span>
+                        <span v-if="agent.model" class="foraging-agent-badge">[[ agent.model ]]</span>
+                      </div>
+                      <p v-if="agent.directive" class="foraging-agent-directive">[[ agent.directive ]]</p>
+                    </div>
+                  </template>
+
+                  <template v-if="row.agent_tracker.all_agents && row.agent_tracker.all_agents.length > 0">
+                    <div v-for="agent in row.agent_tracker.all_agents.filter(a => !(row.agent_tracker.done || []).some(d => d.persona === a.persona) && !(row.agent_tracker.active || []).some(ac => (ac.persona || ac) === a.persona))" :key="'bpending_' + agent.persona" class="foraging-agent-row is-pending">
+                      <div class="foraging-agent-header">
+                        <span class="foraging-agent-name">[[ agent.persona ]]</span>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template v-if="(row.agent_tracker.done || []).length > 0">
+                    <p class="foraging-section-label">Completed</p>
+                    <div v-for="agent in (row.agent_tracker.done || [])" :key="'bdone_' + agent.persona" class="foraging-agent-row" :class="agent.failed ? 'is-failed' : 'is-done'">
+                      <div class="foraging-agent-header">
+                        <span class="foraging-agent-name">[[ agent.persona ]]</span>
+                        <span class="foraging-agent-badge" :class="agent.failed ? 'is-fail' : 'is-ok'">[[ agent.failed ? 'failed' : 'ok' ]]</span>
+                      </div>
+                      <div class="foraging-agent-footer" v-if="agent.confidence || agent.finding_preview">
+                        <span v-if="agent.confidence" class="foraging-confidence-badge" :class="'level-' + agent.confidence">[[ agent.confidence ]]/5</span>
+                        <p v-if="agent.finding_preview" class="foraging-finding-preview">[[ agent.finding_preview ]]</p>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <p v-else-if="row.last_detail">[[ row.last_detail ]]</p>
+
+              <div class="outbox-controls">
+                <button class="outbox-ingest-btn" type="button" @click="cancelBuildingJob(row)">Cancel Job</button>
+              </div>
+    </template>
+
     <template v-else-if="panelKey === 'forage-cards'">
               <header class="panel-card-head">
                 <h4>[[ row.title || 'Research' ]]</h4>
@@ -2659,6 +2796,35 @@
                 <img :src="lightboxUrl" :alt="lightboxName" />
             </div>
         </div>
+    </div>
+
+    <!-- Make Type Picker Modal -->
+    <div class="modal-form-overlay" :aria-hidden="makeTypeModalOpen ? 'false' : 'true'" v-show="makeTypeModalOpen">
+        <div class="modal-form-backdrop" @click="makeTypeModalOpen = false"></div>
+        <section class="modal-form-modal make-type-picker-modal" role="dialog" aria-modal="true" aria-label="Choose Make type">
+            <header class="modal-form-header">
+                <div>
+                    <h3>Choose Make Type</h3>
+                    <p>Pick what you want to build</p>
+                </div>
+                <button type="button" class="modal-form-close" @click="makeTypeModalOpen = false">&times;</button>
+            </header>
+            <section class="modal-form-body make-type-picker-body">
+                <template v-for="cat in makeTypeCatalogCategories" :key="'cat_' + cat">
+                    <h4 class="make-type-category-label">[[ cat ]]</h4>
+                    <article
+                        v-for="entry in makeTypeCatalogByCategory[cat]"
+                        :key="'make_type_' + entry.type_id"
+                        class="make-type-item"
+                        :class="{ 'is-active': makeType === entry.type_id }"
+                        @click="selectMakeType(entry.type_id)"
+                    >
+                        <strong class="make-type-item-label">[[ entry.label ]]</strong>
+                        <span class="make-type-item-desc">[[ entry.short_description ]]</span>
+                    </article>
+                </template>
+            </section>
+        </section>
     </div>
 
     <div class="auth-gate-overlay" v-if="auth.enabled && !auth.authenticated">

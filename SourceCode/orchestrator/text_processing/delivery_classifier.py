@@ -10,6 +10,11 @@ _TARGET_ALIASES: dict[str, str] = {
     "module_widget": "standalone_app",
     "standalone": "standalone_app",
     "app": "standalone_app",
+    "web_app": "web_app",
+    "desktop_app": "desktop_app",
+    "desktop": "desktop_app",
+    "avalonia": "desktop_app",
+    "dotnet": "desktop_app",
     "med": "medical",
     "health": "medical",
     "healthcare": "medical",
@@ -18,12 +23,26 @@ _TARGET_ALIASES: dict[str, str] = {
     "sport": "sports",
     "historical": "history",
     "gdd": "game_design_doc",
+    "game_design": "game_design_doc",
     "dashboard": "dashboard",
     "blog": "blog", "blog_post": "blog",
     "social_post": "social_post", "social_media": "social_post", "social": "social_post",
     "landing_page": "landing_page", "landing": "landing_page",
     "api": "api", "rest_api": "api", "api_service": "api",
     "screenplay": "screenplay", "play": "screenplay", "teleplay": "screenplay",
+    "essay_long": "essay_long",
+    "essay_short": "essay_short",
+    "long_form": "essay_long", "longform": "essay_long",
+    "short_form": "essay_short", "shortform": "essay_short",
+    "guide": "guide",
+    "tutorial": "tutorial",
+    "video_script": "video_script", "video": "video_script",
+    "newsletter": "newsletter",
+    "press_release": "press_release", "press": "press_release",
+    "novel_chapter": "novel_chapter", "chapter": "novel_chapter",
+    "memoir_chapter": "memoir_chapter",
+    "book_chapter": "book_chapter",
+    "tool": "tool", "script": "script",
 }
 
 
@@ -72,7 +91,14 @@ def infer_delivery_target(text: str, explicit_target: str, mode: str = "research
     if any(tok in low for tok in history_tokens):
         return "history"
 
-    general_tokens = ("current events", "pop culture", "culture", "news")
+    if "newsletter" in low:
+        return "newsletter"
+    if "press release" in low:
+        return "press_release"
+    if "video script" in low or "video essay" in low:
+        return "video_script"
+
+    general_tokens = ("current events", "pop culture", "breaking news", "news update")
     if any(tok in low for tok in general_tokens):
         return "general"
 
@@ -81,25 +107,36 @@ def infer_delivery_target(text: str, explicit_target: str, mode: str = "research
     if "screenplay" in low or "teleplay" in low:
         return "screenplay"
     if "script" in low:
-        code_signals = ("python", "bash", "automate", "process", "parse", "convert", "extract", "cron", "cli")
+        code_signals = ("python", "bash", "automate", "process", "parse", "convert", "extract", "cron", "command line", "shell")
+        video_signals = ("video", "youtube", "substack", "essay", "read aloud", "voiceover")
         if any(s in low for s in code_signals):
-            return "script"
+            return "tool"
+        if any(s in low for s in video_signals):
+            return "video_script"
         return "screenplay"
+    if "guide" in low and "step" in low:
+        return "guide"
+    if "tutorial" in low or "how to" in low or "step by step" in low:
+        return "tutorial"
+    if "long form" in low or "longform" in low or "substack" in low:
+        return "essay_long"
     if "essay" in low:
-        return "essay"
+        return "essay_long" if any(w in low for w in ("long", "in-depth", "substack", "deep", "3000", "2000", "1800")) else "essay_short"
     if "email" in low or "e-mail" in low:
         return "email"
     if "memoir" in low:
-        return "memoir"
+        return "memoir_chapter"
     if "novel" in low:
-        return "novel"
+        return "novel_chapter"
     if "book" in low or "chapter" in low:
-        return "book"
+        return "book_chapter"
+    if "desktop app" in low or "avalonia" in low or ".net app" in low:
+        return "desktop_app"
     if "dashboard" in low:
         return "dashboard"
     if "blog" in low or "blog post" in low:
         return "blog"
-    if "social media" in low or "social post" in low or "tweet" in low or "instagram" in low:
+    if "social media" in low or "social post" in low or "tweet" in low or "instagram" in low or "linkedin post" in low:
         return "social_post"
     if "landing page" in low:
         return "landing_page"
