@@ -128,12 +128,24 @@ class LlamaCppClient:
 
     def list_local_models(self) -> list[str]:
         """Query /v1/models for served model names."""
+        try:
+            return self.list_local_models_strict()
+        except Exception:
+            return []
+
+    def list_local_models_strict(self) -> list[str]:
+        """Query /v1/models for served model names and raise on failure."""
         url = f"{self.base_url}/v1/models"
         req = urllib.request.Request(url=url, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return []
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"llama.cpp HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Could not connect to llama.cpp server at {self.base_url}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Could not read llama.cpp models from {self.base_url}") from exc
         models = data.get("data") or []
         return [m["id"] for m in models if isinstance(m, dict) and "id" in m]

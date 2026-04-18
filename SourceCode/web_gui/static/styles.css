@@ -11605,6 +11605,128 @@ body.day .composer-reply-label {
     color: #2563eb;
 }
 
+.steer-queue {
+    display: grid;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 12px;
+    border: 1px solid rgba(110, 180, 255, 0.18);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(11, 18, 34, 0.92), rgba(13, 22, 40, 0.84));
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.18);
+}
+.steer-queue-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.steer-queue-head strong {
+    display: block;
+    font-size: 0.82rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.steer-queue-head p {
+    margin: 4px 0 0;
+    font-size: 0.78rem;
+    color: var(--ink-3);
+}
+.steer-queue-count {
+    min-width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(79, 140, 255, 0.18);
+    color: var(--ink-1);
+    font-weight: 700;
+}
+.steer-queue-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.steer-queue-copy {
+    min-width: 0;
+}
+.steer-queue-copy p {
+    margin: 4px 0 0;
+    color: var(--ink-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.steer-queue-mode {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: rgba(79, 140, 255, 0.14);
+    color: var(--palette-aqua, #4f8cff);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.steer-queue-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.steer-queue-btn {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--ink-1);
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 0.76rem;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.steer-queue-btn:hover {
+    background: rgba(79, 140, 255, 0.12);
+    border-color: rgba(79, 140, 255, 0.28);
+    transform: translateY(-1px);
+}
+.steer-queue-btn.is-danger:hover {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.28);
+}
+
+body.day .steer-queue {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 255, 0.92));
+    border-color: rgba(37, 99, 235, 0.12);
+}
+body.day .steer-queue-item {
+    background: rgba(37, 99, 235, 0.04);
+    border-color: rgba(37, 99, 235, 0.08);
+}
+body.day .steer-queue-head p,
+body.day .steer-queue-copy p {
+    color: rgba(30, 41, 59, 0.78);
+}
+
+@media (max-width: 760px) {
+    .steer-queue-item,
+    .steer-queue-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .steer-queue-actions {
+        justify-content: flex-start;
+    }
+}
+
 /* ── Message highlight flash (jump-to) ──────────────────────── */
 @keyframes msg-highlight {
     0%   { box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.55); }

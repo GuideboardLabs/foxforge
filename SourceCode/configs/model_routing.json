@@ -3,7 +3,11 @@
     "turbo_deepseek": {
       "base_url": "http://127.0.0.1:8180",
       "models": [
-        "deepseek-r1:8b"
+        "deepseek-r1:8b",
+        "qwen3:14b",
+        "qwen3:8b",
+        "qwen2.5-coder:14b",
+        "qwen2.5-coder:7b"
       ],
       "fallback_to_ollama": true
     }
@@ -12,7 +16,7 @@
     "purpose": "User-facing messenger layer above the internal orchestrator",
     "provider": "ollama",
     "model": "huihui_ai/qwen3.5-abliterated:9b",
-    "temperature": 0.9,
+    "temperature": 0.6,
     "num_ctx": 16384,
     "timeout_sec": 240,
     "retry_attempts": 3,
@@ -27,7 +31,7 @@
     "purpose": "Legacy direct uncensored conversational fallback",
     "provider": "ollama",
     "model": "huihui_ai/qwen3.5-abliterated:9b",
-    "temperature": 0.8,
+    "temperature": 0.55,
     "num_ctx": 16384,
     "timeout_sec": 240,
     "retry_attempts": 3,

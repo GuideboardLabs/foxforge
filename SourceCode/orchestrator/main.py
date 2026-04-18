@@ -25,6 +25,7 @@ from shared_tools.feedback_learning import ORIGIN_REFLECTION
 from shared_tools.handoff_queue import HandoffQueue
 from shared_tools.model_routing import load_model_routing, lane_model_config
 from shared_tools.inference_router import InferenceRouter
+from shared_tools.web_research import build_web_progress_payload
 from shared_tools.answer_composer import compose_research_summary, evaluate_answer_confidence
 from shared_tools.fact_cards import render_fact_card_markdown
 from shared_tools.fact_policy import classify_fact_volatility, detect_topic_type
@@ -119,6 +120,15 @@ _LIVE_VERIFICATION_MARKERS = frozenset({
     "kickoff", "tipoff", "broadcast", "stream", "airing", "start time",
     "who is on", "who's on", "when is", "what time", "scheduled",
 })
+
+_SURFACE_POLISH_SKIP_TOKENS = (
+    "```",
+    "[FORAGE:",
+    "[ADD_TASK:",
+    "[ADD_EVENT:",
+    "[ADD_SHOPPING:",
+    "[ADD_ROUTINE:",
+)
 _TOOL_TARGETS = frozenset({"tool", "script"})
 _CREATIVE_TARGETS = frozenset({"novel", "memoir", "book", "screenplay"})
 _CONTENT_TARGETS = frozenset({"blog", "social_post", "email"})
@@ -505,6 +515,65 @@ class FoxforgeOrchestrator:
             return cfg
         return lane_model_config(self.repo_root, "conversation_layer")
 
+    @staticmethod
+    def _heuristic_surface_polish(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        polished = raw.replace("\r\n", "\n")
+        polished = re.sub(r"[ \t]+\n", "\n", polished)
+        polished = re.sub(r"\n{3,}", "\n\n", polished)
+        polished = re.sub(r"([,;:!?])([A-Za-z0-9])", r"\1 \2", polished)
+        polished = re.sub(r"(?<=[A-Za-z])([.?!])([A-Z])", r"\1 \2", polished)
+        polished = re.sub(r"\s+([,;:!?])", r"\1", polished)
+        polished = re.sub(r"(?<!\.)\s+\.", ".", polished)
+        polished = re.sub(r"[ \t]{2,}", " ", polished)
+        return polished.strip()
+
+    def _surface_polish_reply(self, text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        heuristic = self._heuristic_surface_polish(raw)
+        if not heuristic:
+            return raw
+        if any(token in heuristic for token in _SURFACE_POLISH_SKIP_TOKENS):
+            return heuristic
+        if len(heuristic) > 3200:
+            return heuristic
+
+        cfg = lane_model_config(self.repo_root, "orchestrator_reasoning")
+        model = str(cfg.get("model", "")).strip() or "qwen3:14b"
+        fallback_models = cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else ["qwen3:8b"]
+        system_prompt = (
+            "You are doing a light copyedit pass on assistant text. "
+            "Fix only obvious spelling, spacing, punctuation, and capitalization issues. "
+            "Preserve wording, tone, structure, markdown, bullets, and meaning. "
+            "Do not add facts, remove content, or rewrite for style. "
+            "Return only the edited text."
+        )
+        try:
+            polished = self.ollama.chat(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=heuristic,
+                temperature=0.0,
+                num_ctx=min(int(cfg.get("num_ctx", 16384) or 16384), 8192),
+                think=False,
+                timeout=min(int(cfg.get("timeout_sec", 180) or 180), 90),
+                retry_attempts=1,
+                retry_backoff_sec=0.5,
+                fallback_models=fallback_models,
+            )
+            polished = str(polished or "").strip()
+            if not polished:
+                return heuristic
+            if abs(len(polished) - len(heuristic)) > max(120, int(len(heuristic) * 0.35)):
+                return heuristic
+            return polished
+        except Exception:
+            return heuristic
+
     def _mentions_foxforge_alias(self, text: str) -> bool:
         return mentions_foxforge_alias(text)
 
@@ -547,6 +616,9 @@ class FoxforgeOrchestrator:
         capture_history: list[dict[str, str]] | None = None,
         project: str | None = None,
         persona_override: str | None = None,
+        progress_callback=None,
+        details_sink: dict[str, Any] | None = None,
+        cancel_checker=None,
     ) -> str:
         cfg = self._reynard_layer_config()
         model = cfg.get("model", "")
@@ -561,6 +633,12 @@ class FoxforgeOrchestrator:
         memory_command_reply = self._handle_memory_command(text)
         if memory_command_reply:
             return memory_command_reply
+        if callable(cancel_checker):
+            try:
+                if bool(cancel_checker()):
+                    return "Request cancelled before conversation generation started."
+            except Exception:
+                pass
         reminder_note = self._capture_daymarker_reminder(text)
         capture_rows = capture_history if isinstance(capture_history, list) else history
         event_note = self._capture_daymarker_event(text, history=capture_rows)
@@ -598,7 +676,7 @@ class FoxforgeOrchestrator:
                     retry_backoff_sec=float(cfg.get("retry_backoff_sec", 0.8)),
                     fallback_models=cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else [],
                 )
-                return reply or ""
+                return self._surface_polish_reply(reply or "")
             except Exception:
                 return ""
 
@@ -624,7 +702,7 @@ class FoxforgeOrchestrator:
                     retry_backoff_sec=float(cfg.get("retry_backoff_sec", 0.8)),
                     fallback_models=cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else [],
                 )
-                return reply or ""
+                return self._surface_polish_reply(reply or "")
             except Exception:
                 return ""
 
@@ -647,18 +725,36 @@ class FoxforgeOrchestrator:
         must_verify_live = self._requires_live_verification(live_query_text, web_topic_type)
         if must_verify_live:
             recency_sensitive = True
+        web_details: dict[str, Any] = {}
         try:
             # Talk mode stays conversational, but recency/source-sensitive prompts
             # can still get live web grounding before final response generation.
-            web_note, web_context, _ = self._prepare_web_context(
+            web_note, web_context, web_details = self._prepare_web_context(
                 text=live_query_text if must_verify_live else text,
                 lane="project",
                 topic_type=web_topic_type,
                 force=must_verify_live,
+                quick=True,
             )
         except Exception:
             web_note = ""
             web_context = ""
+            web_details = {}
+        if isinstance(details_sink, dict):
+            details_sink["web_note"] = web_note
+            details_sink["web_context"] = web_context
+            details_sink["web_details"] = web_details if isinstance(web_details, dict) else {}
+        if isinstance(web_details, dict) and web_details.get("requested") and callable(progress_callback):
+            try:
+                progress_callback("web_stack_ready", build_web_progress_payload(web_details))
+            except Exception:
+                pass
+        if callable(cancel_checker):
+            try:
+                if bool(cancel_checker()):
+                    return "Request cancelled before conversation model execution started."
+            except Exception:
+                pass
         _context_analysis, household_context, personal_context, context_guidance = self._context_bundle_for_query(
             text,
             household_chars=1100,
@@ -900,6 +996,13 @@ class FoxforgeOrchestrator:
                 retry_backoff_sec=float(cfg.get("retry_backoff_sec", 1.2)),
                 fallback_models=cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else [],
             )
+            reply = self._surface_polish_reply(reply)
+            if callable(cancel_checker):
+                try:
+                    if bool(cancel_checker()):
+                        return "Request cancelled."
+                except Exception:
+                    pass
             try:
                 if len(str(reply or "").strip()) > 80:
                     self._infra.general_pool.save(text[:80], str(reply).strip()[:200])
@@ -1016,7 +1119,7 @@ class FoxforgeOrchestrator:
             "Return plain text only."
         )
         try:
-            return self.ollama.chat(
+            reply = self.ollama.chat(
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1028,6 +1131,7 @@ class FoxforgeOrchestrator:
                 retry_backoff_sec=float(cfg.get("retry_backoff_sec", 1.2)),
                 fallback_models=fallback_models,
             )
+            return self._surface_polish_reply(reply)
         except Exception:
             return internal_reply
 
@@ -1516,7 +1620,7 @@ class FoxforgeOrchestrator:
             return ""
         return body[: max(500, min(limit, 30000))]
 
-    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general", force: bool = False) -> tuple[str, str, dict[str, Any]]:
+    def _prepare_web_context(self, *, text: str, lane: str, topic_type: str = "general", force: bool = False, quick: bool = False) -> tuple[str, str, dict[str, Any]]:
         mode = self.web_engine.get_mode()
         lane_key = lane.strip().lower()
         normalized_topic_type = str(topic_type or "").strip().lower() or "general"
@@ -1550,13 +1654,14 @@ class FoxforgeOrchestrator:
         reason = "Live web refresh for source citations and recency checks."
         run_tag = "AUTO" if mode == "auto" else "ASK"
 
-        result = self.web_engine.run_query(
+        runner = self.web_engine.run_quick_query if quick else self.web_engine.run_query
+        result = runner(
             project=self.project_slug,
             lane=lane_key,
             query=text,
             reason=reason,
             request_id="auto" if mode == "auto" else "ask_auto_try",
-            note="auto web mode" if mode == "auto" else "ask mode auto-try",
+            note=("quick chat web mode" if quick else "auto web mode") if mode == "auto" else ("quick ask mode auto-try" if quick else "ask mode auto-try"),
             topic_type=normalized_topic_type,
         )
         details["requested"] = True

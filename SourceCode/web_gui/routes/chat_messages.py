@@ -13,6 +13,7 @@ from shared_tools.comfyui_client import ComfyUIClient
 from shared_tools.content_guardrails import check_content
 from shared_tools.image_gen_presets import find_image_gen_preset, resolve_preset_lora_name
 from shared_tools.model_routing import lane_model_config
+from shared_tools.web_research import build_web_progress_payload
 from web_gui.chat_helpers import bg_retitle, bg_summarize, handle_command
 from web_gui.utils.file_utils import normalize_project_slug as _normalize_project_slug
 from web_gui.utils.history_builders import (
@@ -156,6 +157,53 @@ def _to_float(raw: Any, *, default: float | None = None) -> float | None:
         return float(text)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_message_web_sources(raw_sources: Any) -> list[dict[str, Any]]:
+    rows = raw_sources if isinstance(raw_sources, list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url") or row.get("source_url") or row.get("link") or "").strip()
+        domain = str(row.get("domain") or row.get("source_domain") or row.get("host") or "").strip().lower()
+        title = str(row.get("title") or "").strip()
+        tier = str(row.get("tier") or row.get("source_tier") or "").strip()
+        try:
+            score = float(row.get("score", row.get("source_score", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if not url and not domain:
+            continue
+        out.append({
+            "url": url,
+            "domain": domain,
+            "title": title,
+            "tier": tier,
+            "score": score,
+        })
+    return out
+
+
+def _build_message_web_meta(*, web_stack: Any = None, web_details: Any = None) -> dict[str, Any] | None:
+    stack = dict(web_stack) if isinstance(web_stack, dict) else {}
+    details = dict(web_details) if isinstance(web_details, dict) else {}
+    if details and not stack:
+        stack = build_web_progress_payload(details)
+    detail_sources = _normalize_message_web_sources(details.get("sources"))
+    if detail_sources:
+        stack["web_sources"] = detail_sources
+        stack["source_count"] = max(int(stack.get("source_count", 0) or 0), len(detail_sources))
+    else:
+        stack["web_sources"] = _normalize_message_web_sources(stack.get("web_sources"))
+    if not stack.get("web_sources"):
+        stack.pop("web_sources", None)
+    if not stack:
+        return None
+    return {
+        "web_sources": list(stack.get("web_sources") or []),
+        "web_stack": stack,
+    }
 
 
 def _is_simple_image_prompt(prompt: str) -> bool:
@@ -1169,6 +1217,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         image_analysis_failures: list[str] = []
         pipeline_error = ""
         gen_attachments: list[dict] = []
+        talk_details: dict[str, Any] = {}
         try:
             image_attachments = [a for a in attachments if str(a.get("type", "")) == "image"]
             doc_attachments = [a for a in attachments if str(a.get("type", "")) == "document"]
@@ -1285,7 +1334,17 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                         history=history,
                         capture_history=capture_history,
                         project=convo_project,
+                        cancel_checker=_cancel_requested,
+                        details_sink=talk_details,
+                        progress_callback=lambda stage, detail=None: _progress(
+                            stage,
+                            str(detail if not isinstance(detail, dict) else detail.get("note", "") or ""),
+                            web_stack=(detail if isinstance(detail, dict) and stage == "web_stack_ready" else None),
+                        ),
                     )
+                    if _cancel_requested():
+                        reply_text = _cancel_reply()
+                        _progress("cancel_acknowledged", "Cancel request accepted during conversation reply.")
                 _progress("talk_mode_done", "Conversation-layer reply generated.")
             elif not reply_text and raw_content.startswith("/"):
                 _progress("command_mode", f"Executing slash command: {raw_content.split(' ', 1)[0]}")
@@ -1366,6 +1425,9 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                 ctx.foraging_manager.unregister_job(ctx.job_manager.key(profile, request_id))
 
         attachment_notes: list[str] = []
+        if _cancel_requested() and not str(reply_text or "").strip().lower().startswith("request cancelled"):
+            reply_text = _cancel_reply()
+            _progress("cancel_acknowledged", "Cancel request accepted before response persistence.")
         if upload_errors:
             attachment_notes.extend(upload_errors)
         if image_analysis_failures:
@@ -1382,8 +1444,10 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
 
         job_row = ctx.job_manager.get(profile, request_id) or {}
         web_stack = job_row.get("web_stack") if isinstance(job_row.get("web_stack"), dict) else {}
-        web_sources = [s for s in (web_stack.get("web_sources") or []) if isinstance(s, dict)]
-        msg_meta: dict | None = {"web_sources": web_sources} if web_sources else None
+        msg_meta = _build_message_web_meta(
+            web_stack=web_stack,
+            web_details=talk_details.get("web_details"),
+        )
         assistant_msg = store.add_message(
             conversation_id,
             "assistant",

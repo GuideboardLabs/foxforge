@@ -193,8 +193,7 @@ def build_web_progress_payload(result: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(maybe_tiers, dict):
             tier_counts = maybe_tiers
     raw_sources = details.get("sources") or []
-    top_sources: list[dict[str, Any]] = []
-    seen_domains: set[str] = set()
+    used_sources: list[dict[str, Any]] = []
     for src in raw_sources:
         if not isinstance(src, dict):
             continue
@@ -207,12 +206,17 @@ def build_web_progress_payload(result: dict[str, Any] | None) -> dict[str, Any]:
                 domain = domain.removeprefix("www.")
             except Exception:
                 pass
-        if not domain or domain in seen_domains:
+        if not domain and not url:
             continue
-        seen_domains.add(domain)
-        top_sources.append({"domain": domain, "url": url or f"https://{domain}"})
-        if len(top_sources) >= 8:
-            break
+        used_sources.append(
+            {
+                "domain": domain,
+                "url": url or (f"https://{domain}" if domain else ""),
+                "title": str(src.get("title") or "").strip(),
+                "tier": str(src.get("source_tier") or src.get("tier") or "").strip(),
+                "score": float(src.get("source_score", 0.0) or 0.0),
+            }
+        )
     return {
         "note": "Web stack ready.",
         "mode": str(details.get("mode", "")),
@@ -225,7 +229,7 @@ def build_web_progress_payload(result: dict[str, Any] | None) -> dict[str, Any]:
         "tier1": int(tier_counts.get("tier1", 0) or 0),
         "tier2": int(tier_counts.get("tier2", 0) or 0),
         "tier3": int(tier_counts.get("tier3", 0) or 0),
-        "web_sources": top_sources,
+        "web_sources": used_sources,
     }
 
 
@@ -652,8 +656,18 @@ class WebResearchEngine:
     }
 
     # Topics for which a full Wikipedia article is always fetched as a primary source.
-    # Historical topics are excluded — training data is sufficient for stable history.
+    # The chat layer prefers quick Wikipedia grounding whenever it can answer safely.
     WIKIPEDIA_TOPIC_TYPES: frozenset[str] = frozenset({
+        "history",
+        "technical",
+        "science",
+        "books",
+        "art",
+        "education",
+        "travel",
+        "food",
+        "business",
+        "politics",
         "sports",
         "combat_sports",
         "sports_event",
@@ -2800,6 +2814,47 @@ class WebResearchEngine:
                 project=project, lane=lane, query=query, reason=reason,
                 request_id=request_id, note=note, topic_type=topic_type,
                 settings=settings, resolved_topic=resolved_topic,
+            )
+        finally:
+            self._tor_active = False
+
+    def run_quick_query(
+        self,
+        *,
+        project: str,
+        lane: str,
+        query: str,
+        reason: str,
+        request_id: str = "",
+        note: str = "",
+        topic_type: str = "general",
+    ) -> dict[str, Any]:
+        settings = dict(self._load_settings())
+        resolved_topic = self._resolve_topic_type(query, topic_type)
+        # Quick chat lookups keep the same scoring and conflict logic, but trim
+        # expansion/crawl breadth so the conversation layer can ground itself fast.
+        settings["max_results"] = min(int(settings.get("max_results", 8) or 8), 4)
+        settings["query_expansion_enabled"] = False
+        settings["query_expansion_variants"] = 1
+        settings["min_quality_sources"] = 1
+        settings["context_min_source_score"] = min(float(settings.get("context_min_source_score", 0.52) or 0.52), 0.46)
+        settings["crawl_enabled"] = True
+        settings["crawl_depth"] = min(int(settings.get("crawl_depth", 2) or 2), 1)
+        settings["crawl_max_pages"] = min(int(settings.get("crawl_max_pages", 18) or 18), 6)
+        settings["crawl_links_per_page"] = min(int(settings.get("crawl_links_per_page", 8) or 8), 3)
+        settings["crawl_timeout_sec"] = min(int(settings.get("crawl_timeout_sec", 12) or 12), 8)
+        self._tor_active = str(resolved_topic).strip().lower() == "underground"
+        try:
+            return self._run_query_inner(
+                project=project,
+                lane=lane,
+                query=query,
+                reason=reason,
+                request_id=request_id,
+                note=(str(note or "").strip() + " quick_chat_lookup").strip(),
+                topic_type=topic_type,
+                settings=settings,
+                resolved_topic=resolved_topic,
             )
         finally:
             self._tor_active = False

@@ -624,23 +624,25 @@ function sourceIconUrlForDomain(domain) {
 function collectSourceEntriesFromText(text) {
   const raw = String(text || "");
   const rows = [];
-  const seenDomains = new Set();
-  const pushSource = (rawUrl, rawDomain = "") => {
+  const seenKeys = new Set();
+  const pushSource = (rawUrl, rawDomain = "", rawTitle = "") => {
     let domain = String(rawDomain || "").trim().toLowerCase();
     domain = domain.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
     const url = normalizeDetectedUrl(rawUrl);
     if (!domain && url) {
       domain = sourceDomainFromUrl(url);
     }
-    if (!domain || seenDomains.has(domain)) {
+    const key = String(url || domain || "").trim().toLowerCase();
+    if (!key || (!domain && !url) || seenKeys.has(key)) {
       return;
     }
-    seenDomains.add(domain);
+    seenKeys.add(key);
     rows.push({
       domain,
       url: url || (domain ? `https://${domain}` : ""),
       icon: sourceIconUrlForDomain(domain),
       letter: domain.slice(0, 1).toUpperCase() || "?",
+      title: String(rawTitle || "").trim(),
     });
   };
 
@@ -661,23 +663,25 @@ function collectSourceEntriesFromText(text) {
 
 function collectSourceEntries(contentText, metadataSources) {
   const rows = [];
-  const seenDomains = new Set();
-  const pushSource = (rawUrl, rawDomain = "") => {
+  const seenKeys = new Set();
+  const pushSource = (rawUrl, rawDomain = "", rawTitle = "") => {
     let domain = String(rawDomain || "").trim().toLowerCase();
     domain = domain.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
     const url = normalizeDetectedUrl(rawUrl);
     if (!domain && url) {
       domain = sourceDomainFromUrl(url);
     }
-    if (!domain || seenDomains.has(domain)) {
+    const key = String(url || domain || "").trim().toLowerCase();
+    if (!key || (!domain && !url) || seenKeys.has(key)) {
       return;
     }
-    seenDomains.add(domain);
+    seenKeys.add(key);
     rows.push({
       domain,
       url: url || (domain ? `https://${domain}` : ""),
       icon: sourceIconUrlForDomain(domain),
       letter: domain.slice(0, 1).toUpperCase() || "?",
+      title: String(rawTitle || "").trim(),
     });
   };
 
@@ -688,7 +692,8 @@ function collectSourceEntries(contentText, metadataSources) {
     }
     pushSource(
       row.url || row.source_url || row.link || "",
-      row.domain || row.source_domain || row.host || row.site || ""
+      row.domain || row.source_domain || row.host || row.site || "",
+      row.title || ""
     );
   }
 
@@ -1124,6 +1129,7 @@ const app = window.Vue.createApp({
       ttsEnabled: false,
       _voiceRecognition: null,
       sendingByConversation: {},
+      queuedByConversation: {},
       sendingJobStage: {},
       assistantTypingByMessage: {},
       quickActionBusy: {},
@@ -1673,6 +1679,17 @@ const app = window.Vue.createApp({
     activeConversationSendingLabel() {
       const s = this.sendingJobStage[String(this.activeConversationId || "").trim()];
       return s ? String(s.label || "") : "";
+    },
+    activeConversationQueuedTurns() {
+      const id = String(this.activeConversationId || "").trim();
+      if (!id) {
+        return [];
+      }
+      const rows = this.queuedByConversation ? this.queuedByConversation[id] : [];
+      return Array.isArray(rows) ? rows : [];
+    },
+    activeConversationQueueCount() {
+      return this.activeConversationQueuedTurns.length;
     },
     activeTitle() {
       return String(this.activeConversation?.title || "Foxforge");
@@ -2887,6 +2904,229 @@ const app = window.Vue.createApp({
         this.sendingJobStage = nextStage;
       }
       this.sendingByConversation = next;
+    },
+
+    conversationQueue(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return [];
+      }
+      const rows = this.queuedByConversation ? this.queuedByConversation[id] : [];
+      return Array.isArray(rows) ? rows : [];
+    },
+
+    setConversationQueue(conversationId, rows) {
+      const id = String(conversationId || "").trim();
+      if (!id) {
+        return;
+      }
+      const next = Object.assign({}, this.queuedByConversation || {});
+      const safeRows = Array.isArray(rows) ? rows.filter((row) => row && typeof row === "object") : [];
+      if (safeRows.length) {
+        next[id] = safeRows;
+      } else {
+        delete next[id];
+      }
+      this.queuedByConversation = next;
+    },
+
+    releaseQueuedMessageAssets(item) {
+      const imageRows = Array.isArray(item?.imageRows) ? item.imageRows : [];
+      for (const row of imageRows) {
+        if (row?.previewUrl) {
+          URL.revokeObjectURL(row.previewUrl);
+        }
+      }
+    },
+
+    buildQueuedMessageItem({
+      conversationId,
+      content,
+      imageRows,
+      selectedLoras,
+      imageStyle,
+      mode,
+      replyTarget,
+    }) {
+      let id = "";
+      try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+          id = String(window.crypto.randomUUID());
+        }
+      } catch (_err) {}
+      if (!id) {
+        id = `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      }
+      const text = String(content || "").trim();
+      const files = Array.isArray(imageRows) ? imageRows.slice() : [];
+      const loras = this.normalizeLoraSelection(selectedLoras);
+      const resolvedImageStyle = String(imageStyle || "").trim() || (loras.length ? "lora" : "realistic");
+      return {
+        id,
+        conversationId: String(conversationId || "").trim(),
+        content: text,
+        imageRows: files,
+        selectedLoras: loras,
+        imageStyle: resolvedImageStyle,
+        mode: String(mode || "talk").trim() || "talk",
+        replyTarget: replyTarget && typeof replyTarget === "object" ? Object.assign({}, replyTarget) : null,
+        queuedAt: Date.now(),
+      };
+    },
+
+    queuedMessageModeLabel(item) {
+      const mode = String(item?.mode || "").trim().toLowerCase();
+      if (mode === "forage") return "Forage";
+      if (mode === "make") return "Make";
+      return "Talk";
+    },
+
+    queuedMessageExcerpt(item) {
+      const text = String(item?.content || "").trim();
+      const attachmentCount = Array.isArray(item?.imageRows) ? item.imageRows.length : 0;
+      if (text) {
+        return text.length > 140 ? `${text.slice(0, 140).trim()}...` : text;
+      }
+      if (attachmentCount > 0) {
+        return `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
+      }
+      return "Queued turn";
+    },
+
+    queueComposerMessage() {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return false;
+      }
+      const typedContent = String(this.draft || "").trim();
+      const imageRows = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
+      if (!typedContent && imageRows.length === 0) {
+        return false;
+      }
+      const selectedLoras = this.normalizeLoraSelection(this.composerSelectedLoras);
+      const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "make" : "talk");
+      const item = this.buildQueuedMessageItem({
+        conversationId,
+        content: typedContent,
+        imageRows,
+        selectedLoras,
+        imageStyle: selectedLoras.length ? "lora" : "realistic",
+        mode: sendMode,
+        replyTarget: this.replyTargetMsg || null,
+      });
+      const next = this.conversationQueue(conversationId).slice();
+      next.push(item);
+      this.setConversationQueue(conversationId, next);
+      this.draft = "";
+      this.composerImages = [];
+      this.replyTargetMsg = null;
+      this.composerAddMenuOpen = false;
+      if (this.$refs.imageInput) {
+        this.$refs.imageInput.value = "";
+      }
+      if (this.$refs.fileInput) {
+        this.$refs.fileInput.value = "";
+      }
+      this.resizeComposer();
+      this.$nextTick(() => {
+        const node = this.$refs.composerInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+      return true;
+    },
+
+    removeQueuedMessage(itemId) {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      const queue = this.conversationQueue(conversationId);
+      const idx = queue.findIndex((row) => String(row?.id || "") === String(itemId || ""));
+      if (idx < 0) {
+        return;
+      }
+      this.releaseQueuedMessageAssets(queue[idx]);
+      const next = queue.slice();
+      next.splice(idx, 1);
+      this.setConversationQueue(conversationId, next);
+    },
+
+    editQueuedMessage(itemId) {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      const queue = this.conversationQueue(conversationId);
+      const idx = queue.findIndex((row) => String(row?.id || "") === String(itemId || ""));
+      if (idx < 0) {
+        return;
+      }
+      const item = queue[idx];
+      const next = queue.slice();
+      next.splice(idx, 1);
+      this.setConversationQueue(conversationId, next);
+      this.draft = String(item?.content || "");
+      this.composerImages = Array.isArray(item?.imageRows) ? item.imageRows.slice() : [];
+      this.composerSelectedLoras = this.normalizeLoraSelection(item?.selectedLoras || []);
+      this.composerImageStyle = String(item?.imageStyle || "").trim() || (this.composerSelectedLoras.length ? "lora" : "realistic");
+      this.replyTargetMsg = item?.replyTarget && typeof item.replyTarget === "object" ? Object.assign({}, item.replyTarget) : null;
+      this.inputMode = String(item?.mode || "talk").trim() || "talk";
+      this.composerAddMenuOpen = false;
+      this.$nextTick(() => {
+        this.resizeComposer();
+        const node = this.$refs.composerInput;
+        if (node && typeof node.focus === "function") {
+          node.focus();
+        }
+      });
+    },
+
+    promoteQueuedMessage(itemId) {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      const queue = this.conversationQueue(conversationId);
+      const idx = queue.findIndex((row) => String(row?.id || "") === String(itemId || ""));
+      if (idx <= 0) {
+        return;
+      }
+      const next = queue.slice();
+      const [item] = next.splice(idx, 1);
+      next.unshift(item);
+      this.setConversationQueue(conversationId, next);
+    },
+
+    async runQueuedMessageNow(itemId) {
+      const conversationId = String(this.activeConversationId || "").trim();
+      if (!conversationId) {
+        return false;
+      }
+      this.promoteQueuedMessage(itemId);
+      if (this.isConversationSending(conversationId)) {
+        return true;
+      }
+      return this.flushConversationQueue(conversationId);
+    },
+
+    async flushConversationQueue(conversationId) {
+      const id = String(conversationId || "").trim();
+      if (!id || this.isConversationSending(id)) {
+        return false;
+      }
+      const queue = this.conversationQueue(id);
+      if (!queue.length) {
+        return false;
+      }
+      const [item, ...rest] = queue;
+      this.setConversationQueue(id, rest);
+      const ok = await this.sendMessage(item);
+      if (!ok) {
+        this.setConversationQueue(id, [item, ...this.conversationQueue(id)]);
+      }
+      return ok;
     },
 
     isMobileLayout() {
@@ -4394,7 +4634,10 @@ const app = window.Vue.createApp({
 
     assistantSourceStack(msg) {
       const raw = String(msg?.content || "");
-      const metaSources = Array.isArray(msg?.meta?.web_sources) ? msg.meta.web_sources : [];
+      const persistedStackSources = Array.isArray(msg?.meta?.web_stack?.web_sources) ? msg.meta.web_stack.web_sources : [];
+      const metaSources = Array.isArray(msg?.meta?.web_sources) && msg.meta.web_sources.length
+        ? msg.meta.web_sources
+        : persistedStackSources;
       const metaSignature = metaSources
         .slice(0, 6)
         .map((row) => String(row?.source_domain || row?.domain || row?.source_url || row?.url || "").trim().toLowerCase())
@@ -4494,6 +4737,10 @@ const app = window.Vue.createApp({
     },
 
     msgWebStack(msg) {
+      const persisted = msg?.meta?.web_stack;
+      if (persisted && typeof persisted === "object" && (persisted.mode || persisted.source_count || (persisted.web_sources || []).length)) {
+        return persisted;
+      }
       const rid = String(msg?.request_id || "").trim();
       if (!rid) return null;
       const ws = this.jobWebStack[rid];
@@ -8284,23 +8531,51 @@ const app = window.Vue.createApp({
       this.activeConversation = Object.assign({}, this.activeConversation, { messages: filtered });
     },
 
-    async sendMessage() {
-      const conversationId = String(this.activeConversationId || "").trim();
-      if (!conversationId || this.isConversationSending(conversationId)) {
-        return;
+    async sendMessage(queuedItem = null) {
+      const looksLikeDomEvent = Boolean(
+        queuedItem
+        && typeof queuedItem === "object"
+        && (
+          typeof queuedItem.preventDefault === "function"
+          || typeof queuedItem.stopPropagation === "function"
+          || queuedItem instanceof Event
+        )
+      );
+      if (looksLikeDomEvent) {
+        queuedItem = null;
       }
-      const typedContent = String(this.draft || "").trim();
-      const imageRows = Array.isArray(this.composerImages) ? this.composerImages.slice() : [];
-      const selectedLoras = this.normalizeLoraSelection(this.composerSelectedLoras);
-      const imageStyle = selectedLoras.length ? "lora" : "realistic";
-      this.composerSelectedLoras = selectedLoras;
-      this.composerImageStyle = imageStyle;
+      const fromQueue = Boolean(
+        queuedItem
+        && typeof queuedItem === "object"
+        && Object.prototype.hasOwnProperty.call(queuedItem, "conversationId")
+      );
+      const conversationId = String((fromQueue ? queuedItem?.conversationId : this.activeConversationId) || "").trim();
+      if (!conversationId) {
+        return false;
+      }
+      if (!fromQueue && this.isConversationSending(conversationId)) {
+        return this.queueComposerMessage();
+      }
+      if (fromQueue && this.isConversationSending(conversationId)) {
+        return false;
+      }
+      const typedContent = fromQueue ? String(queuedItem?.content || "").trim() : String(this.draft || "").trim();
+      const imageRows = fromQueue
+        ? (Array.isArray(queuedItem?.imageRows) ? queuedItem.imageRows.slice() : [])
+        : (Array.isArray(this.composerImages) ? this.composerImages.slice() : []);
+      const selectedLoras = this.normalizeLoraSelection(fromQueue ? queuedItem?.selectedLoras || [] : this.composerSelectedLoras);
+      const imageStyle = String(fromQueue ? queuedItem?.imageStyle || "" : "").trim() || (selectedLoras.length ? "lora" : "realistic");
+      if (!fromQueue) {
+        this.composerSelectedLoras = selectedLoras;
+        this.composerImageStyle = imageStyle;
+      }
       if (!typedContent && imageRows.length === 0) {
-        return;
+        return false;
       }
 
-      const talkModeRequest = this.inputMode === "talk" && !typedContent.startsWith("/");
-      const sendMode = this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "make" : "talk");
+      const sendMode = fromQueue
+        ? (String(queuedItem?.mode || "talk").trim() || "talk")
+        : (this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "make" : "talk"));
       const likelyForagingRequest = sendMode === "forage";
       const likelyImageGenRequest = sendMode !== "make" && (
         /\b(?:\/imagine|text[- ]?to[- ]?image|t2i)\b/i.test(typedContent) ||
@@ -8327,18 +8602,22 @@ const app = window.Vue.createApp({
         imageGen: likelyImageGenRequest,
       });
       this.chatMenuOpen = false;
-      this.composerAddMenuOpen = false;
-      this.draft = "";
-      this.composerImages = [];
-      const replyTarget = this.replyTargetMsg || null;
-      this.replyTargetMsg = null;
-      if (this.$refs.imageInput) {
-        this.$refs.imageInput.value = "";
+      const replyTarget = fromQueue
+        ? (queuedItem?.replyTarget && typeof queuedItem.replyTarget === "object" ? Object.assign({}, queuedItem.replyTarget) : null)
+        : (this.replyTargetMsg || null);
+      if (!fromQueue) {
+        this.composerAddMenuOpen = false;
+        this.draft = "";
+        this.composerImages = [];
+        this.replyTargetMsg = null;
+        if (this.$refs.imageInput) {
+          this.$refs.imageInput.value = "";
+        }
+        if (this.$refs.fileInput) {
+          this.$refs.fileInput.value = "";
+        }
+        this.resizeComposer();
       }
-      if (this.$refs.fileInput) {
-        this.$refs.fileInput.value = "";
-      }
-      this.resizeComposer();
       let sentSuccessfully = false;
       try {
         const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
@@ -8410,7 +8689,9 @@ const app = window.Vue.createApp({
           }
         }
         sentSuccessfully = true;
-        this.resetComposerMode();
+        if (!fromQueue) {
+          this.resetComposerMode();
+        }
         await this.markConversationRead(conversationId, { refreshList: false });
         try {
           await this.refreshConversations();
@@ -8429,10 +8710,16 @@ const app = window.Vue.createApp({
         }
         if (recovered) {
           sentSuccessfully = true;
-        this.resetComposerMode();
+          if (!fromQueue) {
+            this.resetComposerMode();
+          }
         } else {
           if (imageRows.length > 0) {
-            this.composerImages = imageRows;
+            if (fromQueue) {
+              queuedItem.imageRows = imageRows.slice();
+            } else {
+              this.composerImages = imageRows;
+            }
           }
           if (!sentSuccessfully && String(this.activeConversationId || "").trim() === conversationId) {
             const existing = Array.isArray(this.activeConversation?.messages) ? this.activeConversation.messages.slice() : [];
@@ -8456,10 +8743,14 @@ const app = window.Vue.createApp({
           }
         }
         this.setConversationSending(conversationId, false);
+        if (sentSuccessfully) {
+          await this.flushConversationQueue(conversationId);
+        }
         if (String(this.activeConversationId || "").trim() === conversationId) {
           this.$nextTick(() => this.scrollMessages());
         }
       }
+      return sentSuccessfully;
     },
 
     waypointEventTimeLabel(row) {
