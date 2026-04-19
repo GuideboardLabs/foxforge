@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shared_tools.feedback_learning import FeedbackLearningEngine
+from shared_tools.fidelity_policy import FidelityLevel, fidelity_for, writer_constraint_block, evidence_key_block, critic_fabrication_block, planner_grounding_rule, thin_research_warning
 from shared_tools.model_routing import lane_model_config
 from shared_tools.ollama_client import OllamaClient
 
@@ -206,9 +207,13 @@ def _run_planner(
     sections: list[tuple[str, str]],
     research_context: str,
     project_context: str,
+    level: FidelityLevel = FidelityLevel.STRICT,
 ) -> str:
     sections_text = "\n".join(f"- {name}: {hint}" for name, hint in sections)
     process_note = _process_note_for(type_id)
+    grounding = planner_grounding_rule(level)
+    thin_warn = thin_research_warning(level, len(research_context))
+    grounding_block = f"\n{grounding}{thin_warn}\n" if (grounding or thin_warn) else ""
     system_prompt = (
         f"Today: {_today()}. You are an expert content planner.\n\n"
         f"Output type: {type_id.replace('_', ' ').title()}\n"
@@ -217,7 +222,8 @@ def _run_planner(
         "For each required section below, write a one-sentence thesis statement "
         "that is SPECIFIC to the user's request and grounded in the research context. "
         "Do not write generic filler — every thesis must reflect actual content.\n\n"
-        f"Required sections:\n{sections_text}\n\n"
+        f"Required sections:\n{sections_text}\n"
+        f"{grounding_block}\n"
         "Format your response as:\n"
         "### [Section Name]\n[Specific thesis for this section]\n\n"
         "Do not write the content itself. Only the thesis map."
@@ -253,6 +259,8 @@ def _run_section_writer(
     research_context: str,
     project_context: str,
     prior_section_preview: str = "",
+    raw_notes_context: str = "",
+    level: FidelityLevel = FidelityLevel.STRICT,
 ) -> tuple[str, str]:
     word_range = _word_range_for(type_id)
     process_note = _process_note_for(type_id)
@@ -267,9 +275,10 @@ def _run_section_writer(
         f"Today: {_today()}. You are an expert writer producing a {type_id.replace('_', ' ')} section.\n\n"
         f"Overall piece target length: {word_range}\n"
         f"Process guidance: {process_note}{video_note}\n\n"
-        "Write ONLY this section. Stay grounded in the research context. "
-        "Be specific — no generic filler. Do not include headings for other sections."
+        f"Write ONLY this section. {writer_constraint_block(level)} "
+        "Do not include headings for other sections."
     )
+    ev_key = evidence_key_block(level, bool(raw_notes_context.strip()))
     user_prompt_parts = [
         f"Original request: {question}",
         f"\nSection: {section_name}",
@@ -278,7 +287,7 @@ def _run_section_writer(
     if prior_section_preview:
         user_prompt_parts.append(f"\nPrevious section (for continuity, do not repeat):\n{_trim(prior_section_preview, 600)}")
     user_prompt_parts.extend([
-        f"\nResearch context:\n{_trim(research_context, 5000)}",
+        f"\nResearch context:{ev_key}\n{_trim(research_context, 5000)}",
         f"\nProject context:\n{_trim(project_context, 1500)}",
     ])
     try:
@@ -303,15 +312,19 @@ def _run_critic(
     assembled: str,
     type_id: str,
     question: str,
+    raw_notes_context: str = "",
+    level: FidelityLevel = FidelityLevel.STRICT,
+    research_context: str = "",
 ) -> str:
     process_note = _process_note_for(type_id)
+    raw_block = critic_fabrication_block(level, raw_notes_context, _trim, research_context)
     system_prompt = (
         f"You are a critical editor for a {type_id.replace('_', ' ')}.\n\n"
         f"Process standard: {process_note}\n\n"
         "Review the draft for:\n"
         "1. Structural gaps — missing sections or sections that don't follow the process standard\n"
         "2. Repetition — content that appears in multiple sections without adding new value\n"
-        "3. Unsupported claims — specific assertions that need evidence or a source\n"
+        "3. Unsupported claims — specific assertions (names, dates, stats, events) not traceable to the research context\n"
         "4. Thesis drift — sections that wander from the original request\n"
         "5. Voice inconsistency — tense drift, POV breaks, or register mismatches\n"
         "6. Truncation — sections that end abruptly or feel incomplete\n\n"
@@ -323,7 +336,7 @@ def _run_critic(
         result = client.chat(
             model=_MODEL_CRITIC,
             system_prompt=system_prompt,
-            user_prompt=f"Original request: {question}\n\nDraft:\n{_trim(assembled, 10000)}",
+            user_prompt=f"Original request: {question}\n\nDraft:\n{_trim(assembled, 10000)}{raw_block}",
             temperature=0.1,
             num_ctx=24576,
             think=True,
@@ -398,7 +411,9 @@ def _run_compositor(
         "1. Add an appropriate title at the top\n"
         "2. Write smooth transitions between sections (1–2 sentences where needed)\n"
         "3. Ensure consistent voice and tense throughout\n"
-        "4. Trim any redundancy between adjacent sections\n"
+        "4. REPETITION AUDIT: Scan every paragraph for content that restates an argument, "
+        "claim, or phrase already made in a previous section. Delete the duplicate occurrence "
+        "entirely — do not soften or vary it. Keep the version in the section where it fits best.\n"
         "5. Keep every section's core content intact — do not condense aggressively\n\n"
         "Return the complete assembled document in markdown. No meta-commentary."
     )
@@ -473,6 +488,7 @@ def run_longform_pool(
     project_slug: str,
     bus: Any,
     type_id: str = "essay_long",
+    topic_type: str = "general",
     research_context: str = "",
     raw_notes_context: str = "",
     sources_context: str = "",
@@ -500,6 +516,7 @@ def run_longform_pool(
     type_id = str(type_id or "essay_long").strip().lower()
     if type_id not in _TYPE_SPECS:
         type_id = "essay_long"
+    _level = fidelity_for(type_id, topic_type)
 
     bus.emit("longform_pool", "start", {"question": question, "type_id": type_id})
 
@@ -533,7 +550,7 @@ def run_longform_pool(
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
 
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "planner", "model": _MODEL_PLANNER})
-    outline = _run_planner(client, question, type_id, sections, combined_research, project_context)
+    outline = _run_planner(client, question, type_id, sections, combined_research, project_context, _level)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "planner", "output_chars": len(outline)})
 
     # Parse outline → section theses
@@ -579,6 +596,7 @@ def run_longform_pool(
                 _run_section_writer,
                 client, question, type_id, name, thesis,
                 combined_research, project_context,
+                "", raw_notes_context, _level,
             )
             futures[fut] = name
 
@@ -603,7 +621,7 @@ def run_longform_pool(
 
     assembled_draft = "\n\n".join(f"## {n}\n\n{b}" for n, b in ordered_sections if b)
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "critic", "model": _MODEL_CRITIC})
-    critic_output = _run_critic(client, assembled_draft, type_id, question)
+    critic_output = _run_critic(client, assembled_draft, type_id, question, raw_notes_context, _level, research_context)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "critic", "output_chars": len(critic_output)})
 
     # ------------------------------------------------------------------

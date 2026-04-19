@@ -453,6 +453,9 @@ function formatInlineMarkdown(line) {
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/\[([^\]]+)\]\(\/api\/files\/read\?path=([^)]+)\)/g, (_match, label, rawPath) => {
+    return `<button type="button" class="md-inline-link file-inline-link" data-file-path="${encodeURIComponent(rawPath)}">${label}</button>`;
+  });
   html = html.replace(/@@GB_FILE_(\d+)@@/g, (_match, idxText) => {
     const idx = Number(idxText || -1);
     const matchedPath = idx >= 0 && idx < fileTokens.length ? fileTokens[idx] : "";

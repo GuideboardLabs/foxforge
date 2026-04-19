@@ -1161,7 +1161,7 @@ class FoxforgeOrchestrator:
                 from pathlib import Path
                 rel_path = Path(artifact_path).relative_to(self.repo_root)
                 rel = str(rel_path)
-                link_url = f"/api/projects/file?path={rel}"
+                link_url = f"/api/files/read?path={rel}"
                 lines.append(f"\n[Open artifact]({link_url})")
             except Exception:
                 pass
@@ -2432,6 +2432,8 @@ class FoxforgeOrchestrator:
         # --- Creative writing: novel, memoir, book, screenplay ---
         if kind in {"novel", "memoir", "book", "screenplay"}:
             research_context = self._read_research_context(self.project_slug)
+            _pm_creative = getattr(self, "_last_project_mode", {})
+            topic_type_creative = str(_pm_creative.get("topic_type", "general")).strip().lower() if isinstance(_pm_creative, dict) else "general"
             creative_result = self._run_registered_agent(
                 "make_creative",
                 self._make_agent_task(
@@ -2439,6 +2441,7 @@ class FoxforgeOrchestrator:
                     text=text,
                     context={
                         "target": kind,
+                        "topic_type": topic_type_creative,
                         "research_context": research_context,
                         "project_context": project_context,
                     },
@@ -2470,6 +2473,9 @@ class FoxforgeOrchestrator:
         # --- Short-form content: blog, social_post, email ---
         if kind in {"blog", "social_post", "email"}:
             research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            raw_notes_context_content = self._read_raw_notes_context(self.project_slug)
+            _pm_content = getattr(self, "_last_project_mode", {})
+            topic_type_content = str(_pm_content.get("topic_type", "general")).strip().lower() if isinstance(_pm_content, dict) else "general"
             content_result = self._run_registered_agent(
                 "make_content",
                 self._make_agent_task(
@@ -2477,7 +2483,9 @@ class FoxforgeOrchestrator:
                     text=text,
                     context={
                         "target": kind,
+                        "topic_type": topic_type_content,
                         "research_context": research_context,
+                        "raw_notes_context": raw_notes_context_content,
                         "project_context": project_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
@@ -2560,6 +2568,8 @@ class FoxforgeOrchestrator:
             research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
+            _pm_longform = getattr(self, "_last_project_mode", {})
+            topic_type_longform = str(_pm_longform.get("topic_type", "general")).strip().lower() if isinstance(_pm_longform, dict) else "general"
             longform_result = self._run_registered_agent(
                 "make_longform",
                 self._make_agent_task(
@@ -2567,6 +2577,7 @@ class FoxforgeOrchestrator:
                     text=text,
                     context={
                         "type_id": kind,
+                        "topic_type": topic_type_longform,
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context,
                         "sources_context": sources_context,

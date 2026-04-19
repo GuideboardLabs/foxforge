@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shared_tools.feedback_learning import FeedbackLearningEngine
+from shared_tools.fidelity_policy import FidelityLevel, fidelity_for, writer_constraint_block, evidence_key_block, thin_research_warning
 from shared_tools.model_routing import lane_model_config
 from shared_tools.ollama_client import OllamaClient
 
@@ -242,15 +243,18 @@ def _run_outline(
     topic_type: str,
     target: str,
     sources_context: str = "",
+    level: FidelityLevel = FidelityLevel.STRICT,
 ) -> str:
     section_list = "\n".join(f"  {i+1}. {name}: {hint}" for i, (name, hint) in enumerate(sections))
+    thin_warn = thin_research_warning(level, len(research_context))
     system_prompt = (
         f"Today: {_today()}. "
         "You are an essay strategist. Given research context and a writing request, "
         "produce a tight outline: one thesis sentence per section that the writer will follow. "
-        "Be specific — use facts and names from the research, not generic phrases. "
+        "Use facts and names from the research only — not from your training knowledge, which may be wrong. "
         "Where a web source directly supports a section, note the URL so the writer can cite it. "
-        "Output each section as: '### [Section Name]\\n[1-2 sentence thesis]'. Nothing else."
+        f"Output each section as: '### [Section Name]\\n[1-2 sentence thesis]'. Nothing else."
+        f"{thin_warn}"
     )
     sources_block = f"\n\nWeb sources (URLs available for citation):\n{_trim(sources_context, 4000)}" if sources_context.strip() else ""
     user_prompt = (
@@ -291,6 +295,8 @@ def _run_section_writer(
     target: str,
     word_target: int = 420,
     sources_context: str = "",
+    raw_notes_context: str = "",
+    level: FidelityLevel = FidelityLevel.STRICT,
 ) -> str:
     sources_instruction = (
         " When citing a specific fact, include the source URL inline like: (source: URL). "
@@ -302,17 +308,18 @@ def _run_section_writer(
         f"You are a section writer for a {target}. "
         "Write ONE section only — do not write other sections. "
         f"Target length: approximately {word_target} words. "
-        "Write in flowing prose. Ground every claim in the research context. "
+        f"Write in flowing prose. {writer_constraint_block(level)} "
         "Do not use bullet points unless the section clearly calls for a list. "
         "Do not start with the section title — the compositor will handle headers."
         f"{sources_instruction}"
     )
+    ev_key = evidence_key_block(level, bool(raw_notes_context.strip()))
     sources_block = f"\n\nWeb sources (cite URLs inline where relevant):\n{_trim(sources_context, 5000)}" if sources_context.strip() else ""
     user_prompt = (
         f"Full outline (for context — write ONLY your assigned section):\n{_trim(outline, 2000)}\n\n"
         f"YOUR SECTION: {section_name}\n"
         f"Thesis to develop: {section_thesis}\n\n"
-        f"Research context:\n{_trim(research_context, 10000)}\n\n"
+        f"Research context:{ev_key}\n{_trim(research_context, 10000)}\n\n"
         f"Writing request: {question}"
         f"{sources_block}"
     )
@@ -340,16 +347,11 @@ def _run_critic(
     question: str,
     topic_type: str,
     raw_notes_context: str = "",
+    research_context: str = "",
+    level: FidelityLevel = FidelityLevel.STRICT,
 ) -> str:
-    raw_block = ""
-    if raw_notes_context.strip():
-        raw_block = (
-            f"\n\nRaw agent research notes ([E]=evidence-backed, [I]=inferred, [S]=speculative):\n"
-            f"{_trim(raw_notes_context, 6000)}\n\n"
-            "EVIDENCE CHECK: For any claim in the draft that is presented as fact, verify it is "
-            "traceable to an [E] label in the raw notes. Flag claims that appear to be [I] or [S] "
-            "but are written as established facts."
-        )
+    from shared_tools.fidelity_policy import critic_fabrication_block
+    fact_block = critic_fabrication_block(level, raw_notes_context, _trim, research_context)
     system_prompt = (
         f"Today: {_today()}. "
         "You are an editorial critic reviewing a draft essay. "
@@ -363,7 +365,7 @@ def _run_critic(
     user_prompt = (
         f"Topic type: {topic_type} | Request: {question}\n\n"
         f"Draft to review:\n{_trim(sections_text, 16000)}"
-        f"{raw_block}"
+        f"{fact_block}"
     )
     try:
         result = client.chat(
@@ -551,6 +553,7 @@ def run_essay_pool(
 
     topic_key = str(topic_type).strip().lower()
     target_key = str(target).strip().lower()
+    _level = fidelity_for(target_key, topic_key)
     sections = _sections_for(topic_key, target_key)
     outline_model, writer_model, critic_model, compositor_model = _models_for(topic_key)
     client = OllamaClient()
@@ -573,6 +576,7 @@ def run_essay_pool(
         client, outline_model, question, sections,
         research_context, project_context, topic_key, target_key,
         sources_context=sources_context,
+        level=_level,
     )
     _progress("essay_outline_completed", {"preview": outline[:300]})
 
@@ -621,6 +625,8 @@ def run_essay_pool(
             outline, question, research_context, topic_key, target_key,
             word_target=word_target,
             sources_context=sources_context,
+            raw_notes_context=raw_notes_context,
+            level=_level,
         )
         _progress("essay_section_completed", {
             "section": section_name,
@@ -653,6 +659,8 @@ def run_essay_pool(
         critic_notes = _run_critic(
             client, critic_model, all_sections_text, question, topic_key,
             raw_notes_context=raw_notes_context,
+            research_context=research_context,
+            level=_level,
         )
         _progress("essay_critic_completed", {"preview": critic_notes[:300]})
 

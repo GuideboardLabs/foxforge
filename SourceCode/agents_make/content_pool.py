@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shared_tools.feedback_learning import FeedbackLearningEngine
+from shared_tools.fidelity_policy import FidelityLevel, fidelity_for, writer_constraint_block, evidence_key_block, critic_fabrication_block, thin_research_warning
 from shared_tools.model_routing import lane_model_config
 from shared_tools.ollama_client import OllamaClient
 
@@ -91,9 +92,11 @@ def _run_planner(
     kind: str,
     research_context: str,
     project_context: str,
+    level: FidelityLevel = FidelityLevel.GROUNDED,
 ) -> str:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
     sections_text = "\n".join(f"- {n}: {h}" for n, h in spec["sections"])
+    thin_warn = thin_research_warning(level, len(research_context))
     system_prompt = (
         f"Today: {_today()}. You are a professional content strategist.\n\n"
         f"Output type: {kind}\n"
@@ -104,7 +107,7 @@ def _run_planner(
         "grounded in the user's request and research context. No generic filler.\n\n"
         f"Sections:\n{sections_text}\n\n"
         "Format:\n### [Section Name]\n[specific angle]\n\n"
-        "Do not write the content itself."
+        f"Do not write the content itself.{thin_warn}"
     )
     try:
         result = client.chat(
@@ -131,20 +134,23 @@ def _run_section_writer(
     section_angle: str,
     research_context: str,
     project_context: str,
+    raw_notes_context: str = "",
+    level: FidelityLevel = FidelityLevel.GROUNDED,
 ) -> tuple[str, str]:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
+    ev_key = evidence_key_block(level, bool(raw_notes_context.strip()))
     system_prompt = (
         f"Today: {_today()}. You are a professional {kind.replace('_', ' ')} writer.\n\n"
         f"Write ONLY the '{section_name}' section.\n"
         f"Overall piece length: {spec['word_range']}\n"
         f"Voice: {spec['voice']}\n\n"
-        "Be specific and grounded in the research. No filler. "
+        f"{writer_constraint_block(level)} No filler. "
         "Return only the section content — no section heading."
     )
     user_prompt = (
         f"Request: {question}\n"
         f"Section focus: {section_angle}\n\n"
-        f"Research:\n{_trim(research_context, 4000)}\n\n"
+        f"Research:{ev_key}\n{_trim(research_context, 4000)}\n\n"
         f"Project context:\n{_trim(project_context, 1500)}"
     )
     try:
@@ -169,6 +175,9 @@ def _run_critic(
     draft: str,
     kind: str,
     question: str,
+    raw_notes_context: str = "",
+    level: FidelityLevel = FidelityLevel.GROUNDED,
+    research_context: str = "",
 ) -> str:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
     system_prompt = (
@@ -190,7 +199,7 @@ def _run_critic(
         result = client.chat(
             model=_MODEL_CRITIC,
             system_prompt=system_prompt,
-            user_prompt=f"Kind: {kind} | Request: {question}\n\nDraft:\n{_trim(draft, 6000)}",
+            user_prompt=f"Kind: {kind} | Request: {question}\n\nDraft:\n{_trim(draft, 6000)}{critic_fabrication_block(level, raw_notes_context, _trim, research_context)}",
             temperature=0.1,
             num_ctx=12288,
             think=True,
@@ -265,7 +274,9 @@ def run_content_pool(
     project_slug: str,
     bus: Any,
     target: str = "blog",
+    topic_type: str = "general",
     research_context: str = "",
+    raw_notes_context: str = "",
     project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
@@ -290,6 +301,7 @@ def run_content_pool(
     kind = str(target).strip().lower() or "blog"
     if kind not in _KIND_SPECS:
         kind = "blog"
+    _level = fidelity_for(kind, topic_type)
 
     bus.emit("content_pool", "start", {"question": question, "target": kind})
     client = OllamaClient()
@@ -319,7 +331,7 @@ def run_content_pool(
     if _cancelled():
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "planner", "model": _MODEL_DRAFTER})
-    outline = _run_planner(client, question, kind, research_context, project_context)
+    outline = _run_planner(client, question, kind, research_context, project_context, _level)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "planner", "output_chars": len(outline)})
 
     # Parse outline → section angles
@@ -356,6 +368,7 @@ def run_content_pool(
             fut = executor.submit(
                 _run_section_writer,
                 client, question, kind, name, angle, research_context, project_context,
+                raw_notes_context, _level,
             )
             futures[fut] = name
         for fut in as_completed(futures):
@@ -376,7 +389,7 @@ def run_content_pool(
 
     assembled_draft = "\n\n".join(f"**{n}**\n{b}" for n, b in ordered_sections if b)
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "critic", "model": _MODEL_CRITIC})
-    review_notes = _run_critic(client, assembled_draft, kind, question)
+    review_notes = _run_critic(client, assembled_draft, kind, question, raw_notes_context, _level, research_context)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "critic", "output_chars": len(review_notes)})
 
     # Step 4: Revisor (targeted sections)

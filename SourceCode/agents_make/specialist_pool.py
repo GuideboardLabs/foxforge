@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from shared_tools.fidelity_policy import FidelityLevel, writer_constraint_block, evidence_key_block, critic_fabrication_block, thin_research_warning
 from shared_tools.ollama_client import OllamaClient
 
 
@@ -181,13 +182,16 @@ def _run_outline(
     kind: str,
 ) -> str:
     section_list = "\n".join(f"  {i+1}. {name}: {hint}" for i, (name, hint) in enumerate(sections))
+    thin_warn = thin_research_warning(FidelityLevel.STRICT, len(research_context))
     system_prompt = (
         f"Today: {_today()}. "
         f"You are a domain expert outliner for a {kind.replace('_', ' ')} deliverable. "
         "Given research context and a writing request, produce a tight outline: "
         "one thesis sentence per section grounded in the research. "
-        "Be specific — use facts, figures, and names from the research. "
-        "Output each section as: '### [Section Name]\\n[1-2 sentence thesis]'. Nothing else."
+        "Use facts, figures, and names from the research only — not from your training knowledge, "
+        "which may be inaccurate for domain-specific details. "
+        f"Output each section as: '### [Section Name]\\n[1-2 sentence thesis]'. Nothing else."
+        f"{thin_warn}"
     )
     user_prompt = (
         f"Domain: {kind} | Request: {question}\n\n"
@@ -222,13 +226,15 @@ def _run_section_writer(
     research_context: str,
     kind: str,
     sources_context: str = "",
+    raw_notes_context: str = "",
 ) -> str:
+    ev_key = evidence_key_block(FidelityLevel.STRICT, bool(raw_notes_context.strip()))
     system_prompt = (
         f"Today: {_today()}. "
         f"You are a domain expert writer for a {kind.replace('_', ' ')} deliverable. "
         "Write ONE section only — approximately 400-500 words. "
-        "Ground every claim in the research context. Cite sources where available. "
-        "Be precise with data, dates, and figures. "
+        f"{writer_constraint_block(FidelityLevel.STRICT)} "
+        "Cite sources where available. Be precise with data, dates, and figures. "
         "Do not start with the section title — the compositor handles headers."
     )
     sources_block = f"\n\nSources:\n{_trim(sources_context, 4000)}" if sources_context.strip() else ""
@@ -236,7 +242,7 @@ def _run_section_writer(
         f"Full outline (write ONLY your assigned section):\n{_trim(outline, 2000)}\n\n"
         f"YOUR SECTION: {section_name}\n"
         f"Thesis: {section_thesis}\n\n"
-        f"Research context:\n{_trim(research_context, 10000)}\n\n"
+        f"Research context:{ev_key}\n{_trim(research_context, 10000)}\n\n"
         f"Request: {question}"
         f"{sources_block}"
     )
@@ -262,8 +268,11 @@ def _run_domain_critic(
     sections_text: str,
     question: str,
     kind: str,
+    raw_notes_context: str = "",
+    research_context: str = "",
 ) -> str:
     domain_instructions = _DOMAIN_CRITIC_INSTRUCTIONS.get(kind, "Check for accuracy and completeness.")
+    fabrication_block = critic_fabrication_block(FidelityLevel.STRICT, raw_notes_context, _trim, research_context)
     system_prompt = (
         f"Today: {_today()}. "
         f"You are a domain expert critic for a {kind.replace('_', ' ')} deliverable.\n\n"
@@ -275,6 +284,7 @@ def _run_domain_critic(
     user_prompt = (
         f"Domain: {kind} | Request: {question}\n\n"
         f"Draft to review:\n{_trim(sections_text, 16000)}"
+        f"{fabrication_block}"
     )
     try:
         result = client.chat(
@@ -467,6 +477,7 @@ def run_specialist_pool(
             client, section_name, thesis, outline,
             question, research_context, kind,
             sources_context=sources_context,
+            raw_notes_context=raw_notes_context,
         )
         _progress("specialist_section_completed", {
             "section": section_name, "index": i + 1, "total": len(sections),
@@ -489,7 +500,7 @@ def run_specialist_pool(
         f"### {n}\n\n{section_texts.get(n, '')}" for n, _ in sections
     )
     _progress("specialist_critic_started", {})
-    critic_notes = _run_domain_critic(client, all_sections_text, question, kind)
+    critic_notes = _run_domain_critic(client, all_sections_text, question, kind, raw_notes_context, research_context)
     _progress("specialist_critic_completed", {"preview": critic_notes[:300]})
 
     # Step 4: Revision pass

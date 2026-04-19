@@ -13,6 +13,43 @@ from shared_tools.inference_router import InferenceRouter
 from shared_tools.ollama_client import OllamaClient
 
 
+_URL_PATTERN = re.compile(
+    r"https?://\S+"
+    r"|(?<!\w)(?:[a-zA-Z0-9-]+\.(?:com|org|gov|edu|io|net|co|uk|de|fr|ca|au))(?:/\S*)?",
+    re.IGNORECASE,
+)
+
+
+def _audit_evidence_labels(findings: list[dict]) -> list[dict]:
+    """Downgrade [E] labels to [I] when no source URL can be found nearby.
+
+    Pure heuristic — no LLM call. For each line containing [E], checks the
+    same line and the next line for a URL or domain token. If neither contains
+    one, replaces [E] with [I] in that line only. Preserves all content.
+    """
+    result: list[dict] = []
+    for item in findings:
+        text = str(item.get("finding", ""))
+        if "[E]" not in text:
+            result.append(item)
+            continue
+        lines = text.split("\n")
+        new_lines: list[str] = []
+        for i, line in enumerate(lines):
+            if "[E]" not in line:
+                new_lines.append(line)
+                continue
+            window = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
+            if _URL_PATTERN.search(window):
+                new_lines.append(line)
+            else:
+                new_lines.append(line.replace("[E]", "[I]"))
+        new_item = dict(item)
+        new_item["finding"] = "\n".join(new_lines)
+        result.append(new_item)
+    return result
+
+
 def _self_check(client: OllamaClient, model_cfg: dict, question: str, finding: str) -> int:
     """Ask the agent to rate its own finding quality. Returns 1-5 or 0 on failure."""
     model = str(model_cfg.get("model", "")).strip()
@@ -28,7 +65,9 @@ def _self_check(client: OllamaClient, model_cfg: dict, question: str, finding: s
                 "3=adequate — answers the question with mostly sourced [E] claims.\n"
                 "4=good — well-sourced, directly relevant, clear [E]/[I]/[S] discipline.\n"
                 "5=excellent — directly answers the question, all specific claims cited, no apparent fabrication.\n"
-                "Deduct at least 1 point if specific statistics, dates, or proper nouns lack a cited source URL.\n"
+                "Deduct at least 2 points if ANY [E] claim lacks an immediately following source URL or domain. "
+                "[E] always requires a citation regardless of whether the claim is a statistic, name, or general observation. "
+                "General knowledge presented as [E] without a source is a fabrication error.\n"
                 "Reply with ONLY a single digit 1-5."
             ),
             user_prompt=f"Question: {question[:200]}\n\nFinding: {finding[:600]}",
@@ -1406,6 +1445,7 @@ def run_research_pool(
             pause_checker=pause_checker,
         )
     reliability = _reliability_summary(findings)
+    findings = _audit_evidence_labels(findings)
 
     store = ProjectStore(repo_root)
 
@@ -1505,7 +1545,7 @@ def run_research_pool(
         conflict_report=conflict_report,
     )
 
-    skeptic_md = run_skeptic_pass(question, summary_md, client=client, model_cfg=synth_cfg)
+    skeptic_md = run_skeptic_pass(question, summary_md, client=client, model_cfg=synth_cfg, findings=findings)
     if skeptic_md:
         summary_md = f"{summary_md}\n\n---\n\n{skeptic_md}"
 

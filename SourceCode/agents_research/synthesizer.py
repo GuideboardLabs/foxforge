@@ -174,6 +174,14 @@ def synthesize(
         "in the agent findings above. Do NOT introduce details that are not traceable to at least "
         "one finding — not even plausible-sounding ones. If coverage is thin, state that explicitly "
         "in Uncertainties & Risks rather than filling the gap. Fabrication is worse than a short answer.\n\n"
+        "RESEARCH-ONLY: Your training knowledge about specific products, services, apps, statistics, "
+        "or recent events is unreliable and may be factually wrong. Synthesize EXCLUSIVELY from the "
+        "agent findings provided. Do not supplement with background knowledge — even when the findings "
+        "seem thin or incomplete.\n\n"
+        "COVERAGE GAPS: When a topic area in the question has no [E] findings with cited source URLs "
+        "from agents, do NOT fill the gap with general knowledge or inference. Instead write: "
+        "'Coverage gap: no primary evidence found for [area].' "
+        "A gap declaration is better than a gap filled with unverified claims.\n\n"
         "End Executive Summary with: 'Evidence Confidence: [High/Mixed/Low] — [one-line reason].' "
         "For time-sensitive topics, state whether events are upcoming, ongoing, or past relative to today."
     )
@@ -267,6 +275,7 @@ def run_skeptic_pass(
     *,
     client: Any | None = None,
     model_cfg: dict | None = None,
+    findings: list[dict] | None = None,
 ) -> str:
     """
     Adversarial second pass on the completed synthesis.
@@ -291,25 +300,43 @@ def run_skeptic_pass(
         else []
     )
 
+    _findings_ref = ""
+    if findings:
+        ref_parts: list[str] = []
+        for item in findings:
+            agent = str(item.get("agent", "agent")).strip()
+            text = str(item.get("finding", "")).strip()[:400]
+            if text:
+                ref_parts.append(f"[{agent}]: {text}")
+        if ref_parts:
+            _findings_ref = "\n\n".join(ref_parts)
+
     system_prompt = (
         "You are the Skeptic Engine — an internal adversary whose only job is to stress-test "
         "research conclusions before they reach the user. You are not trying to be balanced or "
         "reassuring. You are trying to find every crack.\n\n"
         "For the synthesis provided, produce a structured critique covering:\n"
         "  1. Fabricated specifics — any numbers, dates, names, URLs, version strings, or direct quotes "
-        "that do not appear in the agent findings; flag each one explicitly\n"
-        "  2. Unsupported claims — assertions presented as fact with no [E] backing in the findings\n"
-        "  3. Weak evidence — claims resting on a single source, low-tier source, or wire-laundered reporting\n"
-        "  4. Missing perspectives — what expert voices, data types, or opposing viewpoints are absent\n"
-        "  5. Conclusion vulnerabilities — what single piece of contradicting evidence would overturn the main findings\n"
-        "  6. Confidence adjustment — one direct sentence on whether the reader's confidence should be "
+        "that do not appear in the raw findings reference; flag each one explicitly\n"
+        "  2. Unsourced [E] labels — any claim marked [E] in the synthesis where the raw findings "
+        "reference contains no corresponding source URL or domain for that specific claim\n"
+        "  3. Unsupported claims — assertions presented as fact with no [E] backing in the findings\n"
+        "  4. Weak evidence — claims resting on a single source, low-tier source, or wire-laundered reporting\n"
+        "  5. Missing perspectives — what expert voices, data types, or opposing viewpoints are absent\n"
+        "  6. Conclusion vulnerabilities — what single piece of contradicting evidence would overturn the main findings\n"
+        "  7. Confidence adjustment — one direct sentence on whether the reader's confidence should be "
         "higher, lower, or unchanged, and exactly why\n\n"
         "Format strictly as markdown. Be direct and specific. "
         "Do not summarise the synthesis back. Do not hedge. Attack the reasoning."
     )
+    _findings_section = (
+        f"\n\nRaw findings reference (first 400 chars per agent — use to cross-check [E] claims):\n{_findings_ref}"
+        if _findings_ref else ""
+    )
     user_prompt = (
         f"Research question: {question}\n\n"
-        f"Synthesis to challenge:\n{synthesis}\n\n"
+        f"Synthesis to challenge:\n{synthesis}"
+        f"{_findings_section}\n\n"
         "Return your critique as markdown only."
     )
 

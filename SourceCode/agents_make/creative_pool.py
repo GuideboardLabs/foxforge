@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from shared_tools.fidelity_policy import FidelityLevel, fidelity_for, writer_constraint_block, thin_research_warning
 from shared_tools.ollama_client import OllamaClient
 
 
@@ -78,8 +79,10 @@ def _run_story_planner(
     kind: str,
     research_context: str,
     project_context: str,
+    level: FidelityLevel = FidelityLevel.CREATIVE,
 ) -> str:
     kind_note = _KIND_INSTRUCTIONS.get(kind, _KIND_INSTRUCTIONS["novel"])
+    thin_warn = thin_research_warning(level, len(research_context))
     system_prompt = (
         f"Today: {_today()}. "
         "You are a story architect. Given a writing request and any research/project context, "
@@ -87,7 +90,7 @@ def _run_story_planner(
         "For each scene, specify: (1) setting, (2) characters present, (3) the dramatic question, "
         "(4) key beats, (5) emotional arc, (6) how it transitions to the next scene. "
         f"\n\nFormat note for '{kind}': {kind_note}\n\n"
-        "Output format: '### Scene N: <title>\\n<outline details>'. Nothing else."
+        f"Output format: '### Scene N: <title>\\n<outline details>'. Nothing else.{thin_warn}"
     )
     user_prompt = (
         f"Kind: {kind}\nRequest: {question}\n\n"
@@ -120,6 +123,7 @@ def _run_scene_writer(
     question: str,
     kind: str,
     research_context: str,
+    level: FidelityLevel = FidelityLevel.CREATIVE,
 ) -> str:
     kind_note = _KIND_INSTRUCTIONS.get(kind, _KIND_INSTRUCTIONS["novel"])
     continuity_block = ""
@@ -132,6 +136,7 @@ def _run_scene_writer(
         f"Today: {_today()}. "
         f"You are a {kind} writer. Write ONE scene only — approximately 800-1200 words. "
         f"Style: {kind_note}\n\n"
+        f"{writer_constraint_block(level)} "
         "Write in flowing, immersive prose. Do not include meta-commentary. "
         "Do not start with the scene header — the compositor handles that."
     )
@@ -296,6 +301,7 @@ def run_creative_pool(
     project_slug: str,
     bus: Any,
     target: str = "novel",
+    topic_type: str = "general",
     research_context: str = "",
     project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
@@ -319,6 +325,7 @@ def run_creative_pool(
         return False
 
     kind = str(target).strip().lower() or "novel"
+    _level = fidelity_for(kind, topic_type)
     bus.emit("creative_pool", "start", {"question": question, "target": kind})
 
     client = OllamaClient()
@@ -328,7 +335,7 @@ def run_creative_pool(
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
 
     _progress("creative_planner_started", {"kind": kind})
-    plan = _run_story_planner(client, question, kind, research_context, project_context)
+    plan = _run_story_planner(client, question, kind, research_context, project_context, _level)
     _progress("creative_planner_completed", {"preview": plan[:300]})
 
     # Parse plan into scenes
@@ -361,7 +368,7 @@ def run_creative_pool(
         })
         text = _run_scene_writer(
             client, scene_name, scene_outline, plan,
-            prior_text, question, kind, research_context,
+            prior_text, question, kind, research_context, _level,
         )
         scene_texts[scene_name] = text
         prior_text = text[-1500:] if text else ""

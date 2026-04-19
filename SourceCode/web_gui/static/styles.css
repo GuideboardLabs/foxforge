@@ -7355,7 +7355,7 @@ body.panel-modal-open .panel-overlay {
 .md-overlay {
     position: fixed;
     inset: 0;
-    z-index: 120;
+    z-index: 130;
     display: none;
     align-items: center;
     justify-content: center;
