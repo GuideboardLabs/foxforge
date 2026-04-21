@@ -269,6 +269,19 @@
       "qwen3:4b"
     ]
   },
+  "chat_routing_gate": {
+    "purpose": "Lightweight context gate — validates chat web-crawl routing decisions, suppresses false positives from keyword/pattern triggers",
+    "provider": "ollama",
+    "model": "qwen3:4b",
+    "temperature": 0.0,
+    "num_ctx": 4096,
+    "timeout_sec": 12,
+    "retry_attempts": 1,
+    "retry_backoff_sec": 0.5,
+    "fallback_models": [
+      "gemma3:4b"
+    ]
+  },
   "image_generation_xl_compose": {
     "purpose": "Multi-image composition via ComfyUI + SDXL (Pony) + IP-Adapter Plus",
     "provider": "comfyui",

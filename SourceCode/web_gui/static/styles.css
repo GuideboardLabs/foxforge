@@ -297,7 +297,7 @@ textarea {
     height: min(var(--app-vh), 100dvh);
     min-height: 0;
     overflow-y: auto;
-    overflow-x: visible;
+    overflow-x: hidden;
     transition: opacity 180ms ease, padding 180ms ease;
 }
 
@@ -681,6 +681,8 @@ body.sidebar-collapsed .sidebar {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior-x: contain;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -876,8 +878,8 @@ body.sidebar-collapsed .sidebar {
 
 .panel-grid .panel-badge {
     position: absolute;
-    right: -18px;
-    top: -12px;
+    right: 4px;
+    top: 4px;
     z-index: 2;
     min-width: 22px;
     height: 22px;
@@ -897,7 +899,9 @@ body.sidebar-collapsed .sidebar {
 }
 .panel-grid {
     overflow: visible;
-    padding-right: 18px;
+    width: 100%;
+    box-sizing: border-box;
+    padding-right: 0;
     padding-top: 8px;
     margin-top: -4px;
 }
@@ -9819,7 +9823,8 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
 
 .sidebar-dock-grid-wrap {
     overflow: visible;
-    padding-right: 12px;
+    width: 100%;
+    padding-right: 0;
     max-height: 700px;
     opacity: 1;
     transition: max-height 260ms ease, opacity 200ms ease, padding 200ms ease;

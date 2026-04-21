@@ -163,6 +163,37 @@ def extract_rejected_tool(text: str) -> str:
     return ""
 
 
+_FACTUAL_LOOKUP_PATTERNS: tuple[str, ...] = (
+    # Wh-questions — full and contracted forms
+    r"\bwhat(?:'s|'re| is| are| was| were)\s+",
+    r"\bwho(?:'s| is| was| were| did| built| created| founded| invented| wrote| made| runs?| owns?| leads?| heads?)\b",
+    r"\bwhen(?:'s| did| was| were| does| is)\s+",
+    r"\bwhere(?:'s| is| was| did| does)\s+",
+    r"\bhow\s+(?:does|did|do|has|have|many|much|often|long|far|old|fast|big|small|tall|serious|dangerous|safe)\s+",
+    r"\bwhy\s+(?:does|did|is|was|do|are|were)\s+",
+    # Existence and state checks
+    r"\bare\s+there\s+",
+    r"\bis\s+it\s+true\b",
+    r"\bdoes\s+\S",
+    r"\bdo\s+(?:you\s+know\s+(?:about|anything|who|what|where|when)|they|people)\b",
+    # Explicit lookup and research requests
+    r"\btell\s+me\s+about\b",
+    r"\bexplain\b",
+    r"\bdefine\b",
+    r"\blook\s+up\b",
+    r"\bfind\s+(?:out|information|info|details?|facts?|anything)\b",
+    r"\bresearch\s+\S",
+    r"\bany\s+(?:info|information|news|updates?|details?)\s+(?:on|about|regarding)\b",
+    r"\bwhat\s+do\s+(?:you\s+know|we\s+know)\s+about\b",
+    # Event and cause questions
+    r"\bwhat\s+happened\b",
+    r"\bwhat\s+(?:caused|led\s+to|came\s+of|became\s+of)\b",
+    # "Tell/show/give me" factual requests
+    r"\bgive\s+me\s+(?:info|information|details?|facts?|background|context)\b",
+    r"\bshow\s+me\s+(?:info|information|details?|facts?|what)\b",
+)
+
+
 def should_offer_web(text: str, lane: str) -> bool:
     """Return True if web research should be offered for this query and lane."""
     lane_key = lane.strip().lower()
@@ -175,4 +206,6 @@ def should_offer_web(text: str, lane: str) -> bool:
         return False
     if any(re.search(pattern, low, flags=re.IGNORECASE) for pattern in _WEB_OFFER_MARKER_PATTERNS):
         return True
-    return is_evolving_topic(text)
+    if is_evolving_topic(text):
+        return True
+    return any(re.search(p, low, flags=re.IGNORECASE) for p in _FACTUAL_LOOKUP_PATTERNS)

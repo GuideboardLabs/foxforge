@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from agents_research.deep_researcher import _gap_assess, _run_fill_agents, _reliability_summary
+from agents_research.deep_researcher import _extract_web_source_evidence, _gap_assess, _run_fill_agents, _reliability_summary
 from agents_research.synthesizer import synthesize, run_skeptic_pass
 from shared_tools.file_store import ProjectStore
 from shared_tools.inference_router import InferenceRouter
@@ -509,6 +509,7 @@ class ResearchService:
             project_context=project_context,
             prior_messages=None,
             findings=findings,
+            source_evidence=_extract_web_source_evidence(web_context),
             cancel_checker=cancel_checker,
             pause_checker=pause_checker,
         )

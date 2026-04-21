@@ -20,6 +20,11 @@ def _clean_title(text: str) -> str:
     return compact if len(compact) <= 64 else f"{compact[:61]}..."
 
 
+def _is_default_auto_title(text: str) -> bool:
+    title = _clean_title(str(text or ""))
+    return title in {"New Chat", "General Chat"}
+
+
 def _clean_project(text: str) -> str:
     compact = "_".join(text.strip().split())
     if not compact:
@@ -57,6 +62,33 @@ def _clean_selected_loras(value: Any) -> list[str]:
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^\w\s-]", "", text.lower().strip())
     return re.sub(r"[\s_-]+", "_", slug).strip("_")[:60]
+
+
+def _first_user_title_candidate(messages: Any) -> str:
+    rows = messages if isinstance(messages, list) else []
+    for row in rows:
+        if str((row or {}).get("role", "")).strip().lower() != "user":
+            continue
+        raw = str((row or {}).get("content", "")).strip()
+        if raw.startswith("/talk "):
+            raw = raw[len("/talk ") :].strip()
+        if not raw or raw.startswith("/"):
+            continue
+        return _clean_title(raw)
+    return ""
+
+
+def _infer_title_manually_set(data: dict[str, Any]) -> bool:
+    stored = data.get("title_manually_set")
+    if isinstance(stored, bool):
+        return stored
+    title = _clean_title(str(data.get("title", "New Chat")))
+    if _is_default_auto_title(title):
+        return False
+    first_user_title = _first_user_title_candidate(data.get("messages", []))
+    if first_user_title and title == first_user_title:
+        return False
+    return True
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -118,6 +150,7 @@ class ConversationStore:
         if not str(data.get("topic_id", "")).strip():
             data["topic_id"] = "general" if str(data.get("project", "general")).strip() == "general" else ""
         data["path"] = str(data.get("path", "")).strip()
+        data["title_manually_set"] = _infer_title_manually_set(data)
         data["image_style"] = _clean_image_style(data.get("image_style", "realistic"))
         data["selected_loras"] = _clean_selected_loras(data.get("selected_loras", []))
         if data["selected_loras"] and data["image_style"] == "realistic":
@@ -154,9 +187,10 @@ class ConversationStore:
         with self.lock:
             now = _now_iso()
             conversation_id = uuid.uuid4().hex[:12]
+            clean_title = _clean_title(title)
             data = {
                 "id": conversation_id,
-                "title": _clean_title(title),
+                "title": clean_title,
                 "project": _clean_project(project),
                 "topic_id": _clean_topic_id(topic_id),
                 "path": str(path).strip(),
@@ -165,6 +199,7 @@ class ConversationStore:
                 "summary": "",
                 "messages": [],
                 "last_read_message_id": "",
+                "title_manually_set": not _is_default_auto_title(clean_title),
                 "image_style": "realistic",
                 "selected_loras": [],
             }
@@ -178,12 +213,13 @@ class ConversationStore:
                 return None
             return self._decorate(data)
 
-    def rename(self, conversation_id: str, title: str) -> dict[str, Any] | None:
+    def rename(self, conversation_id: str, title: str, *, manual: bool = True) -> dict[str, Any] | None:
         with self.lock:
             data = self._load(conversation_id)
             if data is None:
                 return None
             data["title"] = _clean_title(title)
+            data["title_manually_set"] = bool(manual)
             data["updated_at"] = _now_iso()
             self._save(data)
             return self._decorate(data)
@@ -317,12 +353,15 @@ class ConversationStore:
             data["messages"].append(message)
             data["updated_at"] = _now_iso()
 
-            if role == "user" and data.get("title", "New Chat") == "New Chat":
+            current_title = _clean_title(str(data.get("title", "New Chat")))
+            manual_title = _infer_title_manually_set(data)
+            if role == "user" and not manual_title and _is_default_auto_title(current_title):
                 raw = content.strip()
                 if raw.startswith("/talk "):
                     raw = raw[len("/talk ") :].strip()
                 if raw and not raw.startswith("/"):
                     data["title"] = _clean_title(raw)
+                    data["title_manually_set"] = False
 
             self._save(data)
             return message
@@ -415,6 +454,7 @@ class ConversationStore:
                         "last_preview": last_preview,
                         "summary": summary_raw[:200],
                         "last_read_message_id": str(data.get("last_read_message_id", "")).strip(),
+                        "title_manually_set": _infer_title_manually_set(data),
                         "unread_count": unread_count,
                         "has_unread": unread_count > 0,
                     }

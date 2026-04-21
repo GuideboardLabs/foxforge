@@ -77,6 +77,8 @@ def bg_retitle(conversation_id: str, store: ConversationStore, root: Path) -> No
         conv = store.get(conversation_id)
         if not conv:
             return
+        if bool(conv.get("title_manually_set", False)):
+            return
         messages = conv.get("messages", [])[:4]
         lines = []
         for m in messages:
@@ -100,7 +102,7 @@ def bg_retitle(conversation_id: str, store: ConversationStore, root: Path) -> No
         )
         if result:
             new_title = result.strip()[:64]
-            store.rename(conversation_id, new_title)
+            store.rename(conversation_id, new_title, manual=False)
             updated = store.get(conversation_id)
             if updated and str(updated.get("topic_id", "")).strip() not in ("", "general"):
                 project_slug = str(updated.get("project", "")).strip()

@@ -22,6 +22,7 @@ from shared_tools.file_store import ProjectStore
 from shared_tools.fact_policy import enrich_source_metadata, detect_topic_type, classify_fact_volatility
 from shared_tools.domain_reputation import DomainReputation
 from shared_tools.inference_router import InferenceRouter
+from shared_tools.web_cache import WebQueryCache, cache_key as build_cache_key, normalize_query as normalize_cache_query, settings_digest as build_settings_digest
 
 
 def _now_iso() -> str:
@@ -772,6 +773,7 @@ class WebResearchEngine:
 
         self.root.mkdir(parents=True, exist_ok=True)
         self._domain_rep = DomainReputation(repo_root)
+        self._query_cache = WebQueryCache(repo_root)
         if not self.pending_path.exists():
             self.pending_path.write_text("[]", encoding="utf-8")
         if not self.settings_path.exists():
@@ -3808,6 +3810,133 @@ class WebResearchEngine:
         with self.sources_log_path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
+    def _should_bypass_query_cache(self, query: str, note: str, explicit_bypass: bool) -> bool:
+        if explicit_bypass:
+            return True
+        raw = f"{query} {note}".lower()
+        return any(token in raw for token in ("refresh", "again"))
+
+    def _query_cache_ttl_sec(self, query: str, topic_type: str) -> int:
+        low = str(query or "").lower()
+        live_markers = (
+            "fight night",
+            "live score",
+            "live result",
+            "live update",
+            "who won",
+            "score right now",
+            "tonight",
+            "main event",
+            "kickoff",
+            "tipoff",
+        )
+        if any(marker in low for marker in live_markers):
+            return 10 * 60
+        volatility = classify_fact_volatility(query, topic_type, query)
+        if volatility in {"volatile", "semi_volatile"}:
+            return 2 * 60 * 60
+        return 24 * 60 * 60
+
+    def _query_cache_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        # Keep the digest stable and tied to result-shaping controls.
+        keys = (
+            "provider",
+            "max_results",
+            "query_expansion_enabled",
+            "query_expansion_variants",
+            "query_decomposition_enabled",
+            "query_decomposition_max_sub",
+            "crawl_enabled",
+            "crawl_depth",
+            "crawl_max_pages",
+            "crawl_links_per_page",
+            "crawl_timeout_sec",
+            "context_min_source_score",
+            "source_scoring_enabled",
+            "conflict_detection_enabled",
+            "iterative_search_enabled",
+            "iterative_search_time_budget_sec",
+        )
+        out: dict[str, Any] = {}
+        for key in keys:
+            if key in settings:
+                out[key] = settings.get(key)
+        return out
+
+    @staticmethod
+    def _cache_disclosure(age_sec: int) -> str:
+        mins = max(0, int(round(age_sec / 60.0)))
+        return f"Last retrieved {mins} minute{'s' if mins != 1 else ''} ago."
+
+    def _run_query_with_cache(
+        self,
+        *,
+        project: str,
+        lane: str,
+        query: str,
+        reason: str,
+        request_id: str,
+        note: str,
+        topic_type: str,
+        settings: dict[str, Any],
+        resolved_topic: str,
+        bypass_cache: bool,
+        progress_callback=None,
+    ) -> dict[str, Any]:
+        try:
+            self._query_cache.purge_expired()
+        except Exception:
+            pass
+        settings_key = build_settings_digest(self._query_cache_settings(settings))
+        key = build_cache_key(
+            project=project,
+            query=normalize_cache_query(query),
+            topic_type=resolved_topic,
+            settings_hash=settings_key,
+        )
+        ttl_sec = self._query_cache_ttl_sec(query, resolved_topic)
+        use_cache = not self._should_bypass_query_cache(query, note, bypass_cache)
+        if use_cache:
+            cached = self._query_cache.get(key)
+            if isinstance(cached, dict):
+                age_sec = int((cached.get("_cache", {}) or {}).get("age_sec", 0) or 0)
+                result = dict(cached)
+                result["cache_hit"] = True
+                result["cache_key"] = key
+                result["cache_ttl_sec"] = ttl_sec
+                result["message"] = (
+                    f"{str(result.get('message', '')).strip()} "
+                    f"{self._cache_disclosure(age_sec)}"
+                ).strip()
+                result["cache_disclosure"] = self._cache_disclosure(age_sec)
+                return result
+
+        result = self._run_query_inner(
+            project=project,
+            lane=lane,
+            query=query,
+            reason=reason,
+            request_id=request_id,
+            note=note,
+            topic_type=topic_type,
+            settings=settings,
+            resolved_topic=resolved_topic,
+            progress_callback=progress_callback,
+        )
+        if bool(result.get("ok", False)):
+            self._query_cache.put(
+                key,
+                result,
+                ttl_sec=ttl_sec,
+                topic_type=resolved_topic,
+                source="run_quick_query" if self._is_quick_lookup_note(note) else "run_query",
+            )
+        result["cache_hit"] = False
+        result["cache_key"] = key
+        result["cache_ttl_sec"] = ttl_sec
+        result["cache_disclosure"] = ""
+        return result
+
     def run_query(
         self,
         *,
@@ -3818,6 +3947,7 @@ class WebResearchEngine:
         request_id: str = "",
         note: str = "",
         topic_type: str = "general",
+        bypass_cache: bool = False,
         progress_callback=None,
     ) -> dict[str, Any]:
         settings = self._load_settings()
@@ -3825,10 +3955,11 @@ class WebResearchEngine:
         # Activate TOR proxy for underground queries (if enabled in settings)
         self._tor_active = str(resolved_topic).strip().lower() == "underground"
         try:
-            return self._run_query_inner(
+            return self._run_query_with_cache(
                 project=project, lane=lane, query=query, reason=reason,
                 request_id=request_id, note=note, topic_type=topic_type,
                 settings=settings, resolved_topic=resolved_topic,
+                bypass_cache=bypass_cache,
                 progress_callback=progress_callback,
             )
         finally:
@@ -3844,6 +3975,7 @@ class WebResearchEngine:
         request_id: str = "",
         note: str = "",
         topic_type: str = "general",
+        bypass_cache: bool = False,
         progress_callback=None,
     ) -> dict[str, Any]:
         settings = dict(self._load_settings())
@@ -3866,7 +3998,7 @@ class WebResearchEngine:
         settings["iterative_search_time_budget_sec"] = 12
         self._tor_active = str(resolved_topic).strip().lower() == "underground"
         try:
-            return self._run_query_inner(
+            return self._run_query_with_cache(
                 project=project,
                 lane=lane,
                 query=query,
@@ -3876,6 +4008,7 @@ class WebResearchEngine:
                 topic_type=topic_type,
                 settings=settings,
                 resolved_topic=resolved_topic,
+                bypass_cache=bypass_cache,
                 progress_callback=progress_callback,
             )
         finally:

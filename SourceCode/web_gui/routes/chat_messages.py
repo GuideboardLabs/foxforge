@@ -1558,9 +1558,19 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             if msg_count >= 4 and msg_count % 4 == 0:
                 threading.Thread(target=bg_summarize, args=(conversation_id, store, root), daemon=True).start()
             if msg_count == 4:
-                first_user = next((m["content"] for m in updated_early["messages"] if m.get("role") == "user"), "")
-                from shared_tools.conversation_store import _clean_title as _ct
-                if first_user and updated_early.get("title", "") == _ct(first_user):
+                project_slug = str(updated_early.get("project", "")).strip().lower()
+                title_is_manual = bool(updated_early.get("title_manually_set", False))
+                first_user = next(
+                    (
+                        str(m.get("content", "")).strip()
+                        for m in (updated_early.get("messages", []) or [])
+                        if str(m.get("role", "")).strip().lower() == "user"
+                        and str(m.get("content", "")).strip()
+                        and not str(m.get("content", "")).strip().startswith("/")
+                    ),
+                    "",
+                )
+                if project_slug == "general" and not title_is_manual and first_user:
                     threading.Thread(target=bg_retitle, args=(conversation_id, store, root), daemon=True).start()
 
         updated = store.get(conversation_id)

@@ -3,9 +3,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlsplit
 from typing import Any, Callable
 
 from agents_research.synthesizer import synthesize, run_skeptic_pass
+from shared_tools.embedding_memory import _vec_cosine
 from shared_tools.file_store import ProjectStore
 from shared_tools.feedback_learning import FeedbackLearningEngine
 from shared_tools.model_routing import lane_model_config
@@ -18,21 +20,111 @@ _URL_PATTERN = re.compile(
     r"|(?<!\w)(?:[a-zA-Z0-9-]+\.(?:com|org|gov|edu|io|net|co|uk|de|fr|ca|au))(?:/\S*)?",
     re.IGNORECASE,
 )
+_WEB_CONTEXT_SOURCE_RE = re.compile(r"^\-\s.*\|\s+(https?://\S+)\s*$", re.IGNORECASE)
+
+
+def _domain_from_url(url: str) -> str:
+    try:
+        return str(urlsplit(str(url)).hostname or "").lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _extract_web_source_evidence(web_context: str) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    if not str(web_context or "").strip():
+        return evidence
+    current: dict[str, str] | None = None
+    for raw_line in str(web_context).splitlines():
+        line = str(raw_line or "").rstrip()
+        match = _WEB_CONTEXT_SOURCE_RE.match(line.strip())
+        if match:
+            if current and current.get("url"):
+                evidence.append(current)
+            url = str(match.group(1)).strip()
+            current = {"url": url, "domain": _domain_from_url(url), "snippet": ""}
+            continue
+        if current is not None and line.strip().startswith("snippet:"):
+            current["snippet"] = line.split("snippet:", 1)[1].strip()
+    if current and current.get("url"):
+        evidence.append(current)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in evidence:
+        url = str(row.get("url", "")).strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(row)
+    return out
 
 
 def _audit_evidence_labels(findings: list[dict]) -> list[dict]:
-    """Downgrade [E] labels to [I] when no source URL can be found nearby.
+    """Downgrade [E] labels unless they align to known source evidence."""
+    emb_client: OllamaClient | None = None
+    line_vec_cache: dict[str, list[float]] = {}
+    snippet_vec_cache: dict[str, list[float]] = {}
 
-    Pure heuristic — no LLM call. For each line containing [E], checks the
-    same line and the next line for a URL or domain token. If neither contains
-    one, replaces [E] with [I] in that line only. Preserves all content.
-    """
+    def _client() -> OllamaClient | None:
+        nonlocal emb_client
+        if emb_client is not None:
+            return emb_client
+        try:
+            emb_client = OllamaClient()
+            return emb_client
+        except Exception:
+            return None
+
+    def _alignment(line_text: str, source_evidence: list[dict[str, str]]) -> float:
+        snippets = [str(row.get("snippet", "")).strip() for row in source_evidence if str(row.get("snippet", "")).strip()]
+        if not snippets:
+            return 0.0
+        client = _client()
+        if client is None:
+            # Fallback: token overlap when embedding path is unavailable.
+            line_words = set(re.findall(r"[a-z0-9]{4,}", line_text.lower()))
+            if not line_words:
+                return 0.0
+            best = 0.0
+            for snippet in snippets:
+                snippet_words = set(re.findall(r"[a-z0-9]{4,}", snippet.lower()))
+                if not snippet_words:
+                    continue
+                overlap = len(line_words & snippet_words) / max(1, len(line_words))
+                if overlap > best:
+                    best = overlap
+            return float(best)
+        try:
+            line_key = line_text[:600]
+            if line_key not in line_vec_cache:
+                line_vec_cache[line_key] = client.embed("qwen3-embedding:4b", line_key, timeout=20)
+            line_vec = line_vec_cache[line_key]
+            best = 0.0
+            for snippet in snippets:
+                snippet_key = snippet[:1200]
+                if snippet_key not in snippet_vec_cache:
+                    snippet_vec_cache[snippet_key] = client.embed("qwen3-embedding:4b", snippet_key, timeout=20)
+                score = _vec_cosine(line_vec, snippet_vec_cache[snippet_key])
+                if score > best:
+                    best = score
+            return float(best)
+        except Exception:
+            return 0.0
+
     result: list[dict] = []
     for item in findings:
         text = str(item.get("finding", ""))
         if "[E]" not in text:
             result.append(item)
             continue
+        source_evidence = [dict(x) for x in item.get("source_evidence", []) if isinstance(x, dict)]
+        source_domains = {
+            str(x.get("domain", "")).strip().lower()
+            for x in source_evidence
+            if str(x.get("domain", "")).strip()
+        }
+        source_urls = [str(x.get("url", "")).strip() for x in source_evidence if str(x.get("url", "")).strip()]
+        alignment_scores: list[float] = []
         lines = text.split("\n")
         new_lines: list[str] = []
         for i, line in enumerate(lines):
@@ -42,10 +134,23 @@ def _audit_evidence_labels(findings: list[dict]) -> list[dict]:
             window = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
             if _URL_PATTERN.search(window):
                 new_lines.append(line)
-            else:
-                new_lines.append(line.replace("[E]", "[I]"))
+                continue
+            low_window = window.lower()
+            if any(domain and domain in low_window for domain in source_domains):
+                new_lines.append(line)
+                continue
+            score = _alignment(line, source_evidence)
+            alignment_scores.append(score)
+            if score >= 0.55 and source_urls:
+                new_lines.append(line)
+                continue
+            new_lines.append(line.replace("[E]", "[I]"))
         new_item = dict(item)
         new_item["finding"] = "\n".join(new_lines)
+        if source_urls:
+            new_item["source_urls"] = source_urls
+        if alignment_scores:
+            new_item["evidence_alignment_max"] = round(max(alignment_scores), 3)
         result.append(new_item)
     return result
 
@@ -761,11 +866,12 @@ def _run_one_agent(
     question: str,
     learned_guidance: str,
     web_context: str,
+    source_evidence: list[dict[str, str]] | None,
     project_context: str,
     prior_messages: list[dict[str, str]] | None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     persona = str(agent_cfg.get("persona", "")).strip() or "research_agent"
     directive = str(agent_cfg.get("directive", "")).strip() or DEFAULT_DIRECTIVES.get(
         persona,
@@ -774,7 +880,14 @@ def _run_one_agent(
     base_model = str(model_cfg.get("model", "")).strip()
     requested_model = str(agent_cfg.get("model", "")).strip() or base_model
     if not requested_model:
-        return {"agent": persona, "model": "", "requested_model": "", "finding": "No model configured for research_pool."}
+        return {
+            "agent": persona,
+            "model": "",
+            "requested_model": "",
+            "finding": "No model configured for research_pool.",
+            "source_urls": [],
+            "source_evidence": [],
+        }
 
     _max_web = 30000 if persona.startswith("breaking_") else (24000 if persona.startswith("sports_") else 20000)
     system_prompt, user_prompt = _agent_prompt(question, persona, directive, learned_guidance, web_context, max_web_chars=_max_web)
@@ -869,7 +982,17 @@ def _run_one_agent(
         finding = f"{finding}\n\nReliability diagnostics: {' | '.join(failure_notes[-4:])}"
 
     role = str(agent_cfg.get("role", "primary")).strip() or "primary"
-    return {"agent": persona, "model": used_model, "requested_model": requested_model, "finding": finding, "role": role}
+    source_rows = [dict(x) for x in (source_evidence or []) if isinstance(x, dict)]
+    source_urls = [str(x.get("url", "")).strip() for x in source_rows if str(x.get("url", "")).strip()]
+    return {
+        "agent": persona,
+        "model": used_model,
+        "requested_model": requested_model,
+        "finding": finding,
+        "role": role,
+        "source_urls": source_urls,
+        "source_evidence": source_rows,
+    }
 
 
 def _agent_specs(model_cfg: dict[str, Any], topic_type: str = "general") -> list[dict[str, Any]]:
@@ -1007,9 +1130,10 @@ def _run_fill_agents(
     question: str,
     gap_queries: list[str],
     web_context: str,
-    project_context: str,
-    prior_messages: list[dict[str, str]] | None,
-    findings: list[dict[str, Any]],
+    project_context: str = "",
+    prior_messages: list[dict[str, str]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
+    source_evidence: list[dict[str, str]] | None = None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1022,6 +1146,7 @@ def _run_fill_agents(
     """
     if not gap_queries:
         return []
+    findings = list(findings or [])
 
     gap_text = "\n".join(f"- {q}" for q in gap_queries)
 
@@ -1080,6 +1205,7 @@ def _run_fill_agents(
                 question,
                 "",  # no learned_guidance for fill pass
                 web_context,
+                source_evidence,
                 project_context,
                 prior_messages,
                 cancel_checker,
@@ -1105,17 +1231,18 @@ def _run_fill_agents(
 def _recover_failed_findings(
     *,
     client: OllamaClient,
-    findings: list[dict[str, str]],
+    findings: list[dict[str, Any]],
     model_cfg: dict[str, Any],
     question: str,
     learned_guidance: str,
     web_context: str,
+    source_evidence: list[dict[str, str]] | None,
     project_context: str,
     prior_messages: list[dict[str, str]] | None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
-) -> list[dict[str, str]]:
-    recovered: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    recovered: list[dict[str, Any]] = []
     for row in findings:
         if callable(cancel_checker):
             try:
@@ -1158,6 +1285,7 @@ def _recover_failed_findings(
             question,
             learned_guidance,
             web_context,
+            source_evidence,
             project_context,
             prior_messages,
             cancel_checker,
@@ -1174,6 +1302,7 @@ def _run_multipass_agent(
     question: str,
     learned_guidance: str,
     web_context: str,
+    source_evidence: list[dict[str, str]] | None,
     project_context: str,
     prior_messages: list[dict[str, str]] | None = None,
     cancel_checker: Any = None,
@@ -1190,7 +1319,7 @@ def _run_multipass_agent(
     if len(source_blocks) <= _MULTI_PASS_THRESHOLD:
         return _run_one_agent(
             client, model_cfg, agent_cfg, question, learned_guidance,
-            web_context, project_context, prior_messages, cancel_checker, pause_checker,
+            web_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker,
         )
 
     batches = [
@@ -1212,7 +1341,7 @@ def _run_multipass_agent(
         )
         result = _run_one_agent(
             client, model_cfg, batch_cfg, question, learned_guidance,
-            batch_context, project_context, prior_messages, cancel_checker, pause_checker,
+            batch_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker,
         )
         last_result = result
         finding = str(result.get("finding", "")).strip()
@@ -1283,6 +1412,7 @@ def run_research_pool(
     resolved_type = str(topic_type or "general").strip().lower() or "general"
     profile_name = _analysis_profile_for_type(resolved_type)
     agents = _agent_specs(model_cfg, topic_type=resolved_type)
+    source_evidence = _extract_web_source_evidence(web_context)
     worker_count = max(1, min(int(model_cfg.get("parallel_agents", 4)), len(agents)))
     agent_roster = [
         {
@@ -1328,7 +1458,7 @@ def run_research_pool(
             "cancel_summary": cancel_summary,
         }
 
-    findings: list[dict[str, str]] = []
+    findings: list[dict[str, Any]] = []
     canceled = False
     executor = ThreadPoolExecutor(max_workers=worker_count)
     pending: set[Any] = set()
@@ -1365,6 +1495,7 @@ def run_research_pool(
                     question,
                     learned_guidance,
                     web_context,
+                    source_evidence,
                     project_context,
                     prior_messages,
                     cancel_checker,
@@ -1439,6 +1570,7 @@ def run_research_pool(
             question=question,
             learned_guidance=learned_guidance,
             web_context=web_context,
+            source_evidence=source_evidence,
             project_context=project_context,
             prior_messages=prior_messages,
             cancel_checker=cancel_checker,

@@ -12,11 +12,15 @@ Rules:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+from shared_tools.activity_bus import telemetry_emit
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +43,37 @@ _AMBIGUOUS_MAKE_PHRASES = frozenset({
     "make tea", "make coffee", "make a move", "make a deal",
     "create an account", "create a profile", "create an event",
 })
+
+
+def _input_hash(text: str) -> str:
+    norm = " ".join(str(text or "").strip().lower().split())
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _emit_decision(
+    repo_root: Path,
+    *,
+    text: str,
+    route: str,
+    confidence: float,
+    skipped: bool,
+    fast_path_hit: bool,
+    latency_ms: float,
+) -> None:
+    telemetry_emit(
+        repo_root,
+        "gate_decisions.jsonl",
+        {
+            "gate": "intent_confirmer",
+            "input_hash": _input_hash(text),
+            "fast_path_hit": bool(fast_path_hit),
+            "route": str(route),
+            "confidence": round(float(confidence), 4),
+            "skipped": bool(skipped),
+            "latency_ms": round(float(latency_ms), 2),
+        },
+        retention_days=14,
+    )
 
 
 def has_build_intent(text: str) -> bool:
@@ -78,38 +113,69 @@ def confirm_make_intent(
       - reason: str
       - skipped: bool (True when confirmation was skipped — fast path)
     """
+    started = time.perf_counter()
     ui_mode = str(ui_mode or "talk").strip().lower()
     make_type = str(make_type or "").strip().lower()
 
     # Fast path: user explicitly chose mode=make AND selected a type from the modal
     if ui_mode == "make" and make_type:
-        return {
+        result = {
             "intent": "make",
             "confidence": 1.0,
             "suggested_type": make_type,
             "reason": "User explicitly selected Make mode and type from the UI.",
             "skipped": True,
         }
+        _emit_decision(
+            repo_root,
+            text=text,
+            route=str(result.get("intent", "chat")),
+            confidence=float(result.get("confidence", 0.0)),
+            skipped=True,
+            fast_path_hit=True,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return result
 
     # If obviously ambiguous — skip LLM call, return chat
     if is_obviously_ambiguous(text):
-        return {
+        result = {
             "intent": "chat",
             "confidence": 0.95,
             "suggested_type": "",
             "reason": "Phrase matches known ambiguous non-build expression.",
-            "skipped": False,
+            "skipped": True,
         }
+        _emit_decision(
+            repo_root,
+            text=text,
+            route=str(result.get("intent", "chat")),
+            confidence=float(result.get("confidence", 0.0)),
+            skipped=True,
+            fast_path_hit=True,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return result
 
     # If mode is "talk" and no build intent regex — skip LLM call
     if ui_mode == "talk" and not has_build_intent(text):
-        return {
+        result = {
             "intent": "chat",
             "confidence": 0.99,
             "suggested_type": "",
             "reason": "No build-intent keywords found in talk mode.",
-            "skipped": False,
+            "skipped": True,
         }
+        _emit_decision(
+            repo_root,
+            text=text,
+            route=str(result.get("intent", "chat")),
+            confidence=float(result.get("confidence", 0.0)),
+            skipped=True,
+            fast_path_hit=True,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return result
 
     # LLM call for ambiguous cases
     try:
@@ -166,22 +232,42 @@ def confirm_make_intent(
             # Enforce the confidence floor: < 0.7 → chat
             if intent == "make" and confidence < 0.7:
                 intent = "chat"
-            return {
+            result = {
                 "intent": intent,
                 "confidence": confidence,
                 "suggested_type": str(data.get("suggested_type", "")).strip().lower(),
                 "reason": str(data.get("reason", "")).strip()[:200],
                 "skipped": False,
             }
+            _emit_decision(
+                repo_root,
+                text=text,
+                route=str(result.get("intent", "chat")),
+                confidence=float(result.get("confidence", 0.0)),
+                skipped=False,
+                fast_path_hit=False,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+            )
+            return result
     except Exception as exc:
         LOGGER.warning("IntentConfirmer LLM call failed: %s — defaulting to declared mode", exc)
 
     # Fallback: trust declared UI mode
     fallback_intent = ui_mode if ui_mode in ("make", "forage") else "chat"
-    return {
+    result = {
         "intent": fallback_intent,
         "confidence": 0.5,
         "suggested_type": make_type,
         "reason": "LLM confirmation unavailable; falling back to declared UI mode.",
         "skipped": False,
     }
+    _emit_decision(
+        repo_root,
+        text=text,
+        route=str(result.get("intent", "chat")),
+        confidence=float(result.get("confidence", 0.0)),
+        skipped=False,
+        fast_path_hit=False,
+        latency_ms=(time.perf_counter() - started) * 1000.0,
+    )
+    return result

@@ -2,10 +2,16 @@ import json
 import time
 import urllib.error
 import urllib.request
+from threading import Lock
 from typing import Any
 
 
 class OllamaClient:
+    _HEALTH_LOCK = Lock()
+    _MODEL_HEALTH: dict[str, dict[str, float]] = {}
+    _FAIL_WINDOW_SEC = 60.0
+    _DECAY_WINDOW_SEC = 90.0
+
     def __init__(self, base_url: str = "http://127.0.0.1:11434") -> None:
         self.base_url = base_url.rstrip("/")
 
@@ -95,6 +101,9 @@ class OllamaClient:
             models.append(key)
         if not models:
             raise RuntimeError("No model specified.")
+        primary_model = models[0]
+        if self._is_degraded(primary_model) and len(models) > 1:
+            models = models[1:] + [primary_model]
 
         errors: list[str] = []
         try:
@@ -128,8 +137,10 @@ class OllamaClient:
                     clean = content.strip()
                     if not clean:
                         raise RuntimeError("Ollama returned empty message content")
+                    self._record_success(model_name)
                     return clean
                 except Exception as exc:
+                    self._record_failure(model_name)
                     errors.append(f"{model_name} attempt {attempt}/{attempts}: {exc}")
                     if attempt < attempts and backoff > 0:
                         sleep_sec = backoff * (1.0 + (attempt - 1) * 0.5)
@@ -150,6 +161,18 @@ class OllamaClient:
         except Exception:
             pass
 
+    def ping(self, model: str, *, timeout: int = 8) -> bool:
+        name = str(model or "").strip()
+        if not name:
+            return False
+        try:
+            self._post_json("/api/show", {"name": name}, timeout=timeout)
+            self._record_success(name)
+            return True
+        except Exception:
+            self._record_failure(name)
+            return False
+
     def embed(self, model: str, text: str, *, timeout: int = 60) -> list[float]:
         response = self._post_json("/api/embed", {"model": model, "input": text}, timeout=timeout)
         embeddings = response.get("embeddings")
@@ -168,3 +191,70 @@ class OllamaClient:
             if isinstance(name, str):
                 names.append(name)
         return names
+
+    def get_status(self) -> dict[str, dict[str, Any]]:
+        now = time.time()
+        out: dict[str, dict[str, Any]] = {}
+        with self._HEALTH_LOCK:
+            for model, state in self._MODEL_HEALTH.items():
+                last_ok_ts = float(state.get("last_ok_ts", 0.0) or 0.0)
+                last_fail_ts = float(state.get("last_fail_ts", 0.0) or 0.0)
+                failures = int(state.get("consecutive_failures", 0) or 0)
+                degraded = failures >= 2 and (now - last_fail_ts) <= self._DECAY_WINDOW_SEC
+                out[model] = {
+                    "last_ok_ts": last_ok_ts,
+                    "last_fail_ts": last_fail_ts,
+                    "consecutive_failures": failures,
+                    "degraded": degraded,
+                }
+        return out
+
+    @classmethod
+    def _record_success(cls, model: str) -> None:
+        key = str(model or "").strip()
+        if not key:
+            return
+        now = time.time()
+        with cls._HEALTH_LOCK:
+            state = dict(cls._MODEL_HEALTH.get(key, {}))
+            state["last_ok_ts"] = now
+            state["consecutive_failures"] = 0
+            cls._MODEL_HEALTH[key] = state
+
+    @classmethod
+    def _record_failure(cls, model: str) -> None:
+        key = str(model or "").strip()
+        if not key:
+            return
+        now = time.time()
+        with cls._HEALTH_LOCK:
+            state = dict(cls._MODEL_HEALTH.get(key, {}))
+            last_fail = float(state.get("last_fail_ts", 0.0) or 0.0)
+            prev_failures = int(state.get("consecutive_failures", 0) or 0)
+            if last_fail > 0 and (now - last_fail) <= cls._FAIL_WINDOW_SEC:
+                failures = prev_failures + 1
+            else:
+                failures = 1
+            state["last_fail_ts"] = now
+            state["consecutive_failures"] = failures
+            cls._MODEL_HEALTH[key] = state
+
+    @classmethod
+    def _is_degraded(cls, model: str) -> bool:
+        key = str(model or "").strip()
+        if not key:
+            return False
+        now = time.time()
+        with cls._HEALTH_LOCK:
+            state = dict(cls._MODEL_HEALTH.get(key, {}))
+            if not state:
+                return False
+            last_fail = float(state.get("last_fail_ts", 0.0) or 0.0)
+            failures = int(state.get("consecutive_failures", 0) or 0)
+            if failures < 2:
+                return False
+            if last_fail <= 0 or (now - last_fail) > cls._DECAY_WINDOW_SEC:
+                state["consecutive_failures"] = 0
+                cls._MODEL_HEALTH[key] = state
+                return False
+            return True

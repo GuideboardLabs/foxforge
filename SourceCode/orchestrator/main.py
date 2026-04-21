@@ -619,6 +619,120 @@ class FoxforgeOrchestrator:
         return False
 
     @staticmethod
+    def _dedup_forage_tags(text: str) -> str:
+        """Keep only the first [FORAGE:] tag; strip all subsequent ones."""
+        kept = False
+        def _keep_first(m: re.Match) -> str:
+            nonlocal kept
+            if kept:
+                return ""
+            kept = True
+            return m.group(0)
+        return re.sub(r'\n?\[FORAGE:\s*"[^"]+"\]', _keep_first, text).strip()
+
+    def _forage_log_path(self) -> Path:
+        path = self.repo_root / "Runtime" / "state" / "forage_log.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _normalize_forage_seed(seed: str) -> str:
+        return " ".join(str(seed or "").strip().lower().split())
+
+    @staticmethod
+    def _forage_refresh_override(seed: str) -> bool:
+        low = str(seed or "").lower()
+        return "refresh" in low or "again" in low
+
+    def _read_forage_log(self, *, limit: int = 400) -> list[dict[str, Any]]:
+        path = self._forage_log_path()
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        if len(rows) > limit:
+            rows = rows[-limit:]
+        return rows
+
+    def _append_forage_log(self, payload: dict[str, Any]) -> None:
+        row = dict(payload)
+        row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+        with self._forage_log_path().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+    def _latest_research_summary_path(self) -> str:
+        root = self.repo_root / "Projects" / (self.project_slug.strip() or "general") / "research_summaries"
+        if not root.exists():
+            return ""
+        rows = sorted(root.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not rows:
+            return ""
+        return str(rows[0])
+
+    def _forage_gate(self, seed: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        norm_seed = self._normalize_forage_seed(seed)
+        override = self._forage_refresh_override(seed)
+        rows = self._read_forage_log(limit=600)
+        executed: list[dict[str, Any]] = []
+        for row in rows:
+            if str(row.get("project", "")).strip() != self.project_slug:
+                continue
+            if str(row.get("status", "")).strip() != "executed":
+                continue
+            ts_raw = str(row.get("ts", "")).strip()
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            executed.append({**row, "_ts": ts.astimezone(timezone.utc)})
+
+        recent_10m = [
+            row for row in executed
+            if (now - row["_ts"]).total_seconds() <= 10 * 60
+        ]
+        if len(recent_10m) >= 3:
+            return {
+                "allowed": False,
+                "reason": "rate_limit",
+                "seed_norm": norm_seed,
+                "prior": recent_10m[-1] if recent_10m else None,
+            }
+
+        if not override and norm_seed:
+            for row in reversed(executed):
+                row_seed = self._normalize_forage_seed(str(row.get("seed_norm", "") or row.get("seed", "")))
+                if row_seed != norm_seed:
+                    continue
+                age_sec = (now - row["_ts"]).total_seconds()
+                if age_sec <= 60 * 60:
+                    return {
+                        "allowed": False,
+                        "reason": "dedup",
+                        "seed_norm": norm_seed,
+                        "prior": row,
+                    }
+                break
+
+        return {
+            "allowed": True,
+            "reason": "",
+            "seed_norm": norm_seed,
+            "prior": None,
+        }
+
+    @staticmethod
     def _is_casual_conversation_turn(text: str) -> bool:
         """Return True for ordinary back-and-forth that should stay with Reynard."""
         clean = " ".join(str(text or "").strip().lower().split())
@@ -759,8 +873,13 @@ class FoxforgeOrchestrator:
         # makes sense given the full conversation — suppresses false positives like "source"
         # used to mean "source of the problem" rather than "fetch web sources".
         _web_gate_cleared = True
-        if not must_verify_live and prior_messages and self._should_offer_web(text, "project"):
-            _web_gate_cleared = self._routing_context_gate(text, prior_messages)
+        if not must_verify_live and self._should_offer_web(text, "project"):
+            _trigger_reason = (
+                "recency_sensitive" if recency_sensitive
+                else "evolving_topic" if evolving_topic
+                else "factual_lookup"
+            )
+            _web_gate_cleared = self._routing_context_gate(text, prior_messages, trigger_reason=_trigger_reason)
         web_note = ""
         web_context = ""
         web_details: dict[str, Any] = {}
@@ -972,12 +1091,13 @@ class FoxforgeOrchestrator:
                 "maintain that same framing consistently on follow-up questions — do not silently reset "
                 "to a different knowledge state mid-conversation. "
                 f"{_recency_rule}"
-                "When the user's question would meaningfully benefit from a deep multi-source web research pass — "
-                "such as evolving medical or legal information, breaking or recent news, rapidly-changing situations, "
-                "or any topic where training-data answers are likely outdated — append on its own line at the very end "
-                "of your reply: [FORAGE: \"concise search-ready seed question\"]. "
-                "The seed question should be specific and targeted for a web research pass. "
-                "Omit this tag entirely for casual conversation, hypotheticals, creative requests, or topics well-covered by training data. "
+                "CRITICAL: Do NOT make up specific facts, names, dates, statistics, or details you are uncertain about. "
+                "If you are not confident in an answer, say so directly instead of guessing. "
+                "When the user's question involves facts you are uncertain about, specific people or organizations you may not know well, "
+                "recent events, evolving topics, or any case where a web lookup would give a better answer — "
+                "append exactly ONE tag on its own line at the very end of your reply: [FORAGE: \"concise search-ready seed question\"]. "
+                "Use a single seed that best covers the core information need. Never emit more than one [FORAGE:] tag. "
+                "Omit this tag only for casual conversation, opinions, hypotheticals, creative requests, and topics you are fully confident about. "
                 "When the user explicitly states something they need to do, an appointment they have, "
                 "or an item to buy, you may append structured action tags on their own line at the very "
                 "end of your reply (after any [FORAGE] tag):\n"
@@ -1034,6 +1154,7 @@ class FoxforgeOrchestrator:
                 fallback_models=cfg.get("fallback_models", []) if isinstance(cfg.get("fallback_models", []), list) else [],
             )
             reply = self._surface_polish_reply(reply)
+            reply = self._dedup_forage_tags(reply)
             if callable(cancel_checker):
                 try:
                     if bool(cancel_checker()):
@@ -1836,74 +1957,21 @@ class FoxforgeOrchestrator:
         text: str,
         prior_messages: list[dict[str, str]],
         *,
-        timeout: int = 8,
+        trigger_reason: str = "keyword",
+        timeout: int = 12,
     ) -> bool:
-        """
-        Lightweight LLM gate that confirms keyword-triggered web routing is
-        actually warranted given the full conversational context.
-
-        Returns True (allow web fetch) or False (suppress).
-        Fails open — any error or timeout returns True so existing behaviour
-        is preserved rather than silently suppressing valid requests.
-        """
+        """Delegate to the ChatRoutingGate service. Returns True to allow web fetch, False to suppress."""
         try:
-            cfg = self._reynard_layer_config()
-            model = str(cfg.get("model", "")).strip()
-            if not model:
-                return True
-
-            history_lines: list[str] = []
-            for row in prior_messages[-5:]:
-                role = str(row.get("role", "")).strip().lower()
-                content = str(row.get("content", "")).strip()
-                if role in ("user", "assistant") and content:
-                    history_lines.append(f"{role.upper()}: {content[:300]}")
-            history_block = "\n".join(history_lines)
-
-            system_prompt = (
-                "You are a one-word routing gate. Reply with only 'yes' or 'no' — nothing else.\n\n"
-                "Given a conversation and its latest message, decide: does the latest message "
-                "genuinely require fetching live web data, real-time news, or current information "
-                "from the internet?\n\n"
-                "Common FALSE triggers (answer 'no'):\n"
-                "- 'source' used as: the source of a problem, source code, source material, source of truth\n"
-                "- 'link' used as: a link between ideas, linked to a concept, the missing link\n"
-                "- 'web' used as: a web of connections, a web of lies\n"
-                "- 'news' in historical or fictional context: 'that was big news in the 80s'\n"
-                "- 'update' meaning: update me on what you said, update the document\n"
-                "- 'current' meaning: current state of the code, current approach\n"
-                "- Any question about history, definitions, explanations, opinions, or general knowledge\n\n"
-                "Common TRUE triggers (answer 'yes'):\n"
-                "- Asking for today's news, recent events, live scores, current prices\n"
-                "- Asking who currently holds a position or title\n"
-                "- Asking for the latest software version or release\n"
-                "- Asking what happened recently or this week\n"
-                "- Asking to look something up or search the web"
+            from orchestrator.services.chat_routing_gate import check_web_routing
+            result = check_web_routing(
+                text,
+                prior_messages,
+                trigger_reason=trigger_reason,
+                repo_root=self.repo_root,
             )
-            user_prompt = (
-                f"Conversation history:\n{history_block or '(none)'}\n\n"
-                f"Latest message: {text.strip()}\n\n"
-                "Does this latest message genuinely need live web data fetched right now? "
-                "Answer only 'yes' or 'no'."
-            )
-
-            result = self.ollama.chat(
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.0,
-                num_ctx=2048,
-                think=False,
-                timeout=timeout,
-                retry_attempts=1,
-                retry_backoff_sec=0.5,
-                fallback_models=[],
-            )
-            answer = str(result or "").strip().lower().strip(".,!? \t\n")
-            # Only suppress on a clear 'no' — everything else (yes, empty, garbled) allows
-            return answer != "no"
+            return str(result.get("route", "web")).strip().lower() == "web"
         except Exception:
-            return True  # fail-open: preserve existing behaviour on any error
+            return True
 
     def _is_recency_sensitive_from_history(self, prior_messages: list, lookback: int = 4) -> bool:
         return is_recency_sensitive_from_history(prior_messages, lookback)
@@ -2067,6 +2135,8 @@ class FoxforgeOrchestrator:
         details["crawl_failures"] = int(result.get("crawl_failures", 0))
         details["sources"] = result.get("sources", []) if isinstance(result.get("sources", []), list) else []
         details["intel_summary"] = result.get("intel_summary", {}) if isinstance(result.get("intel_summary", {}), dict) else {}
+        details["cache_hit"] = bool(result.get("cache_hit", False))
+        details["cache_disclosure"] = str(result.get("cache_disclosure", "")).strip()
         if bool(result.get("ok", False)):
             feedback_text = self._web_learning_feedback(text, result.get("sources", []))
             self.learning_engine.ingest_feedback_text(
@@ -2105,7 +2175,8 @@ class FoxforgeOrchestrator:
                 },
             )
             fresh_context = self.web_engine.web_context_for_project(self.project_slug, limit=8)
-            return "", fresh_context, details
+            cache_note = details["cache_disclosure"] if details.get("cache_hit") and details.get("cache_disclosure") else ""
+            return cache_note, fresh_context, details
 
         message = str(result.get("message", "")).strip() or "No web sources found."
         if mode == "ask":
@@ -2881,6 +2952,35 @@ class FoxforgeOrchestrator:
         else:
             reminder_note = self._capture_daymarker_reminder(text)
             event_note = self._capture_daymarker_event(text, history=history)
+        forage_seed_norm = ""
+        forage_summary_before = ""
+        if force_research:
+            forage_gate = self._forage_gate(text)
+            forage_seed_norm = str(forage_gate.get("seed_norm", "")).strip()
+            if not bool(forage_gate.get("allowed", True)):
+                reason = str(forage_gate.get("reason", "")).strip()
+                prior = forage_gate.get("prior", {}) if isinstance(forage_gate.get("prior", {}), dict) else {}
+                prior_summary = str(prior.get("summary_path", "")).strip()
+                if prior_summary:
+                    try:
+                        prior_summary = str(Path(prior_summary).resolve().relative_to(self.repo_root))
+                    except Exception:
+                        pass
+                if reason == "dedup":
+                    if prior_summary:
+                        return (
+                            "I already ran that forage seed in the last hour. "
+                            f"Reusing the previous result: `{prior_summary}`.\n\n"
+                            "If you want a fresh run anyway, include 'refresh' in your request."
+                        )
+                    return (
+                        "I already ran that forage seed in the last hour, so I skipped a duplicate run.\n\n"
+                        "If you want a fresh run anyway, include 'refresh' in your request."
+                    )
+                return (
+                    "Foraging rate limit reached: max 3 executions in a rolling 10-minute window.\n\n"
+                    "Wait a few minutes, then retry."
+                )
         self._maybe_auto_refresh_project_facts(history)
         project_context = self.project_memory.summary_text(self.project_slug, limit_chars=2600)
         _context_analysis, household_context, personal_context, context_guidance = self._context_bundle_for_query(
@@ -2980,7 +3080,9 @@ class FoxforgeOrchestrator:
             return self.conversation_reply(text, history=history, project=self.project_slug)
 
         if lane == "research":
-            return self.research_service.execute_research_lane(
+            if force_research:
+                forage_summary_before = self._latest_research_summary_path()
+            reply = self.research_service.execute_research_lane(
                 self,
                 text=text,
                 history=history,
@@ -2997,6 +3099,19 @@ class FoxforgeOrchestrator:
                 event_note=event_note,
                 lane=lane,
             )
+            if force_research and forage_seed_norm:
+                summary_after = self._latest_research_summary_path()
+                summary_path = summary_after or forage_summary_before
+                self._append_forage_log(
+                    {
+                        "project": self.project_slug,
+                        "seed": text,
+                        "seed_norm": forage_seed_norm,
+                        "status": "cancelled" if "cancelled" in str(reply).lower() else "executed",
+                        "summary_path": summary_path,
+                    }
+                )
+            return reply
         if lane == "ui":
             if _is_cancelled():
                 return "Request cancelled before UI lane execution started."

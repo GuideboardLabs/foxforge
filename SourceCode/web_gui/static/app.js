@@ -836,8 +836,9 @@ function extractAssistantActionTargets(text) {
 
   const forageSeeds = [];
   FORAGE_HINT_REGEX.lastIndex = 0;
-  while ((match = FORAGE_HINT_REGEX.exec(raw)) !== null) {
-    const seed = String(match[1] || "").trim();
+  const _forageMatch = FORAGE_HINT_REGEX.exec(raw);
+  if (_forageMatch) {
+    const seed = String(_forageMatch[1] || "").trim();
     if (seed) forageSeeds.push(seed);
   }
 
