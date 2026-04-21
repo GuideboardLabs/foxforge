@@ -257,7 +257,7 @@
     ]
   },
   "intent_confirmer": {
-    "purpose": "Fast intent classification gate — confirms Make lane vs. chat vs. forage",
+    "purpose": "Fast intent classification gate \u2014 confirms Make lane vs. chat vs. forage",
     "provider": "ollama",
     "model": "gemma3:4b",
     "temperature": 0.1,
@@ -270,7 +270,7 @@
     ]
   },
   "chat_routing_gate": {
-    "purpose": "Lightweight context gate — validates chat web-crawl routing decisions, suppresses false positives from keyword/pattern triggers",
+    "purpose": "Lightweight context gate \u2014 validates chat web-crawl routing decisions, suppresses false positives from keyword/pattern triggers",
     "provider": "ollama",
     "model": "qwen3:4b",
     "temperature": 0.0,
@@ -381,7 +381,7 @@
     "timeout_sec": 1800
   },
   "video_generation": {
-    "_note": "Requires 8GB+ VRAM. Dormant by default — see README for activation steps. Workflow JSON must be exported from ComfyUI (wan22_i2v_480p.json).",
+    "_note": "Requires 8GB+ VRAM. Dormant by default \u2014 see README for activation steps. Workflow JSON must be exported from ComfyUI (wan22_i2v_480p.json).",
     "purpose": "Image-to-video via ComfyUI + Wan2.2 TI2V 5B GGUF (recommended) or I2V 14B GGUF (high quality)",
     "provider": "comfyui",
     "base_url": "http://100.69.67.59:8188",
@@ -411,5 +411,14 @@
     "width": 768,
     "height": 768,
     "timeout_sec": 1200
-  }
+  },
+  "orchestrator.chat_via_graph": true,
+  "orchestrator.checkpoint_retention_days": 30,
+  "mcp.http_enabled": false,
+  "mcp.use_fetch": false,
+  "make_type_classifier.enabled": true,
+  "make_type_classifier.confidence_threshold": 0.7,
+  "research_pool.max_handoffs": 2,
+  "research.citation_cosine_threshold": 0.45,
+  "mcp.acknowledge_unsafe_http": false
 }

@@ -1,18 +1,21 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import re
 import time
 from urllib.parse import urlsplit
 from typing import Any, Callable
 
+from agents_research.citation_linker import build_retrieved_chunks
 from agents_research.synthesizer import synthesize, run_skeptic_pass
 from shared_tools.embedding_memory import _vec_cosine
 from shared_tools.file_store import ProjectStore
 from shared_tools.feedback_learning import FeedbackLearningEngine
-from shared_tools.model_routing import lane_model_config
+from shared_tools.model_routing import lane_model_config, load_model_routing
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.ollama_client import OllamaClient
+from shared_tools.activity_bus import telemetry_emit
 
 
 _URL_PATTERN = re.compile(
@@ -190,6 +193,30 @@ def _self_check(client: OllamaClient, model_cfg: dict, question: str, finding: s
     except Exception:
         pass
     return 0
+
+
+def _lexical_overlap(a: str, b: str) -> float:
+    left = set(re.findall(r"[a-z0-9]{4,}", str(a or "").lower()))
+    right = set(re.findall(r"[a-z0-9]{4,}", str(b or "").lower()))
+    if not left or not right:
+        return 0.0
+    return float(len(left & right) / max(1, len(left)))
+
+
+def _outcome_quality(client: Any, question: str, finding: str) -> float:
+    prompt = str(question or "").strip()[:1200]
+    text = str(finding or "").strip()[:2400]
+    if not prompt or not text:
+        return 0.0
+    try:
+        vec_a = client.embed("qwen3-embedding:4b", prompt, timeout=20)
+        vec_b = client.embed("qwen3-embedding:4b", text, timeout=20)
+        score = float(_vec_cosine(vec_a, vec_b))
+        if score > 0.0:
+            return max(0.0, min(1.0, score))
+    except Exception:
+        pass
+    return max(0.0, min(1.0, _lexical_overlap(prompt, text)))
 
 
 def _gap_assess(client: Any, model_cfg: dict, question: str, summary_md: str) -> list[str]:
@@ -766,6 +793,54 @@ def _looks_like_research_note(text: str) -> bool:
     return section_hits >= 2
 
 
+def _extract_handoff_request(
+    raw_text: str,
+    *,
+    persona: str,
+    allowed_personas: set[str],
+    min_confidence: float = 0.75,
+) -> dict[str, Any] | None:
+    body = str(raw_text or "").strip()
+    if not body:
+        return None
+    candidates: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            candidates.append(parsed)
+    except Exception:
+        pass
+    if not candidates:
+        match = re.search(r"\{.*\}", body, flags=re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict):
+                candidates.append(parsed)
+    for row in candidates:
+        target = str(row.get("handoff_to", row.get("to", ""))).strip().lower()
+        reason = str(row.get("reason", "")).strip()
+        try:
+            confidence = float(row.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if (
+            target
+            and target != str(persona).strip().lower()
+            and target in {p.lower() for p in allowed_personas}
+            and confidence >= float(min_confidence)
+        ):
+            canonical = next((p for p in allowed_personas if p.lower() == target), target)
+            return {
+                "to": canonical,
+                "reason": reason[:240],
+                "confidence": round(confidence, 3),
+            }
+    return None
+
+
 def _agent_prompt(question: str, persona: str, directive: str, learned_guidance: str, web_context: str, max_web_chars: int = 9000) -> tuple[str, str]:
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     guidance_block = f"\n\n{learned_guidance}" if learned_guidance else ""
@@ -799,7 +874,11 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "'[source not found]' — do not guess or approximate. "
         "Stating 'the available sources do not cover this' is correct and preferred over filling gaps. "
         "Use [S] only as a last resort for genuine hypotheses, never to launder missing facts. "
-        "Uncertainty is not a failure — fabrication is."
+        "Uncertainty is not a failure — fabrication is.\n\n"
+        "PERSONA HANDOFF: If this request is materially better handled by another persona, "
+        "you may return ONLY JSON with shape "
+        "{\"handoff_to\":\"<persona>\",\"reason\":\"<one sentence>\",\"confidence\":0.0-1.0}. "
+        "Only do this when confidence is >= 0.75."
         f"{guidance_block}{web_block}"
     )
     user_prompt = (
@@ -871,6 +950,7 @@ def _run_one_agent(
     prior_messages: list[dict[str, str]] | None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
+    allowed_personas: set[str] | None = None,
 ) -> dict[str, Any]:
     persona = str(agent_cfg.get("persona", "")).strip() or "research_agent"
     directive = str(agent_cfg.get("directive", "")).strip() or DEFAULT_DIRECTIVES.get(
@@ -982,6 +1062,11 @@ def _run_one_agent(
         finding = f"{finding}\n\nReliability diagnostics: {' | '.join(failure_notes[-4:])}"
 
     role = str(agent_cfg.get("role", "primary")).strip() or "primary"
+    handoff = _extract_handoff_request(
+        finding,
+        persona=persona,
+        allowed_personas=set(allowed_personas or set()),
+    )
     source_rows = [dict(x) for x in (source_evidence or []) if isinstance(x, dict)]
     source_urls = [str(x.get("url", "")).strip() for x in source_rows if str(x.get("url", "")).strip()]
     return {
@@ -992,6 +1077,7 @@ def _run_one_agent(
         "role": role,
         "source_urls": source_urls,
         "source_evidence": source_rows,
+        "handoff": handoff,
     }
 
 
@@ -1210,6 +1296,7 @@ def _run_fill_agents(
                 prior_messages,
                 cancel_checker,
                 pause_checker,
+                set(),
             ): cfg
             for cfg in fill_cfg_list
         }
@@ -1290,6 +1377,7 @@ def _recover_failed_findings(
             prior_messages,
             cancel_checker,
             pause_checker,
+            set(),
         )
         recovered.append(repaired)
     return recovered
@@ -1307,6 +1395,7 @@ def _run_multipass_agent(
     prior_messages: list[dict[str, str]] | None = None,
     cancel_checker: Any = None,
     pause_checker: Any = None,
+    allowed_personas: set[str] | None = None,
 ) -> dict[str, Any]:
     """Wrapper around _run_one_agent that processes sources in batches.
 
@@ -1319,7 +1408,7 @@ def _run_multipass_agent(
     if len(source_blocks) <= _MULTI_PASS_THRESHOLD:
         return _run_one_agent(
             client, model_cfg, agent_cfg, question, learned_guidance,
-            web_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker,
+            web_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker, allowed_personas,
         )
 
     batches = [
@@ -1341,7 +1430,7 @@ def _run_multipass_agent(
         )
         result = _run_one_agent(
             client, model_cfg, batch_cfg, question, learned_guidance,
-            batch_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker,
+            batch_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker, allowed_personas,
         )
         last_result = result
         finding = str(result.get("finding", "")).strip()
@@ -1412,6 +1501,28 @@ def run_research_pool(
     resolved_type = str(topic_type or "general").strip().lower() or "general"
     profile_name = _analysis_profile_for_type(resolved_type)
     agents = _agent_specs(model_cfg, topic_type=resolved_type)
+    allowed_personas = {
+        str(row.get("persona", "")).strip()
+        for row in agents
+        if str(row.get("persona", "")).strip()
+    }
+    agent_cfg_by_persona = {
+        str(row.get("persona", "")).strip(): dict(row)
+        for row in agents
+        if str(row.get("persona", "")).strip()
+    }
+    try:
+        routing = load_model_routing(repo_root)
+    except Exception:
+        routing = {}
+    raw_max_handoffs = (
+        routing.get("research_pool.max_handoffs", model_cfg.get("max_handoffs", 2))
+        if isinstance(routing, dict)
+        else model_cfg.get("max_handoffs", 2)
+    )
+    max_handoffs = max(0, int(raw_max_handoffs or 2))
+    handoff_count = 0
+    visited_agents_per_leaf: dict[str, list[str]] = {"root": []}
     source_evidence = _extract_web_source_evidence(web_context)
     worker_count = max(1, min(int(model_cfg.get("parallel_agents", 4)), len(agents)))
     agent_roster = [
@@ -1500,6 +1611,7 @@ def run_research_pool(
                     prior_messages,
                     cancel_checker,
                     pause_checker,
+                    allowed_personas,
                 )
                 pending.add(future)
                 persona = str(agent_cfg.get("persona", "research_agent")).strip() or "research_agent"
@@ -1537,6 +1649,9 @@ def run_research_pool(
                         "finding": f"Model call failed for {persona}: {exc}",
                     }
                 findings.append(result)
+                agent_name = str(result.get("agent", "")).strip()
+                if agent_name and agent_name not in visited_agents_per_leaf["root"]:
+                    visited_agents_per_leaf["root"].append(agent_name)
                 _finding_text = str(result.get("finding", "")).strip()
                 _finding_failed = _is_failure_text(_finding_text)
                 _confidence = 0 if _finding_failed else _self_check(client, model_cfg, question, _finding_text)
@@ -1553,6 +1668,101 @@ def run_research_pool(
                         "confidence": _confidence,
                     },
                 )
+
+                handoff = result.get("handoff", {}) if isinstance(result.get("handoff", {}), dict) else {}
+                target_persona = str(handoff.get("to", "")).strip()
+                if target_persona:
+                    loop_rejected = target_persona in visited_agents_per_leaf["root"]
+                    cap_hit = handoff_count >= max_handoffs
+                    honored = False
+                    outcome_quality = 0.0
+                    handoff_result: dict[str, Any] | None = None
+                    if not loop_rejected and not cap_hit and target_persona in agent_cfg_by_persona:
+                        handoff_cfg = dict(agent_cfg_by_persona[target_persona])
+                        handoff_cfg["directive"] = (
+                            f"{str(handoff_cfg.get('directive', '')).strip()}\n"
+                            f"Handoff context from {agent_name}: {str(handoff.get('reason', '')).strip()[:220]}"
+                        ).strip()
+                        handoff_result = _run_multipass_agent(
+                            client,
+                            model_cfg,
+                            handoff_cfg,
+                            question,
+                            learned_guidance,
+                            web_context,
+                            source_evidence,
+                            project_context,
+                            prior_messages,
+                            cancel_checker,
+                            pause_checker,
+                            allowed_personas,
+                        )
+                        handoff_text = str(handoff_result.get("finding", "")).strip()
+                        handoff_result["confidence"] = 0 if _is_failure_text(handoff_text) else _self_check(
+                            client,
+                            model_cfg,
+                            question,
+                            handoff_text,
+                        )
+                        handoff_result["handoff_from"] = agent_name
+                        handoff_result["handoff_honored"] = True
+                        findings.append(handoff_result)
+                        handoff_count += 1
+                        honored = True
+                        outcome_quality = _outcome_quality(client, question, handoff_text)
+                        target_name = str(handoff_result.get("agent", "")).strip()
+                        if target_name and target_name not in visited_agents_per_leaf["root"]:
+                            visited_agents_per_leaf["root"].append(target_name)
+                        _progress(
+                            "research_agent_completed",
+                            {
+                                "completed": len(findings),
+                                "total": len(agents),
+                                "agent": target_name,
+                                "role": str(handoff_result.get("role", "primary")),
+                                "failed": _is_failure_text(handoff_text),
+                                "finding_preview": handoff_text[:400] if not _is_failure_text(handoff_text) else "",
+                                "confidence": handoff_result.get("confidence", 0),
+                                "handoff_from": agent_name,
+                            },
+                        )
+                    elif loop_rejected:
+                        _progress(
+                            "handoff_loop_detected",
+                            {
+                                "leaf_id": "root",
+                                "from_agent": agent_name,
+                                "to_agent": target_persona,
+                            },
+                        )
+                    elif cap_hit:
+                        _progress(
+                            "handoff_cap_hit",
+                            {
+                                "leaf_id": "root",
+                                "from_agent": agent_name,
+                                "to_agent": target_persona,
+                                "max_handoffs": max_handoffs,
+                            },
+                        )
+
+                    telemetry_emit(
+                        repo_root,
+                        "agent_handoffs.jsonl",
+                        {
+                            "leaf_id": "root",
+                            "leaf_question": question[:400],
+                            "from_agent": agent_name,
+                            "to_agent": target_persona,
+                            "reason": str(handoff.get("reason", "")).strip()[:240],
+                            "confidence": float(handoff.get("confidence", 0.0) or 0.0),
+                            "honored": honored,
+                            "loop_rejected": loop_rejected,
+                            "cap_hit": cap_hit,
+                            "outcome_quality": round(float(outcome_quality), 4),
+                        },
+                        retention_days=30,
+                    )
     finally:
         if canceled:
             for future in pending:
@@ -1578,6 +1788,7 @@ def run_research_pool(
         )
     reliability = _reliability_summary(findings)
     findings = _audit_evidence_labels(findings)
+    retrieved_chunks = build_retrieved_chunks(findings)
 
     store = ProjectStore(repo_root)
 
@@ -1646,6 +1857,8 @@ def run_research_pool(
             "reliability": reliability,
             "canceled": True,
             "cancel_summary": cancel_summary,
+            "retrieved_chunks": retrieved_chunks,
+            "visited_agents_per_leaf": visited_agents_per_leaf,
         }
 
     _synthesis_lane = lane_model_config(repo_root, "synthesis") or {}
@@ -1753,4 +1966,6 @@ def run_research_pool(
         "analysis_profile": profile_name,
         "topic_type": resolved_type,
         "findings": findings,
+        "retrieved_chunks": retrieved_chunks,
+        "visited_agents_per_leaf": visited_agents_per_leaf,
     }

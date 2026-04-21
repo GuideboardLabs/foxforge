@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from agents_research.citation_linker import build_retrieved_chunks, link as link_citations
 from agents_research.deep_researcher import _extract_web_source_evidence, _gap_assess, _run_fill_agents, _reliability_summary
 from agents_research.synthesizer import synthesize, run_skeptic_pass
 from shared_tools.file_store import ProjectStore
@@ -51,6 +52,7 @@ class ResearchService:
         reminder_note: str = "",
         event_note: str = "",
         lane: str = "research",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before research execution started."
@@ -65,6 +67,7 @@ class ResearchService:
                 perf=perf,
                 reminder_note=reminder_note,
                 event_note=event_note,
+                details_sink=details_sink,
             )
         return self._execute_full_research(
             host,
@@ -79,6 +82,7 @@ class ResearchService:
             progress_callback=progress_callback,
             reminder_note=reminder_note,
             event_note=event_note,
+            details_sink=details_sink,
         )
 
     def execute_project_lane(
@@ -95,6 +99,7 @@ class ResearchService:
         progress_callback=None,
         reminder_note: str = "",
         event_note: str = "",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before project-research execution started."
@@ -160,6 +165,7 @@ class ResearchService:
                 reminder_note=reminder_note,
                 event_note=event_note,
                 queue_proposals=True,
+                details_sink=details_sink,
             )
         finally:
             if slug:
@@ -177,6 +183,7 @@ class ResearchService:
         perf=None,
         reminder_note: str = "",
         event_note: str = "",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         out = host._light_research_flow(
             question=text,
@@ -206,6 +213,13 @@ class ResearchService:
         reply = f"{reply}\n\n{artifacts}"
         reply = host._append_daymarker_note(reply, event_note)
         reply = host._append_daymarker_note(reply, reminder_note)
+        if isinstance(details_sink, dict):
+            details_sink["research_reply"] = {
+                "type": "research_reply",
+                "text": reply,
+                "sentences": [],
+                "retrieved_chunks": [],
+            }
         return host._complete_turn(user_text=text, lane=lane, reply_text=reply, worker_result=out)
 
     def _execute_full_research(
@@ -223,6 +237,7 @@ class ResearchService:
         progress_callback=None,
         reminder_note: str = "",
         event_note: str = "",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         slug = str(getattr(host, "project_slug", "") or "").strip()
         with _active_foraging_lock:
@@ -247,6 +262,7 @@ class ResearchService:
                 progress_callback=progress_callback,
                 reminder_note=reminder_note,
                 event_note=event_note,
+                details_sink=details_sink,
             )
         finally:
             if slug:
@@ -268,6 +284,7 @@ class ResearchService:
         progress_callback=None,
         reminder_note: str = "",
         event_note: str = "",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type, force=True, progress_callback=progress_callback)
         self._emit_web_progress(progress_callback, web_details)
@@ -318,6 +335,7 @@ class ResearchService:
             reminder_note=reminder_note,
             event_note=event_note,
             queue_proposals=True,
+            details_sink=details_sink,
         )
 
     def _run_research_pool(
@@ -382,6 +400,7 @@ class ResearchService:
         reminder_note: str,
         event_note: str,
         queue_proposals: bool,
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         if web_note:
             fallback = f"{fallback}\n{web_note}"
@@ -397,6 +416,25 @@ class ResearchService:
             reply = f"{reply}\n{web_note}"
         if queue_proposals:
             host._queue_action_proposals(reply)
+        citation_threshold = 0.45
+        try:
+            model_routing = getattr(host, "model_routing", {})
+            if isinstance(model_routing, dict):
+                raw_thresh = model_routing.get("research.citation_cosine_threshold", 0.45)
+                citation_threshold = float(raw_thresh)
+        except Exception:
+            citation_threshold = 0.45
+        retrieved_chunks = [dict(x) for x in (out.get("retrieved_chunks") or []) if isinstance(x, dict)]
+        research_reply = link_citations(
+            reply,
+            retrieved_chunks=retrieved_chunks,
+            threshold=max(0.0, min(1.0, citation_threshold)),
+            embedding_client=getattr(host, "ollama", None),
+        )
+        if isinstance(research_reply, dict):
+            out["research_reply"] = research_reply
+            if isinstance(details_sink, dict):
+                details_sink["research_reply"] = research_reply
         artifacts = host._format_research_artifacts_block(out)
         reply = f"{reply}\n\n{artifacts}"
         topic_reviews = int(out.get("topic_reviews_created", 0) or 0)
@@ -605,6 +643,7 @@ class ResearchService:
         updated_out["gap_fill_used"] = True
         updated_out["reliability"] = new_reliability
         updated_out["findings"] = merged_findings
+        updated_out["retrieved_chunks"] = build_retrieved_chunks(merged_findings)
         return updated_out
 
     def _emit_web_progress(self, progress_callback, web_details: dict[str, Any] | None) -> None:

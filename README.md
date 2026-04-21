@@ -79,7 +79,9 @@ Foxforge routes every request through one of three top-level lanes. Each lane is
 
 Web and local evidence gathering, synthesis, and analysis. Powers the Fieldbook (web research) workflow.
 
-**Deep Researcher** — 4 agents run in parallel (2 concurrent by default), each with a distinct research persona:
+**Tree planner** — a planner model (deepseek-r1:8b, `think=True`) decomposes the root question into a breadth/depth research tree. Leaves are assigned to the persona with the strongest affinity for that angle, so the four personas no longer fan out on identical questions.
+
+**Four personas** execute leaves (2 concurrent by default):
 
 | Agent | Role | Model |
 |---|---|---|
@@ -88,9 +90,15 @@ Web and local evidence gathering, synthesis, and analysis. Powers the Fieldbook 
 | Risk Researcher | Failure modes, mitigations, systemic constraints | deepseek-r1:8b (`think=True`) |
 | Execution Planner | Practical sequencing, milestones, resources needed | qwen3:8b |
 
+Personas can **hand off** leaves to each other when a question sits outside their competence — loop prevention and a per-leaf handoff cap keep routing bounded.
+
 Each agent applies **evidence discipline**: findings are labeled `[E]` (evidence-backed), `[I]` (inferred), or `[S]` (speculative). A self-check rates quality (1–5) before output. A gap assessment identifies what's missing. A final skeptic pass (deepseek-r1:8b) validates the full picture before synthesis.
 
-**Synthesizer** — unifies all four research streams into a coherent narrative with cross-persona consistency validation.
+**Synthesizer** — unifies all persona streams into a coherent narrative with cross-persona consistency validation.
+
+**Citation linker** — post-processes synthesized text to anchor each sentence to the retrieved chunk that supports it; cosine-misaligned citations are dropped rather than passed through as fabrication.
+
+**Web research cache** — repeat queries are served from a content-addressed SQLite cache with volatility-tiered TTL (24h general, 2h recency-sensitive, 10m live events).
 
 **Web foraging stack** (optional, Docker): SearXNG + Crawl4AI for live web research.
 
@@ -322,7 +330,24 @@ Projects/{slug}/desktop_apps/{AppName}/
 
 ### Talk Lane
 
-Conversational orchestration. Requests that aren't research or build tasks route here — the Reynard layer handles multi-turn dialogue, memory retrieval, and personal context via `dolphin3:8b`. The intent confirmer (`gemma3:4b`, <2s) gates every incoming request before any expensive pipeline fires.
+Conversational orchestration. Requests that aren't research or build tasks route here — the Reynard layer handles multi-turn dialogue, memory retrieval, and personal context via `dolphin3:8b`.
+
+**Two-stage routing gate.** Every incoming request is first scored by a semantic-router layer (embedding lookup against known web vs. no-web exemplars, ~20ms) and only falls through to the `gemma3:4b` intent confirmer for genuinely ambiguous messages. A second `qwen3:4b` context gate validates the routing decision against full conversation history before any web-research pipeline fires, eliminating false-positive crawls on long technical messages.
+
+---
+
+## Turn Orchestration (LangGraph)
+
+Every turn runs through a LangGraph `StateGraph` defined in [SourceCode/orchestrator/pipelines/turn_graph.py](SourceCode/orchestrator/pipelines/turn_graph.py):
+
+```
+ingest → prompt_digest → intent_confirm → lane_route → context_gate
+       → lane_execute → compose → persist
+```
+
+State is checkpointed at every node boundary into `Runtime/state/turn_checkpoints.sqlite` via `SqliteSaver`. Any past turn can be replayed end-to-end or resumed from a specific node via [turn_replay.py](SourceCode/orchestrator/pipelines/turn_replay.py); a regression harness ([regression.py](SourceCode/orchestrator/pipelines/regression.py)) re-runs a curated set of past turns against current code and flags semantic drift via embedding cosine comparison.
+
+This replaces the legacy monolithic dispatch and makes turn failures debuggable: a crashed node leaves preceding checkpoints intact for inspection and resumable replay.
 
 ---
 
@@ -339,7 +364,9 @@ Conversational orchestration. Requests that aren't research or build tasks route
 | Code (web apps) | qwen2.5-coder:7b / :14b | 12,288 |
 | Desktop app scaffold | qwen2.5-coder:14b | 16,384 |
 | Intent gate | gemma3:4b | 4,096 |
-| Embeddings / RAG | qwen3-embedding:4b | — |
+| Routing context gate | qwen3:4b | 4,096 |
+| Embeddings / RAG / semantic routing | qwen3-embedding:4b | — |
+| Make-type classifier (LT) | SetFit over sentence-transformers | CPU |
 
 All models run locally via Ollama or llama.cpp. Model assignments are configurable in `SourceCode/configs/model_routing.json`.
 
@@ -365,41 +392,48 @@ The inference router automatically falls back to Ollama if a configured llama.cp
                      └──────────────┬──────────────────┘
                                     │
                      ┌──────────────▼──────────────────┐
-                     │       Intent Confirmer           │
-                     │   gemma3:4b gate · <2s latency  │
+                     │      Two-Stage Routing Gate      │
+                     │  semantic-router (~20ms)         │
+                     │   → intent confirmer (gemma3:4b) │
+                     │   → context gate (qwen3:4b)      │
                      └──────────────┬──────────────────┘
                                     │
                      ┌──────────────▼──────────────────┐
-                     │      Foxforge Orchestrator       │
-                     │   intent routing · turn planner  │
+                     │   Turn Graph (LangGraph)         │
+                     │  8-node StateGraph · SqliteSaver │
+                     │  checkpointing · replay          │
                      └───┬─────────┬──────────┬────────┘
                          │         │          │
           ┌──────────────▼┐  ┌─────▼──────┐  ┌▼──────────────┐
           │  Research Lane │  │  Make Lane │  │   Talk Lane   │
           │                │  │            │  │               │
-          │ Deep Researcher│  │ essay      │  │ Reynard layer │
-          │ 4 agents       │  │ longform   │  │ dolphin3:8b   │
-          │ parallel pairs │  │ content    │  │               │
+          │ Tree planner   │  │ essay      │  │ Reynard layer │
+          │ 4 personas +   │  │ longform   │  │ dolphin3:8b   │
+          │ handoffs       │  │ content    │  │               │
           │                │  │ specialist │  │               │
           │ Synthesizer    │  │ creative   │  │               │
-          └────────────────┘  │ web app    │  └───────────────┘
-                              │ desktop    │
+          │ Citation linker│  │ web app    │  └───────────────┘
+          └────────────────┘  │ desktop    │
                               └─────┬──────┘
                                     │
                      ┌──────────────▼──────────────────┐
                      │          Memory Systems          │
-                     │  Topic · Project · Second Brain  │
-                     │  Conversation · Research store   │
+                     │  Typed: episodic · semantic ·    │
+                     │  procedural. Paged working set + │
+                     │  archival. Web-research cache.   │
                      └──────────────┬──────────────────┘
                                     │
                      ┌──────────────▼──────────────────┐
                      │       Local Inference            │
                      │    Ollama · llama.cpp            │
+                     │    health-check + adaptive       │
+                     │    model fallback                │
                      └──────────────┬──────────────────┘
                                     │
                      ┌──────────────▼──────────────────┐
                      │      Optional External Services  │
                      │  SearXNG · Crawl4AI · ComfyUI   │
+                     │  MCP server / client (stdio)     │
                      └─────────────────────────────────┘
 ```
 
@@ -418,7 +452,20 @@ The inference router automatically falls back to Ollama if a configured llama.cp
 | Web app pool | Available | Flask + Vue 3 + SQLite, Extend Mode |
 | Desktop app pool | Available | .NET 8 + Avalonia, MVVM scaffold |
 | Topic system + Second Brain memory | Available | Persistent context across sessions |
+| Typed memory (episodic / semantic / procedural) | Available | Conflict resolution via source reputation + recency |
+| Memory pager (working set + archival) | Available | Token-budgeted context; `[RECALL:]` directive for self-paging |
 | Intent confirmer | Available | Fast gate prevents accidental pool activation |
+| Semantic routing gate | Available | Embedding-based ~20ms front-of-gate; LLM tiebreaker on low score |
+| Chat routing context gate | Available | qwen3:4b validates keyword triggers against full conversation |
+| Turn state graph (LangGraph) | Available | 8-node `StateGraph` with SqliteSaver checkpointing |
+| Turn replay + regression harness | Available | Resume any past turn from any node; drift scoring via embedding cosine |
+| Web research cache | Available | Content-addressed SQLite, volatility-tiered TTL |
+| Ollama health-check + adaptive fallback | Available | Model degradation demotes primary; auto-recovers after decay |
+| Research tree planner | Available | Planner → executor; per-persona leaf affinity |
+| Research persona handoffs | Available | LLM self-reflection with loop prevention + cap |
+| Per-sentence citation linker | Available | Cosine-aligned source anchoring; weak citations dropped |
+| SetFit Make-type classifier | Available | CPU inference replaces LLM `suggested_type` pick; active learning loop |
+| MCP tool surface (server + client) | Available | Exposes `forage` / `recall` / `make` over stdio; consumes external MCP servers |
 | Feedback learning engine | Available | Learns from successful Make outputs |
 | Watchtower / briefing flows | Experimental | Active and evolving |
 | Bot integrations (Discord / Slack / Telegram) | Experimental | Optional, environment-dependent |
@@ -445,6 +492,7 @@ The inference router automatically falls back to Ollama if a configured llama.cp
 - **Ollama** running locally (required)
 - **Docker** (optional — for web-foraging stack: SearXNG + Crawl4AI)
 - **ComfyUI** (optional — for local image generation and image-to-video)
+- **Core Python deps** (via `requirements.lock`): LangGraph + SqliteSaver for turn orchestration, semantic-router for fast routing, SetFit + sentence-transformers for Make-type classification, MCP SDK for tool surface
 - **Optional extras**
   - `requirements-optional-docs.txt` — PDF / DOCX / OCR helpers
   - `requirements-optional-bots.txt` — Discord bot support
@@ -479,6 +527,20 @@ Default service ports:
 
 ---
 
+## MCP (Model Context Protocol)
+
+Foxforge exposes its research and memory surface as an MCP server — external tools (editors, assistants, other local agents) can call `forage`, `recall`, and `make_artifact` over stdio without touching the web GUI.
+
+```bash
+python -m orchestrator.mcp
+```
+
+Stdio is the default transport. HTTP is gated behind an explicit config flag and is localhost-only by default; enable with care if you're exposing over Tailscale.
+
+Foxforge also consumes external MCP servers (filesystem, fetch) via [SourceCode/shared_tools/mcp_client.py](SourceCode/shared_tools/mcp_client.py) — configured in `SourceCode/configs/mcp_servers.json`.
+
+---
+
 ## Local Image and Video Generation
 
 Foxforge connects to [ComfyUI](https://github.com/comfyanonymous/ComfyUI) for image generation, enhancement, and image-to-video. This is optional and can run on a separate machine.
@@ -509,8 +571,10 @@ For full setup details — required custom nodes, model files, workflow export, 
 | Path | Purpose |
 |---|---|
 | `SourceCode/orchestrator/` | Orchestrator, intent routing, turn planner, Make catalog |
+| `SourceCode/orchestrator/pipelines/` | LangGraph turn state machine, replay, regression harness |
+| `SourceCode/orchestrator/services/` | Intent confirmer, semantic gate, chat routing gate, Make-type classifier, MCP bridge |
 | `SourceCode/agents_make/` | All Make lane pools (essay, longform, content, specialist, creative, web app, desktop) |
-| `SourceCode/agents_research/` | Deep researcher and synthesizer |
+| `SourceCode/agents_research/` | Tree planner, deep researcher, synthesizer, citation linker |
 | `SourceCode/web_gui/` | Flask app, API routes, frontend templates and static assets |
 | `SourceCode/shared_tools/` | Inference router, memory systems, research tools, activity bus |
 | `SourceCode/bots/` | Discord, Slack, and Telegram bot adapters |

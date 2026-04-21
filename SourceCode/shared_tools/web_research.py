@@ -22,11 +22,31 @@ from shared_tools.file_store import ProjectStore
 from shared_tools.fact_policy import enrich_source_metadata, detect_topic_type, classify_fact_volatility
 from shared_tools.domain_reputation import DomainReputation
 from shared_tools.inference_router import InferenceRouter
+from shared_tools.model_routing import load_model_routing
 from shared_tools.web_cache import WebQueryCache, cache_key as build_cache_key, normalize_query as normalize_cache_query, settings_digest as build_settings_digest
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class _InMemoryResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self.status = 200
+        self.headers: dict[str, Any] = {}
+
+    def read(self) -> bytes:
+        return bytes(self._payload)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        _ = exc_type
+        _ = exc
+        _ = tb
+        return False
 
 
 class _PageExtractor(HTMLParser):
@@ -1103,6 +1123,26 @@ class WebResearchEngine:
 
         Requires PySocks (pip install PySocks) for SOCKS5 support.
         """
+        try:
+            routing = load_model_routing(self.repo_root)
+            use_fetch_mcp = bool(routing.get("mcp.use_fetch", False)) if isinstance(routing, dict) else False
+        except Exception:
+            use_fetch_mcp = False
+        if use_fetch_mcp:
+            try:
+                method = str(req.get_method() or "GET").upper()
+            except Exception:
+                method = "GET"
+            if method == "GET":
+                try:
+                    from shared_tools.mcp_client import mcp_fetch_url
+
+                    body = mcp_fetch_url(self.repo_root, str(req.full_url or ""), timeout_sec=max(int(timeout or 0), 1))
+                except Exception:
+                    body = None
+                if isinstance(body, (bytes, bytearray)):
+                    return _InMemoryResponse(bytes(body))
+
         _tor = use_tor if use_tor is not None else self._tor_active
         if _tor:
             _s = settings or self._load_settings()

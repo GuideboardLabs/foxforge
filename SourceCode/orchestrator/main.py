@@ -33,6 +33,13 @@ from shared_tools.document_ingestion import is_document_ext
 from shared_tools.fact_cards import render_fact_card_markdown
 from shared_tools.fact_policy import classify_fact_volatility, detect_topic_type
 from shared_tools.perf_trace import PerfTrace
+from orchestrator.pipelines import (
+    get_turn_trace,
+    invoke_chat_turn_graph,
+    list_turns,
+    replay_turn,
+    run_regression_suite,
+)
 from orchestrator.services import OrchestratorInfraRuntime, ResearchService, TurnPlanner, WorkerResult
 from orchestrator.services.agent_contracts import AgentTask
 from orchestrator.services.agent_registry import build_default_agent_registry
@@ -298,6 +305,12 @@ class FoxforgeOrchestrator:
         lines = ["Local Ollama models:"]
         lines.extend([f"- {name}" for name in models])
         return "\n".join(lines)
+
+    def _chat_via_graph_enabled(self) -> bool:
+        routing = self.model_routing if isinstance(self.model_routing, dict) else {}
+        nested = routing.get("orchestrator", {}) if isinstance(routing.get("orchestrator", {}), dict) else {}
+        raw = routing.get("orchestrator.chat_via_graph", nested.get("chat_via_graph", False))
+        return bool(raw)
 
     def set_project(self, slug: str) -> str:
         self.project_slug = slug.strip().replace(" ", "_")
@@ -2877,6 +2890,8 @@ class FoxforgeOrchestrator:
         conversation_summary: str = "",
         force_research: bool = False,
         force_make: bool = False,
+        thread_id: str = "",
+        details_sink: dict[str, Any] | None = None,
     ) -> str:
         self.bus.emit("orchestrator", "message_received", {"project": self.project_slug})
         incoming_text = str(text or "").strip()
@@ -3015,6 +3030,26 @@ class FoxforgeOrchestrator:
 
         if self._is_casual_conversation_turn(text):
             self.bus.emit("orchestrator", "conversation_short_circuit", {"project": self.project_slug})
+            if self._chat_via_graph_enabled():
+                try:
+                    graph_result = invoke_chat_turn_graph(
+                        self,
+                        text=text,
+                        history=history,
+                        cancel_checker=cancel_checker,
+                        progress_callback=progress_callback,
+                        thread_id=str(thread_id or "").strip(),
+                    )
+                    reply = str(graph_result.get("reply", "")).strip()
+                    if isinstance(details_sink, dict):
+                        details_sink["turn_graph"] = {
+                            "graph_used": bool(graph_result.get("graph_used", False)),
+                            "state": graph_result.get("state", {}),
+                        }
+                    if reply:
+                        return reply
+                except Exception:
+                    pass
             return self.conversation_reply(text, history=history, project=self.project_slug)
 
         pipeline = project_mode if isinstance(project_mode, dict) else self.pipeline_store.get(self.project_slug)
@@ -3077,6 +3112,30 @@ class FoxforgeOrchestrator:
             return self._append_daymarker_note(reply, reminder_note)
 
         if lane == "conversation":
+            if self._chat_via_graph_enabled():
+                try:
+                    graph_result = invoke_chat_turn_graph(
+                        self,
+                        text=text,
+                        history=history,
+                        cancel_checker=cancel_checker,
+                        progress_callback=progress_callback,
+                        thread_id=str(thread_id or "").strip(),
+                    )
+                    reply = str(graph_result.get("reply", "")).strip()
+                    if isinstance(details_sink, dict):
+                        details_sink["turn_graph"] = {
+                            "graph_used": bool(graph_result.get("graph_used", False)),
+                            "state": graph_result.get("state", {}),
+                        }
+                    if reply:
+                        return reply
+                except Exception as exc:
+                    self.bus.emit(
+                        "orchestrator",
+                        "turn_graph_fallback",
+                        {"project": self.project_slug, "error": str(exc)[:220]},
+                    )
             return self.conversation_reply(text, history=history, project=self.project_slug)
 
         if lane == "research":
@@ -3098,6 +3157,7 @@ class FoxforgeOrchestrator:
                 reminder_note=reminder_note,
                 event_note=event_note,
                 lane=lane,
+                details_sink=details_sink,
             )
             if force_research and forage_seed_norm:
                 summary_after = self._latest_research_summary_path()
@@ -3397,6 +3457,7 @@ class FoxforgeOrchestrator:
             progress_callback=progress_callback,
             reminder_note=reminder_note,
             event_note=event_note,
+            details_sink=details_sink,
         )
 
 
@@ -3888,6 +3949,61 @@ class FoxforgeOrchestrator:
 
         return self.reflection_answer(cycle_id=action_id, answer=answer)
 
+    def replay_turn_text(self, turn_id: str, *, from_node: str = "", mutate_json: str = "") -> str:
+        thread_id = str(turn_id or "").strip()
+        if not thread_id:
+            return "Usage: /replay <turn_id> [from=<node>] [mutate={...json...}]"
+        mutate: dict[str, Any] = {}
+        if mutate_json.strip():
+            try:
+                parsed = json.loads(mutate_json)
+            except json.JSONDecodeError as exc:
+                return f"Invalid mutate JSON: {exc}"
+            if not isinstance(parsed, dict):
+                return "Mutate payload must be a JSON object."
+            mutate = parsed
+        replay = replay_turn(
+            self,
+            thread_id=thread_id,
+            from_node=from_node.strip(),
+            mutate=mutate or None,
+        )
+        if not replay.get("ok"):
+            return f"Replay failed: {replay.get('error', 'unknown error')}"
+        trace = get_turn_trace(self.repo_root, thread_id=thread_id, orchestrator=self)
+        turns = list_turns(self.repo_root, thread_id=thread_id)
+        state = replay.get("state", {}) if isinstance(replay.get("state", {}), dict) else {}
+        answer = str(state.get("composed_answer", "") or state.get("final_reply", "")).strip()
+        lines = [
+            f"Replay succeeded for thread `{thread_id}`.",
+            f"Replay dir: {replay.get('replay_dir', '')}",
+            f"Graph hash: {replay.get('graph_version_hash', '')}",
+            f"Trace checkpoints: {len(trace)}",
+            f"Thread snapshots found: {turns[0].checkpoints if turns else 0}",
+        ]
+        if answer:
+            lines.append(f"Composed answer preview: {answer[:220]}")
+        return "\\n".join(lines)
+
+    def regression_text(self) -> str:
+        report = run_regression_suite(self)
+        if not bool(report.get("ok", False)):
+            return str(report.get("error", "Regression suite failed."))
+        total = int(report.get("total", 0) or 0)
+        passed = int(report.get("passed", 0) or 0)
+        failed = int(report.get("failed", 0) or 0)
+        lines = [
+            f"Regression suite complete: {passed}/{total} passed (threshold={float(report.get('threshold', 0.9)):.2f}).",
+        ]
+        failures = [row for row in (report.get("results") or []) if isinstance(row, dict) and not bool(row.get("passed", False))]
+        for row in failures[:8]:
+            lines.append(
+                f"- {str(row.get('thread_id', ''))}: score={float(row.get('score', 0.0)):.3f} reason={str(row.get('reason', ''))}"
+            )
+        if failed > len(failures[:8]):
+            lines.append(f"... and {failed - len(failures[:8])} more failures.")
+        return "\\n".join(lines)
+
 
 def print_help() -> None:
     print("Commands:")
@@ -3914,6 +4030,8 @@ def print_help() -> None:
     print("  /improve-status   Show continuous improvement health and quality stats")
     print("  /improve-now      Force immediate non-destructive project memory refresh")
     print("  /talk <text>      Send direct text to conversation layer")
+    print("  /replay <turn_id> [from=<node>] [mutate={...json...}]  Replay a checkpointed turn")
+    print("  /regression       Run replay regression suite from Runtime/state/regression_set.jsonl")
     print("  /ui <text>        Force UI/build intent for this message")
     print("  /handoff <target> <text>   Queue a pending handoff to codex")
     print("  /handoff-pending           List pending handoff requests")
@@ -4216,6 +4334,27 @@ def main() -> None:
             action_id = parts[1].strip()
             answer = parts[2].strip()
             print(orch.answer_pending_action(action_id=action_id, answer=answer))
+            continue
+        if user_text.startswith("/replay"):
+            parts = user_text.split(maxsplit=1)
+            args = parts[1].strip() if len(parts) > 1 else ""
+            if not args:
+                print("Usage: /replay <turn_id> [from=<node>] [mutate={...json...}]")
+                continue
+            mutate_json = ""
+            mutate_pos = args.find("mutate=")
+            if mutate_pos >= 0:
+                mutate_json = args[mutate_pos + len("mutate="):].strip()
+                args = args[:mutate_pos].strip()
+            turn_id = args.split()[0] if args else ""
+            from_node = ""
+            for token in args.split()[1:]:
+                if token.startswith("from="):
+                    from_node = token[len("from="):].strip()
+            print(orch.replay_turn_text(turn_id, from_node=from_node, mutate_json=mutate_json))
+            continue
+        if user_text == "/regression":
+            print(orch.regression_text())
             continue
         if user_text.startswith("/talk "):
             print(f"Conversation> {orch.conversation_reply(user_text[len('/talk ') :].strip())}")

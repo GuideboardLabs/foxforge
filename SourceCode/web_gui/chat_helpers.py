@@ -400,6 +400,24 @@ def handle_command(
             f"Project mode updated: {row.get('mode', 'discovery')} | "
             f"topic_type={row.get('topic_type', 'general')} | target={row.get('target', 'auto')}"
         )
+    if text.startswith("/replay"):
+        parts = text.split(maxsplit=1)
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if not args:
+            return "Usage: /replay <turn_id> [from=<node>] [mutate={...json...}]"
+        mutate_json = ""
+        mutate_pos = args.find("mutate=")
+        if mutate_pos >= 0:
+            mutate_json = args[mutate_pos + len("mutate="):].strip()
+            args = args[:mutate_pos].strip()
+        turn_id = args.split()[0] if args else ""
+        from_node = ""
+        for token in args.split()[1:]:
+            if token.startswith("from="):
+                from_node = token[len("from="):].strip()
+        return orch.replay_turn_text(turn_id, from_node=from_node, mutate_json=mutate_json)
+    if text == "/regression":
+        return orch.regression_text()
     if text.startswith("/talk "):
         return orch.conversation_reply(text[len("/talk "):].strip())
     return (
@@ -418,5 +436,6 @@ def handle_command(
         "/workspace-tree [path] [depth], /workspace-read <path>, /workspace-search <query> [glob], "
         "/workspace-patch <path> | <instruction>, /workspace-patch-batch <path1, path2> | <instruction>, "
         "/workspace-patches [n], /workspace-apply <id>, /workspace-reject <id>, "
-        "/project <slug>, /project-mode [mode] [stage] [target], /make <request>, /talk <text>."
+        "/project <slug>, /project-mode [mode] [stage] [target], /make <request>, "
+        "/replay <turn_id> [from=<node>] [mutate={...json...}], /regression, /talk <text>."
     )

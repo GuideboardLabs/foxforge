@@ -185,9 +185,15 @@ def _normalize_message_web_sources(raw_sources: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _build_message_web_meta(*, web_stack: Any = None, web_details: Any = None) -> dict[str, Any] | None:
+def _build_message_web_meta(
+    *,
+    web_stack: Any = None,
+    web_details: Any = None,
+    research_reply: Any = None,
+) -> dict[str, Any] | None:
     stack = dict(web_stack) if isinstance(web_stack, dict) else {}
     details = dict(web_details) if isinstance(web_details, dict) else {}
+    research = dict(research_reply) if isinstance(research_reply, dict) else {}
     if details and not stack:
         stack = build_web_progress_payload(details)
     detail_sources = _normalize_message_web_sources(details.get("sources"))
@@ -198,12 +204,20 @@ def _build_message_web_meta(*, web_stack: Any = None, web_details: Any = None) -
         stack["web_sources"] = _normalize_message_web_sources(stack.get("web_sources"))
     if not stack.get("web_sources"):
         stack.pop("web_sources", None)
-    if not stack:
+    if not stack and not research:
         return None
-    return {
-        "web_sources": list(stack.get("web_sources") or []),
-        "web_stack": stack,
-    }
+    payload: dict[str, Any] = {}
+    if stack:
+        payload["web_sources"] = list(stack.get("web_sources") or [])
+        payload["web_stack"] = stack
+    if research:
+        payload["research_reply"] = {
+            "type": "research_reply",
+            "text": str(research.get("text", "")),
+            "sentences": [dict(x) for x in (research.get("sentences") or []) if isinstance(x, dict)],
+            "retrieved_chunks": [dict(x) for x in (research.get("retrieved_chunks") or []) if isinstance(x, dict)],
+        }
+    return payload
 
 
 def _is_simple_image_prompt(prompt: str) -> bool:
@@ -1442,6 +1456,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                     conversation_summary=conversation_summary,
                     force_research=is_forage_request,
                     force_make=is_make_lane_request,
+                    thread_id=conversation_id,
+                    details_sink=talk_details,
                     progress_callback=lambda stage, detail=None: _progress(
                         stage,
                         str(detail if not isinstance(detail, dict) else detail.get("note", "") or ""),
@@ -1502,6 +1518,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         msg_meta = _build_message_web_meta(
             web_stack=web_stack,
             web_details=talk_details.get("web_details"),
+            research_reply=talk_details.get("research_reply"),
         )
         assistant_msg = store.add_message(
             conversation_id,

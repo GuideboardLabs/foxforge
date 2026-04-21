@@ -762,6 +762,71 @@ function normalizeTalkDisplayMarkdown(text) {
   return collapsePlainUrlsToDomains(noMarkdownLinks).trim();
 }
 
+function researchReplyPayload(msg) {
+  const meta = msg && typeof msg === "object" && msg.meta && typeof msg.meta === "object" ? msg.meta : {};
+  const payload = meta && typeof meta.research_reply === "object" ? meta.research_reply : null;
+  if (!payload) return null;
+  const sentences = Array.isArray(payload.sentences) ? payload.sentences.filter((row) => row && typeof row === "object") : [];
+  const chunks = Array.isArray(payload.retrieved_chunks) ? payload.retrieved_chunks.filter((row) => row && typeof row === "object") : [];
+  if (!sentences.length) {
+    return null;
+  }
+  return {
+    text: String(payload.text || ""),
+    sentences,
+    chunks,
+  };
+}
+
+function renderResearchMessageHtml(msg) {
+  const payload = researchReplyPayload(msg);
+  if (!payload) {
+    return "";
+  }
+  const chunksById = {};
+  const chunkOrder = [];
+  for (const row of payload.chunks) {
+    const id = String(row.id || "").trim();
+    if (!id || chunksById[id]) continue;
+    chunksById[id] = row;
+    chunkOrder.push(id);
+  }
+  const refNumberById = {};
+  for (let i = 0; i < chunkOrder.length; i += 1) {
+    refNumberById[chunkOrder[i]] = i + 1;
+  }
+
+  const parts = [];
+  for (const row of payload.sentences) {
+    const text = String(row.text || "").trim();
+    if (!text) continue;
+    const citationIds = Array.isArray(row.citation_ids) ? row.citation_ids.map((x) => String(x || "").trim()).filter(Boolean) : [];
+    let sentenceHtml = `<span class="citation-sentence">${escapeHtml(text)}`;
+    for (const cid of citationIds) {
+      const chunk = chunksById[cid];
+      if (!chunk) continue;
+      const num = refNumberById[cid] || 0;
+      const domain = String(chunk.domain || sourceDomainFromUrl(String(chunk.url || "")) || "source").trim();
+      const url = String(chunk.url || "").trim();
+      const snippet = String(chunk.snippet || "").trim().slice(0, 300);
+      const score = Number(chunk.score || 0);
+      const weakClass = score > 0 && score < 0.6 ? " is-weak" : "";
+      const label = `Citation ${num || "?"}, source ${domain}, confidence ${score.toFixed(2)}`;
+      const tip = `${domain}${snippet ? ` — ${snippet}` : ""}`;
+      sentenceHtml +=
+        `<sup class="citation-ref${weakClass}">` +
+        `<a class="citation-link" href="${escapeHtml(url || "#")}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(label)}" title="${escapeHtml(tip)}">[${num || "?"}]</a>` +
+        `<span class="citation-popover" role="tooltip"><strong>${escapeHtml(domain)}</strong><br>${escapeHtml(snippet || "Source snippet unavailable.")}</span>` +
+        `</sup>`;
+    }
+    sentenceHtml += `</span>`;
+    parts.push(sentenceHtml);
+  }
+
+  if (!parts.length) return "";
+  return `<div class="research-citations">${parts.join(" ")}</div>`;
+}
+
 function startsWithEmoji(text) {
   return /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(String(text || "").trim());
 }
@@ -5066,6 +5131,12 @@ const app = window.Vue.createApp({
       const raw = this.assistantDisplayRaw(msg);
       const mode = String(msg?.mode || "").trim().toLowerCase();
       const isTalkLike = mode === "talk" || (!mode && !Boolean(msg?.foraging));
+      const researchHtml = !isTalkLike ? renderResearchMessageHtml(msg) : "";
+      if (researchHtml) {
+        return this.isAssistantTypewriting(msg)
+          ? `${researchHtml}<span class="msg-type-cursor" aria-hidden="true"></span>`
+          : researchHtml;
+      }
       const cacheKey = `${isTalkLike ? "talk" : "std"}|${raw.length}|${raw.slice(0, 180)}|${raw.slice(-96)}`;
       if (msg && typeof msg === "object") {
         const cached = ASSISTANT_HTML_CACHE.get(msg);

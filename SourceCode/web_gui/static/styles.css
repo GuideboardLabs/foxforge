@@ -12978,3 +12978,64 @@ body.day {
         box-shadow: 4px 4px 8px var(--neu-shadow-dark), -2px -2px 5px var(--neu-shadow-light) !important;
     }
 }
+
+/* LT-5: per-sentence citations */
+.research-citations {
+    line-height: 1.6;
+}
+
+.research-citations .citation-sentence {
+    display: inline;
+    margin-right: 0.2rem;
+}
+
+.research-citations .citation-ref {
+    position: relative;
+    margin-left: 0.15rem;
+}
+
+.research-citations .citation-link {
+    font-size: 0.72rem;
+    color: var(--palette-orange, #f05a1e);
+    text-decoration: none;
+    font-weight: 700;
+}
+
+.research-citations .citation-ref.is-weak .citation-link {
+    color: #b07a4a;
+}
+
+.research-citations .citation-link:hover,
+.research-citations .citation-link:focus {
+    text-decoration: underline;
+    outline: none;
+}
+
+.research-citations .citation-popover {
+    position: absolute;
+    left: 50%;
+    top: 1.2rem;
+    transform: translateX(-50%);
+    min-width: 220px;
+    max-width: 300px;
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--neu-bg-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: inset 1px 1px 2px var(--neu-shadow-light), 5px 6px 14px rgba(0, 0, 0, 0.35);
+    color: var(--text-color);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    z-index: 50;
+    display: none;
+}
+
+.research-citations .citation-link:hover + .citation-popover,
+.research-citations .citation-link:focus + .citation-popover {
+    display: block;
+}
+
+body.day .research-citations .citation-popover {
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: inset 1px 1px 2px rgba(255, 255, 255, 0.6), 4px 6px 12px rgba(28, 41, 61, 0.18);
+}

@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx @modelcontextprotocol/server-filesystem"
+    },
+    {
+      "name": "fetch",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx @modelcontextprotocol/server-fetch"
+    },
+    {
+      "name": "sqlite",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx @modelcontextprotocol/server-sqlite"
+    }
+  ]
+}
