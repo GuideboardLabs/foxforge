@@ -878,17 +878,17 @@ body.sidebar-collapsed .sidebar {
 
 .panel-grid .panel-badge {
     position: absolute;
-    right: 4px;
-    top: 4px;
+    right: -7px;
+    top: -7px;
     z-index: 2;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 7px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 6px;
     background: #b3261e;
     color: #ffffff;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     font-weight: 800;
     box-shadow: 0 0 0 1px rgba(10, 12, 16, 0.95);
 }
@@ -4217,6 +4217,284 @@ body.waypoint-modal-open .waypoint-overlay {
 .waypoint-item-btn.warn {
     border-color: var(--palette-brown);
     background: linear-gradient(180deg, var(--palette-brown), var(--palette-navy));
+}
+
+.agent-graph-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 145;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+}
+
+body.family-modal-open .agent-graph-overlay {
+    display: flex;
+}
+
+.agent-graph-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(6, 10, 16, 0.72);
+    backdrop-filter: blur(5px);
+}
+
+.agent-graph-modal {
+    position: relative;
+    width: min(1260px, 96vw);
+    max-height: min(90vh, 980px);
+    border-radius: 14px;
+    border: 1px solid var(--palette-aqua);
+    background: linear-gradient(180deg, var(--palette-navy), var(--palette-black));
+    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.55);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    overflow: hidden;
+}
+
+.agent-graph-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(240, 90, 30, 0.35);
+}
+
+.agent-graph-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--palette-white);
+}
+
+.agent-graph-header p {
+    margin: 4px 0 0;
+    color: var(--palette-cream);
+    font-size: 0.8rem;
+}
+
+.agent-graph-summary-line {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 0.72rem;
+    color: var(--palette-mint);
+}
+
+.agent-graph-summary-line span {
+    border-radius: 999px;
+    border: 1px solid rgba(240, 90, 30, 0.32);
+    background: rgba(240, 90, 30, 0.12);
+    padding: 3px 8px;
+}
+
+.agent-graph-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.agent-graph-zoom-readout {
+    min-width: 52px;
+    text-align: center;
+    border-radius: 8px;
+    border: 1px solid rgba(240, 90, 30, 0.38);
+    background: rgba(240, 90, 30, 0.12);
+    color: var(--palette-white);
+    font-size: 0.78rem;
+    padding: 5px 8px;
+}
+
+.agent-graph-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 10px;
+    min-height: 0;
+    padding: 10px;
+}
+
+.agent-graph-canvas-wrap {
+    position: relative;
+    min-height: 0;
+    border-radius: 12px;
+    border: 1px solid rgba(240, 90, 30, 0.25);
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 15% 16%, rgba(240, 90, 30, 0.16) 0, transparent 36%),
+        radial-gradient(circle at 86% 26%, rgba(66, 133, 244, 0.15) 0, transparent 38%),
+        linear-gradient(160deg, rgba(14, 18, 26, 0.95), rgba(12, 16, 20, 0.94));
+}
+
+.agent-graph-canvas {
+    width: 100%;
+    height: 100%;
+    min-height: 500px;
+    display: block;
+    cursor: grab;
+    touch-action: none;
+}
+
+.agent-graph-canvas:active {
+    cursor: grabbing;
+}
+
+.agent-graph-canvas-bg {
+    fill: transparent;
+}
+
+#agentGraphArrow path {
+    fill: rgba(240, 90, 30, 0.7);
+}
+
+.agent-graph-edge {
+    stroke: rgba(240, 90, 30, 0.64);
+    stroke-width: 2.1;
+    stroke-linecap: round;
+    opacity: 0.9;
+}
+
+.agent-graph-node {
+    cursor: move;
+}
+
+.agent-graph-node rect {
+    fill: rgba(26, 33, 42, 0.9);
+    stroke: rgba(240, 90, 30, 0.48);
+    stroke-width: 1.6;
+    transition: fill 140ms ease, stroke 140ms ease, transform 140ms ease;
+}
+
+.agent-graph-node:hover rect {
+    fill: rgba(35, 44, 56, 0.95);
+    stroke: rgba(240, 90, 30, 0.78);
+}
+
+.agent-graph-node.is-root rect {
+    fill: rgba(44, 31, 20, 0.95);
+    stroke: rgba(244, 180, 0, 0.84);
+}
+
+.agent-graph-node.is-lane rect {
+    fill: rgba(27, 33, 49, 0.92);
+    stroke: rgba(66, 133, 244, 0.8);
+}
+
+.agent-graph-node.is-job rect {
+    fill: rgba(26, 43, 34, 0.92);
+    stroke: rgba(52, 168, 83, 0.72);
+}
+
+.agent-graph-node.is-agent rect {
+    fill: rgba(30, 31, 44, 0.92);
+    stroke: rgba(240, 90, 30, 0.72);
+}
+
+.agent-graph-node.is-idle rect {
+    fill: rgba(36, 36, 36, 0.78);
+    stroke: rgba(154, 160, 166, 0.65);
+}
+
+.agent-graph-node.is-selected rect {
+    stroke-width: 2.5;
+    stroke: rgba(244, 180, 0, 0.95);
+}
+
+.agent-graph-node-label {
+    fill: var(--palette-white);
+    font-size: 14px;
+    font-weight: 700;
+    paint-order: stroke;
+    stroke: rgba(11, 16, 22, 0.82);
+    stroke-width: 0.4px;
+}
+
+.agent-graph-node-subtitle {
+    fill: var(--palette-cream);
+    font-size: 11px;
+}
+
+.agent-graph-canvas-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 10px;
+    color: var(--palette-cream);
+    background: rgba(10, 14, 18, 0.55);
+    font-size: 0.9rem;
+}
+
+.agent-graph-canvas-empty.is-error {
+    color: #f4b400;
+}
+
+.agent-graph-detail {
+    border-radius: 12px;
+    border: 1px solid rgba(240, 90, 30, 0.28);
+    background: rgba(11, 16, 24, 0.84);
+    padding: 12px;
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 8px;
+}
+
+.agent-graph-detail h4 {
+    margin: 0;
+    font-size: 0.84rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--palette-mint);
+}
+
+.agent-graph-detail-title {
+    margin: 0;
+    color: var(--palette-white);
+    font-size: 0.96rem;
+    font-weight: 700;
+}
+
+.agent-graph-detail-kind,
+.agent-graph-detail-subtitle,
+.agent-graph-detail-empty {
+    margin: 0;
+    color: var(--palette-cream);
+    font-size: 0.8rem;
+}
+
+.agent-graph-detail-meta {
+    display: grid;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.agent-graph-detail-meta-row {
+    display: grid;
+    gap: 4px;
+}
+
+.agent-graph-detail-meta-row span {
+    color: var(--palette-mint);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.agent-graph-detail-meta-row code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border-radius: 8px;
+    border: 1px solid rgba(240, 90, 30, 0.3);
+    background: rgba(13, 18, 24, 0.9);
+    padding: 6px 7px;
+    color: var(--palette-white);
+    font-size: 0.73rem;
 }
 
 .family-profile-overlay {
@@ -8566,6 +8844,12 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
         padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
         padding-left: max(10px, env(safe-area-inset-left, 0px));
     }
+    .agent-graph-overlay {
+        padding-top: max(10px, env(safe-area-inset-top, 0px));
+        padding-right: max(10px, env(safe-area-inset-right, 0px));
+        padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+        padding-left: max(10px, env(safe-area-inset-left, 0px));
+    }
     .corner-close-layer {
         display: block;
     }
@@ -8584,6 +8868,14 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
         max-width: 100%;
         max-height: 90vh;
         min-width: 0;
+    }
+    .agent-graph-modal {
+        width: 100%;
+        max-width: 100%;
+        max-height: 90vh;
+    }
+    .agent-graph-body {
+        grid-template-columns: minmax(0, 1fr) 260px;
     }
     .panel-header {
         flex-wrap: wrap;
@@ -9419,6 +9711,26 @@ body.day .topic-type-badge.is-art           { background: rgba(134, 25, 143, 0.1
 }
 
 @media (max-width: 720px) {
+    .agent-graph-overlay {
+        padding: 10px;
+    }
+    .agent-graph-modal {
+        width: 100%;
+        max-height: min(92vh, 980px);
+    }
+    .agent-graph-header {
+        flex-wrap: wrap;
+    }
+    .agent-graph-header-controls {
+        width: 100%;
+    }
+    .agent-graph-body {
+        grid-template-columns: 1fr;
+        padding: 8px;
+    }
+    .agent-graph-canvas {
+        min-height: 360px;
+    }
     .family-profile-overlay {
         padding: 12px;
     }

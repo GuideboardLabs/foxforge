@@ -239,7 +239,6 @@ def _run_outline(
     question: str,
     sections: list[tuple[str, str]],
     research_context: str,
-    project_context: str,
     topic_type: str,
     target: str,
     sources_context: str = "",
@@ -262,8 +261,7 @@ def _run_outline(
         f"Request: {question}\n\n"
         f"Sections to plan:\n{section_list}\n\n"
         f"Research context (ground every section thesis in real findings):\n"
-        f"{_trim(research_context, 12000)}\n\n"
-        f"Project context:\n{_trim(project_context, 2000)}"
+        f"{_trim(research_context, 12000)}"
         f"{sources_block}"
     )
     try:
@@ -527,7 +525,6 @@ def run_essay_pool(
     research_context: str = "",
     raw_notes_context: str = "",
     sources_context: str = "",
-    project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -563,7 +560,7 @@ def run_essay_pool(
     learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
     learned_guidance = learning.guidance_for_lane("make_doc", limit=5)
     if learned_guidance:
-        project_context = (learned_guidance + "\n\n" + project_context).strip()
+        research_context = (learned_guidance + "\n\n" + research_context).strip()
 
     # ------------------------------------------------------------------
     # Step 1: Outline
@@ -574,7 +571,7 @@ def run_essay_pool(
     _progress("essay_outline_started", {"sections": [n for n, _ in sections]})
     outline = _run_outline(
         client, outline_model, question, sections,
-        research_context, project_context, topic_key, target_key,
+        research_context, topic_key, target_key,
         sources_context=sources_context,
         level=_level,
     )

@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agents_research.citation_linker import build_retrieved_chunks, link as link_citations
-from agents_research.deep_researcher import _extract_web_source_evidence, _gap_assess, _run_fill_agents, _reliability_summary
+from agents_research.deep_researcher import (
+    _build_source_quality_footer,
+    _count_recycled_open_questions,
+    _extract_web_source_evidence,
+    _gap_assess,
+    _load_prior_open_questions,
+    _reliability_summary,
+    _run_fill_agents,
+)
 from agents_research.synthesizer import synthesize, run_skeptic_pass
 from shared_tools.file_store import ProjectStore
 from shared_tools.inference_router import InferenceRouter
@@ -73,7 +81,6 @@ class ResearchService:
         text: str,
         history: list[dict[str, str]] | None,
         topic_type: str,
-        project_context: str,
         turn_plan: Any,
         force_research: bool,
         cancel_checker=None,
@@ -97,7 +104,6 @@ class ResearchService:
                 text=text,
                 lane=lane,
                 topic_type=topic_type,
-                project_context=project_context,
                 perf=perf,
                 reminder_note=reminder_note,
                 event_note=event_note,
@@ -109,7 +115,6 @@ class ResearchService:
             lane=lane,
             history=history,
             topic_type=topic_type,
-            project_context=project_context,
             cancel_checker=cancel_checker,
             pause_checker=pause_checker,
             yield_checker=yield_checker,
@@ -126,7 +131,6 @@ class ResearchService:
         text: str,
         history: list[dict[str, str]] | None,
         topic_type: str,
-        project_context: str,
         cancel_checker=None,
         pause_checker=None,
         yield_checker=None,
@@ -156,7 +160,6 @@ class ResearchService:
                 host=host,
                 history=history,
                 topic_type=topic_type,
-                project_context=project_context,
                 web_context=web_context,
                 cancel_checker=cancel_checker,
                 pause_checker=pause_checker,
@@ -172,7 +175,6 @@ class ResearchService:
                     out,
                     text=text,
                     web_context=web_context,
-                    project_context=project_context,
                     topic_type=topic_type,
                     cancel_checker=cancel_checker,
                     pause_checker=pause_checker,
@@ -215,7 +217,6 @@ class ResearchService:
         text: str,
         lane: str,
         topic_type: str,
-        project_context: str,
         perf=None,
         reminder_note: str = "",
         event_note: str = "",
@@ -225,7 +226,7 @@ class ResearchService:
             question=text,
             lane=lane,
             topic_type=topic_type,
-            project_context=project_context,
+            project_context="",
             trace=perf,
         )
         web_details = out.get("web_details", {}) if isinstance(out.get("web_details", {}), dict) else {}
@@ -266,7 +267,6 @@ class ResearchService:
         lane: str,
         history: list[dict[str, str]] | None,
         topic_type: str,
-        project_context: str,
         cancel_checker=None,
         pause_checker=None,
         yield_checker=None,
@@ -291,7 +291,6 @@ class ResearchService:
                 lane=lane,
                 history=history,
                 topic_type=topic_type,
-                project_context=project_context,
                 cancel_checker=cancel_checker,
                 pause_checker=pause_checker,
                 yield_checker=yield_checker,
@@ -313,7 +312,6 @@ class ResearchService:
         lane: str,
         history: list[dict[str, str]] | None,
         topic_type: str,
-        project_context: str,
         cancel_checker=None,
         pause_checker=None,
         yield_checker=None,
@@ -329,7 +327,6 @@ class ResearchService:
             host=host,
             history=history,
             topic_type=topic_type,
-            project_context=project_context,
             web_context=web_context,
             cancel_checker=cancel_checker,
             pause_checker=pause_checker,
@@ -345,7 +342,6 @@ class ResearchService:
                 out,
                 text=text,
                 web_context=web_context,
-                project_context=project_context,
                 topic_type=topic_type,
                 cancel_checker=cancel_checker,
                 pause_checker=pause_checker,
@@ -381,7 +377,6 @@ class ResearchService:
         host: Any,
         history: list[dict[str, str]] | None,
         topic_type: str,
-        project_context: str,
         web_context: str,
         cancel_checker=None,
         pause_checker=None,
@@ -397,7 +392,6 @@ class ResearchService:
                     history=history,
                     context={
                         "web_context": web_context,
-                        "project_context": project_context,
                         "topic_type": topic_type,
                     },
                     cancel_checker=cancel_checker,
@@ -413,7 +407,6 @@ class ResearchService:
                 host.project_slug,
                 host.bus,
                 web_context=web_context,
-                project_context=project_context,
                 prior_messages=history or [],
                 cancel_checker=cancel_checker,
                 pause_checker=pause_checker,
@@ -487,7 +480,6 @@ class ResearchService:
         *,
         text: str,
         web_context: str,
-        project_context: str,
         topic_type: str,
         cancel_checker=None,
         pause_checker=None,
@@ -580,7 +572,6 @@ class ResearchService:
             question=text,
             gap_queries=gap_queries,
             web_context=web_context,
-            project_context=project_context,
             prior_messages=None,
             findings=findings,
             source_evidence=_extract_web_source_evidence(web_context),
@@ -608,13 +599,15 @@ class ResearchService:
             synth_cfg["model"] = "huihui_ai/qwen3-abliterated:8b-Q4_K_M"
             synth_cfg["synthesis_fallback_models"] = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
 
+        project_slug = str(getattr(host, "project_slug", "") or "").strip()
+        prior_open_questions = _load_prior_open_questions(self.repo_root, project_slug)
         new_summary_md = synthesize(
             text,
             merged_findings,
             client=client,
             model_cfg=synth_cfg,
-            project_context=project_context,
             prior_synthesis=summary_md,
+            prior_open_questions=prior_open_questions,
         )
 
         # Adversarial skeptic pass on the updated synthesis.
@@ -626,42 +619,17 @@ class ResearchService:
             findings=merged_findings,
         )
 
-        # Append source quality block with merged confidence scores.
+        # Append source quality + recycled-open-question signal.
         new_reliability = _reliability_summary(merged_findings)
-        _new_all_scores = [f.get("confidence") for f in merged_findings]
-        _new_scored = [int(s) for s in _new_all_scores if isinstance(s, (int, float)) and int(s) > 0]
-        _new_unscored_count = sum(
-            1 for s in _new_all_scores if not isinstance(s, (int, float)) or int(s) == 0
-        )
-        if _new_scored:
-            _new_avg_conf = sum(_new_scored) / len(_new_scored)
-            _conf_labels = {1: "very low", 2: "low", 3: "medium", 4: "high", 5: "very high"}
-            _agent_conf_lines = "\n".join(
-                f"- {str(f.get('agent', 'agent'))}: {int(f.get('confidence', 0))}/5"
-                + (" (unscored)" if int(f.get("confidence", 0)) == 0 else "")
-                for f in merged_findings
-            )
-            _unscored_note = f" | {_new_unscored_count} agent(s) unscored" if _new_unscored_count else ""
-            new_summary_md = (
-                f"{new_summary_md}\n\n---\n\n"
-                f"**Source Quality** — avg confidence {_new_avg_conf:.1f}/5 "
-                f"({_conf_labels.get(round(_new_avg_conf), 'unknown')})"
-                f" | scored: {len(_new_scored)}/{len(merged_findings)}{_unscored_note}"
-                f" | gap-fill pass applied\n\n"
-                f"{_agent_conf_lines}"
-            )
-        elif _new_unscored_count:
-            new_summary_md = (
-                f"{new_summary_md}\n\n---\n\n"
-                f"**Source Quality** — agent self-scoring unavailable "
-                f"({_new_unscored_count} agent(s) did not return a score)"
-                f" | gap-fill pass applied"
-            )
+        recycled_questions = _count_recycled_open_questions(new_summary_md, prior_open_questions)
+        quality_suffix = " | gap-fill pass applied"
+        if recycled_questions > 0:
+            quality_suffix += f" | recycled prior questions: {recycled_questions}"
+        new_summary_md = f"{new_summary_md}\n\n---\n\n{_build_source_quality_footer(merged_findings, suffix=quality_suffix)}"
 
         # Write the filled summary to a new file.
         store = ProjectStore(self.repo_root)
         filled_name = store.timestamped_name("research_summary_filled")
-        project_slug = str(getattr(host, "project_slug", "") or "").strip()
         filled_path = store.write_project_file(
             project_slug, "research_summaries", filled_name, new_summary_md
         )
@@ -697,6 +665,7 @@ class ResearchService:
         updated_out["reliability"] = new_reliability
         updated_out["findings"] = merged_findings
         updated_out["retrieved_chunks"] = build_retrieved_chunks(merged_findings)
+        updated_out["recycled_open_questions"] = recycled_questions
         return updated_out
 
     def _emit_web_progress(self, progress_callback, web_details: dict[str, Any] | None) -> None:

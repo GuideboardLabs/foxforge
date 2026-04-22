@@ -40,7 +40,6 @@ class ResearchPoolAgent(BaseAgentExecutor):
             task.project_slug,
             bus,
             web_context=str(task.context.get("web_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             prior_messages=task.history,
             cancel_checker=task.cancel_checker,
             pause_checker=task.pause_checker,
@@ -66,7 +65,6 @@ class AppPoolAgent(BaseAgentExecutor):
             repo_root=task.repo_root,
             project_slug=task.project_slug,
             bus=bus,
-            project_context=str(task.context.get("project_context", "") or ""),
             research_context=str(task.context.get("research_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
@@ -94,7 +92,6 @@ class EssayPoolAgent(BaseAgentExecutor):
             research_context=str(task.context.get("research_context", "") or ""),
             raw_notes_context=str(task.context.get("raw_notes_context", "") or ""),
             sources_context=str(task.context.get("sources_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
         )
@@ -130,7 +127,6 @@ class ToolPoolAgent(BaseAgentExecutor):
             repo_root=task.repo_root,
             project_slug=task.project_slug,
             bus=bus,
-            project_context=str(task.context.get("project_context", "") or ""),
             research_context=str(task.context.get("research_context", "") or ""),
             prior_messages=task.history,
             cancel_checker=task.cancel_checker,
@@ -157,7 +153,6 @@ class CreativePoolAgent(BaseAgentExecutor):
             target=str(task.context.get("target", "novel") or "novel"),
             topic_type=str(task.context.get("topic_type", "general") or "general"),
             research_context=str(task.context.get("research_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
         )
@@ -184,7 +179,6 @@ class LongformPoolAgent(BaseAgentExecutor):
             research_context=str(task.context.get("research_context", "") or ""),
             raw_notes_context=str(task.context.get("raw_notes_context", "") or ""),
             sources_context=str(task.context.get("sources_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
         )
@@ -206,7 +200,6 @@ class DesktopPoolAgent(BaseAgentExecutor):
             repo_root=task.repo_root,
             project_slug=task.project_slug,
             bus=bus,
-            project_context=str(task.context.get("project_context", "") or ""),
             research_context=str(task.context.get("research_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
@@ -233,7 +226,6 @@ class ContentPoolAgent(BaseAgentExecutor):
             topic_type=str(task.context.get("topic_type", "general") or "general"),
             research_context=str(task.context.get("research_context", "") or ""),
             raw_notes_context=str(task.context.get("raw_notes_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
         )
@@ -260,7 +252,6 @@ class SpecialistPoolAgent(BaseAgentExecutor):
             research_context=str(task.context.get("research_context", "") or ""),
             raw_notes_context=str(task.context.get("raw_notes_context", "") or ""),
             sources_context=str(task.context.get("sources_context", "") or ""),
-            project_context=str(task.context.get("project_context", "") or ""),
             cancel_checker=task.cancel_checker,
             progress_callback=task.progress_callback,
         )

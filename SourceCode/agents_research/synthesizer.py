@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 def extract_action_proposals(synthesis_text: str) -> list[dict[str, str]]:
@@ -100,16 +103,44 @@ def _is_valid_synthesis(text: str) -> bool:
     return hits >= 3
 
 
+def _looks_truncated_output(text: str) -> bool:
+    body = str(text or "").rstrip()
+    if not body:
+        return False
+    tail = body[-220:].strip()
+    if not tail:
+        return False
+    # Heuristic: ending on a letter with no terminal punctuation usually means clipping.
+    if re.search(r"[A-Za-z]$", tail) and not re.search(r"[.!?][\"')\]]?\s*$", tail):
+        return True
+    return False
+
+
+def _prior_open_questions_block(prior_open_questions: list[str] | None) -> str:
+    rows = [str(x or "").strip() for x in (prior_open_questions or []) if str(x or "").strip()]
+    if not rows:
+        return ""
+    bullets = "\n".join(f"- {row}" for row in rows[:8])
+    return (
+        "Prior runs on this topic left these open questions unresolved:\n"
+        f"{bullets}\n"
+        "For any of these you now have evidence on, answer it in the main summary "
+        "(with [E]/[I] support). Do not re-list them unchanged. If one is still "
+        "unresolved, state what new evidence would resolve it — do not repeat the "
+        "question verbatim.\n\n"
+    )
+
+
 def synthesize(
     question: str,
     findings: list[dict],
     *,
     client: Any | None = None,
     model_cfg: dict | None = None,
-    project_context: str = "",
     prior_messages: list[dict[str, str]] | None = None,
     conflict_report: str = "",
     prior_synthesis: str = "",
+    prior_open_questions: list[str] | None = None,
 ) -> str:
     if client is None or not model_cfg:
         return _fallback_synthesis(question, findings)
@@ -155,10 +186,6 @@ def synthesize(
         "You are a research synthesizer for an orchestrator. "
         "Produce concise, high-signal markdown with sections: Executive Summary, "
         "Key Findings, Uncertainties & Risks, Next Steps. Avoid fluff. "
-        "Profile hints may be provided to identify who is asking and why. "
-        "Profile hints are NEVER evidence and must not be cited as findings. "
-        "Do not name the user, their family, pets, diagnoses, or workplace in the summary "
-        "unless that same specific appears in agent findings. "
         "Do not wrap the response in triple backticks or fenced code blocks.\n\n"
         "SYNTHESIS DISCIPLINE: Do NOT summarize each agent sequentially "
         "('Agent X found... Agent Y found...'). Extract the highest-signal claims "
@@ -187,26 +214,11 @@ def synthesize(
         "from agents, do NOT fill the gap with general knowledge or inference. Instead write: "
         "'Coverage gap: no primary evidence found for [area].' "
         "A gap declaration is better than a gap filled with unverified claims.\n\n"
-        "Before output, run a provenance check for every personal specific (name, age, breed, condition, "
-        "relationship, employer, location). A personal specific may appear in the summary only if the same "
-        "specific appears verbatim in at least one agent finding or in the user's research question. "
-        "If it appears only in profile hints, omit it or replace it with a generic category noun "
-        "(for example: 'the dog', 'the owner', 'the user'). Profile hints are context about who is asking, "
-        "not findings about the world.\n\n"
+        "SOURCE INTEGRITY: Cite only external sources from this run's agent findings. "
+        "Prior internal artifacts (research raws, summaries, critiques, project notes) are not sources.\n\n"
         "End Executive Summary with: 'Evidence Confidence: [High/Mixed/Low] — [one-line reason].' "
         "For time-sensitive topics, state whether events are upcoming, ongoing, or past relative to today."
     )
-    history_lines: list[str] = []
-    if isinstance(prior_messages, list):
-        for row in prior_messages[-8:]:
-            if not isinstance(row, dict):
-                continue
-            role = str(row.get("role", "")).strip().lower()
-            content = str(row.get("content", "")).strip()
-            if role not in {"user", "assistant"} or not content:
-                continue
-            history_lines.append(f"{role.upper()}: {content}")
-    history_block = "\n".join(history_lines).strip()
     _conflict_section = ""
     if conflict_report and conflict_report.strip():
         _conflict_section = (
@@ -221,14 +233,10 @@ def synthesize(
             f"{prior_synthesis.strip()[:1200]}\n\n"
             "New and supplementary findings below — use these to fill gaps the prior synthesis left open:\n"
         )
-    profile_hints_parts = [
-        str(project_context or "").strip(),
-        history_block,
-    ]
-    profile_hints = "\n\n".join([part for part in profile_hints_parts if part]).strip() or "(none)"
+    prior_open_block = _prior_open_questions_block(prior_open_questions)
     user_prompt = (
         f"Question:\n{question}\n\n"
-        f"Profile hints — DO NOT CITE OR TREAT AS EVIDENCE:\n{profile_hints}\n\n"
+        f"{prior_open_block}"
         f"{_prior_block}"
         f"Research outputs:\n{findings_blob}"
         f"{_conflict_section}\n\n"
@@ -262,6 +270,7 @@ def synthesize(
                 user_prompt=prompt,
                 temperature=float(model_cfg.get("temperature", 0.2)),
                 num_ctx=int(model_cfg.get("num_ctx", 16384)),
+                num_predict=int(model_cfg.get("synthesis_num_predict", 4096)),
                 think=bool(model_cfg.get("think", False)),
                 timeout=timeout,
                 retry_attempts=retry_attempts,
@@ -269,9 +278,36 @@ def synthesize(
             )
             last_text = candidate
             if _is_valid_synthesis(candidate):
+                if _looks_truncated_output(candidate):
+                    LOGGER.warning("Synthesis output appears truncated; retrying once with truncation guard.")
+                    continue
                 return candidate
         except Exception:
             continue
+
+    if _is_valid_synthesis(last_text) and _looks_truncated_output(last_text):
+        try:
+            recovered = client.chat(
+                model=model,
+                fallback_models=fallback_models,
+                system_prompt=system_prompt,
+                user_prompt=(
+                    f"{user_prompt}\n\n"
+                    "Previous draft appeared truncated mid-word. Regenerate the full summary and end with complete "
+                    "sentences and terminal punctuation."
+                ),
+                temperature=float(model_cfg.get("temperature", 0.2)),
+                num_ctx=int(model_cfg.get("num_ctx", 16384)),
+                num_predict=int(model_cfg.get("synthesis_num_predict", 4096)),
+                think=bool(model_cfg.get("think", False)),
+                timeout=timeout,
+                retry_attempts=retry_attempts,
+                retry_backoff_sec=retry_backoff_sec,
+            )
+            if _is_valid_synthesis(recovered):
+                return recovered
+        except Exception:
+            pass
 
     if _is_valid_synthesis(last_text):
         return last_text
@@ -332,14 +368,20 @@ def run_skeptic_pass(
         "You are the Skeptic Engine — an internal adversary whose only job is to stress-test "
         "research conclusions before they reach the user. You are not trying to be balanced or "
         "reassuring. You are trying to find every crack.\n\n"
-        "You must output TWO blocks separated by a line containing exactly: ---CRITIQUE---\n\n"
-        "BLOCK 1 (before ---CRITIQUE---): Revised synthesis markdown safe for publication.\n"
+        "You must output TWO XML-tagged blocks and nothing else:\n"
+        "<REVISED_SUMMARY>...</REVISED_SUMMARY>\n"
+        "<CRITIQUE_LOG>...</CRITIQUE_LOG>\n\n"
+        "REVISED_SUMMARY must be markdown safe for publication.\n"
         "- Remove fabricated specifics (numbers, dates, names, URLs, version strings, direct quotes) "
         "that are not in raw findings.\n"
         "- Downgrade unsupported certainty to [S] with hedging language.\n"
         "- Remove or rewrite unsourced [E] claims.\n"
         "- Keep required sections and preserve readability.\n\n"
-        "BLOCK 2 (after ---CRITIQUE---): Short critique log of what changed and why, covering:\n"
+        "- Fabricated-authority guardrail: if a claim leans on a famous authority/framework "
+        "(for example Taylor, Miller's Law, Hawthorne effect, Fogg model) via a secondary blog/post "
+        "and the cited source does not actually support the specific claim, demote [E] -> [I] or strike it.\n"
+        "- Be extra strict when authority and claim domain differ (for example factory management cited for UX).\n\n"
+        "CRITIQUE_LOG must briefly cover:\n"
         "  1. Fabricated specifics removed\n"
         "  2. Unsourced [E] labels corrected\n"
         "  3. Unsupported claims demoted/removed\n"
@@ -357,33 +399,72 @@ def run_skeptic_pass(
         f"Research question: {question}\n\n"
         f"Synthesis to challenge:\n{base_summary}"
         f"{_findings_section}\n\n"
-        "Return exactly the two-block format."
+        "Return exactly the XML-tagged two-block format."
     )
 
-    try:
-        result = client.chat(
-            model=model,
-            fallback_models=fallback_models,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.6,  # hardcoded above synthesis temp — skeptic needs adversarial latitude
-            num_ctx=int(model_cfg.get("num_ctx", 16384)),
-            think=False,
-            timeout=int(model_cfg.get("synthesis_timeout_sec", model_cfg.get("timeout_sec", 0))),
-            retry_attempts=2,
-            retry_backoff_sec=1.5,
-        )
-        body = str(result or "").strip()
-        if not body:
-            return base_summary, ""
-        if "---CRITIQUE---" in body:
-            revised, critique = body.split("---CRITIQUE---", 1)
-            revised_text = revised.strip()
-            critique_text = critique.strip()
+    critique_fallback = ""
+    for _ in range(2):
+        try:
+            result = client.chat(
+                model=model,
+                fallback_models=fallback_models,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.6,  # skeptic needs adversarial latitude
+                num_ctx=int(model_cfg.get("num_ctx", 16384)),
+                num_predict=int(model_cfg.get("skeptic_num_predict", 3072)),
+                think=False,
+                timeout=int(model_cfg.get("synthesis_timeout_sec", model_cfg.get("timeout_sec", 0))),
+                retry_attempts=2,
+                retry_backoff_sec=1.5,
+            )
+            body = str(result or "").strip()
+            if not body:
+                continue
+            revised_match = re.search(r"<REVISED_SUMMARY>\s*([\s\S]*?)\s*</REVISED_SUMMARY>", body, re.IGNORECASE)
+            critique_match = re.search(r"<CRITIQUE_LOG>\s*([\s\S]*?)\s*</CRITIQUE_LOG>", body, re.IGNORECASE)
+            if revised_match:
+                revised_text = str(revised_match.group(1) or "").strip()
+                critique_text = str(critique_match.group(1) or "").strip() if critique_match else ""
+                if revised_text:
+                    return revised_text, critique_text
+            if "---CRITIQUE---" in body:
+                revised, critique = body.split("---CRITIQUE---", 1)
+                revised_text = revised.strip()
+                critique_text = critique.strip()
+                if revised_text:
+                    return revised_text, critique_text
+            critique_fallback = body
+        except Exception:
+            continue
+
+    # Fallback: enforce real edit application using the critique text.
+    if critique_fallback:
+        try:
+            revised = client.chat(
+                model=model,
+                fallback_models=fallback_models,
+                system_prompt=(
+                    "You are a strict editor. Apply critique feedback directly to the supplied synthesis. "
+                    "Return ONLY the revised synthesis markdown, with no commentary."
+                ),
+                user_prompt=(
+                    f"Original synthesis:\n{base_summary}\n\n"
+                    f"Critique feedback to apply:\n{critique_fallback}\n\n"
+                    "Return the revised synthesis only."
+                ),
+                temperature=0.2,
+                num_ctx=int(model_cfg.get("num_ctx", 16384)),
+                num_predict=int(model_cfg.get("skeptic_num_predict", 3072)),
+                think=False,
+                timeout=int(model_cfg.get("synthesis_timeout_sec", model_cfg.get("timeout_sec", 0))),
+                retry_attempts=1,
+                retry_backoff_sec=1.0,
+            )
+            revised_text = str(revised or "").strip()
             if revised_text:
-                return revised_text, critique_text
-        # Fallback format: preserve existing publication behavior (unchanged summary),
-        # but retain the critique text for sidecar debug output.
-        return base_summary, body
-    except Exception:
-        return base_summary, ""
+                return revised_text, critique_fallback
+        except Exception:
+            pass
+
+    return base_summary, critique_fallback

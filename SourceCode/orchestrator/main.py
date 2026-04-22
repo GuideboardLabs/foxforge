@@ -2447,7 +2447,6 @@ class FoxforgeOrchestrator:
         self,
         *,
         text: str,
-        project_context: str,
         history: list[dict[str, str]] | None,
         target: str,
         mode: str = "research",
@@ -2462,7 +2461,6 @@ class FoxforgeOrchestrator:
                     lane="make_app",
                     text=text,
                     context={
-                        "project_context": project_context,
                         "research_context": research_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
@@ -2496,7 +2494,6 @@ class FoxforgeOrchestrator:
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context,
                         "sources_context": sources_context,
-                        "project_context": project_context,
                     },
                     progress_callback=getattr(self, "_last_progress_callback", None),
                 ),
@@ -2536,7 +2533,6 @@ class FoxforgeOrchestrator:
                         "target": kind,
                         "topic_type": topic_type_creative,
                         "research_context": research_context,
-                        "project_context": project_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
                     progress_callback=getattr(self, "_last_progress_callback", None),
@@ -2579,7 +2575,6 @@ class FoxforgeOrchestrator:
                         "topic_type": topic_type_content,
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context_content,
-                        "project_context": project_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
                     progress_callback=getattr(self, "_last_progress_callback", None),
@@ -2623,7 +2618,6 @@ class FoxforgeOrchestrator:
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context,
                         "sources_context": sources_context,
-                        "project_context": project_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
                     progress_callback=getattr(self, "_last_progress_callback", None),
@@ -2674,7 +2668,6 @@ class FoxforgeOrchestrator:
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context,
                         "sources_context": sources_context,
-                        "project_context": project_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
                     progress_callback=getattr(self, "_last_progress_callback", None),
@@ -2716,7 +2709,6 @@ class FoxforgeOrchestrator:
                     lane="make_desktop_app",
                     text=text,
                     context={
-                        "project_context": project_context,
                         "research_context": research_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
@@ -2740,7 +2732,6 @@ class FoxforgeOrchestrator:
                     lane="make_tool",
                     text=text,
                     context={
-                        "project_context": project_context,
                         "research_context": research_context,
                     },
                     cancel_checker=getattr(self, "_last_cancel_checker", None),
@@ -2761,7 +2752,6 @@ class FoxforgeOrchestrator:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         out_path = deliverable_root / f"{stamp}_{kind}.md"
         summary_path, summary_preview = self._latest_research_summary_preview(self.project_slug)
-        history_rows = history[-16:] if isinstance(history, list) else []
 
         cfg = lane_model_config(self.repo_root, "orchestrator_reasoning")
         model = str(cfg.get("model", "")).strip()
@@ -2793,10 +2783,8 @@ class FoxforgeOrchestrator:
             "- Output markdown only.\n"
             "- Keep it practical and directly usable.\n"
             "- If facts are uncertain, mark assumptions clearly.\n\n"
-            f"Project memory context:\n{project_context.strip() or '(none)'}\n\n"
             f"Latest research summary path: {summary_path or 'none'}\n"
-            f"Latest research summary preview:\n{summary_preview.strip()[:6500] or '(none)'}\n\n"
-            f"Recent conversation context:\n{history_rows}\n"
+            f"Latest research summary preview:\n{summary_preview.strip()[:6500] or '(none)'}\n"
         )
         body = self.ollama.chat(
             model=model,
@@ -3181,7 +3169,6 @@ class FoxforgeOrchestrator:
                 text=text,
                 history=history,
                 topic_type=topic_type,
-                project_context=project_context,
                 turn_plan=turn_plan,
                 force_research=force_research,
                 cancel_checker=cancel_checker,
@@ -3215,7 +3202,6 @@ class FoxforgeOrchestrator:
             self._last_cancel_checker = cancel_checker
             out = self._run_make_delivery(
                 text=text,
-                project_context=project_context,
                 history=history,
                 target=target,
                 mode=mode,
@@ -3252,7 +3238,6 @@ class FoxforgeOrchestrator:
             self._last_cancel_checker = cancel_checker
             out = self._run_make_delivery(
                 text=text,
-                project_context=project_context,
                 history=history,
                 target=target,
                 mode=mode,
@@ -3287,7 +3272,6 @@ class FoxforgeOrchestrator:
                     lane="make_tool",
                     text=text,
                     context={
-                        "project_context": project_context,
                         "research_context": research_context,
                     },
                     history=history,
@@ -3320,7 +3304,6 @@ class FoxforgeOrchestrator:
             self._last_cancel_checker = cancel_checker
             out = self._run_make_delivery(
                 text=text,
-                project_context=project_context,
                 history=history,
                 target=target,
                 mode=mode,
@@ -3350,7 +3333,6 @@ class FoxforgeOrchestrator:
             self._last_cancel_checker = cancel_checker
             out = self._run_make_delivery(
                 text=text,
-                project_context=project_context,
                 history=history,
                 target=target,
                 mode=mode,
@@ -3391,7 +3373,6 @@ class FoxforgeOrchestrator:
                         "research_context": research_context,
                         "raw_notes_context": raw_notes_context,
                         "sources_context": sources_context,
-                        "project_context": project_context,
                     },
                     cancel_checker=cancel_checker,
                     progress_callback=progress_callback,
@@ -3453,7 +3434,6 @@ class FoxforgeOrchestrator:
                     lane="make_desktop_app",
                     text=text,
                     context={
-                        "project_context": project_context,
                         "research_context": research_context,
                     },
                     cancel_checker=cancel_checker,
@@ -3485,7 +3465,6 @@ class FoxforgeOrchestrator:
             text=text,
             history=history,
             topic_type=topic_type,
-            project_context=project_context,
             cancel_checker=cancel_checker,
             pause_checker=pause_checker,
             yield_checker=yield_checker,

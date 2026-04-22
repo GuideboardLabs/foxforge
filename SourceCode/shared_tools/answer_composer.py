@@ -63,6 +63,18 @@ _SCHEMAS = {
     ],
 }
 
+_HOST_RE = re.compile(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}$")
+_TWO_LEVEL_SUFFIXES = {
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "co.jp",
+}
+
 
 def _hostname(value: str) -> str:
     try:
@@ -72,10 +84,37 @@ def _hostname(value: str) -> str:
     return host.lower().strip()
 
 
+def _valid_host(host: str) -> str:
+    text = str(host or "").strip().lower().strip(".")
+    if text.startswith("www."):
+        text = text[4:]
+    return text if _HOST_RE.match(text) else ""
+
+
+def _source_host(source_obj: dict[str, Any]) -> str:
+    host = _valid_host(_hostname(str(source_obj.get("url", ""))))
+    if host:
+        return host
+    return _valid_host(str(source_obj.get("source_domain", "")))
+
+
+def _etld_plus_one(host: str) -> str:
+    clean = _valid_host(host)
+    if not clean:
+        return ""
+    parts = clean.split(".")
+    if len(parts) < 2:
+        return ""
+    suffix2 = ".".join(parts[-2:])
+    if len(parts) >= 3 and suffix2 in _TWO_LEVEL_SUFFIXES:
+        return ".".join(parts[-3:])
+    return suffix2
+
+
 def format_source_label(source_obj: dict[str, Any]) -> str:
-    host = _hostname(str(source_obj.get("url", ""))) or str(source_obj.get("source_domain", "")).strip().lower()
+    host = _etld_plus_one(_source_host(source_obj))
     if not host:
-        return "Web source"
+        return ""
     for known, label in _DOMAIN_LABELS.items():
         if host == known or host.endswith("." + known):
             return label
@@ -87,15 +126,19 @@ def format_source_label(source_obj: dict[str, Any]) -> str:
 
 
 def source_labels(sources: list[dict[str, Any]], limit: int = 3) -> list[str]:
-    labels: list[str] = []
-    seen: set[str] = set()
+    counts: dict[str, int] = {}
     for row in sources:
-        label = format_source_label(row)
-        if label in seen:
+        host = _etld_plus_one(_source_host(row))
+        if not host:
             continue
-        seen.add(label)
+        counts[host] = counts.get(host, 0) + 1
+    labels: list[str] = []
+    for host, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        label = format_source_label({"url": f"https://{host}"})
+        if not label:
+            continue
         labels.append(label)
-        if len(labels) >= limit:
+        if len(labels) >= max(1, limit):
             break
     return labels
 

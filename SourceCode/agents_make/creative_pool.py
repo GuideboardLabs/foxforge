@@ -78,7 +78,6 @@ def _run_story_planner(
     question: str,
     kind: str,
     research_context: str,
-    project_context: str,
     level: FidelityLevel = FidelityLevel.CREATIVE,
 ) -> str:
     kind_note = _KIND_INSTRUCTIONS.get(kind, _KIND_INSTRUCTIONS["novel"])
@@ -94,8 +93,7 @@ def _run_story_planner(
     )
     user_prompt = (
         f"Kind: {kind}\nRequest: {question}\n\n"
-        f"Research context:\n{_trim(research_context, 8000)}\n\n"
-        f"Project context:\n{_trim(project_context, 3000)}"
+        f"Research context:\n{_trim(research_context, 8000)}"
     )
     try:
         result = client.chat(
@@ -303,7 +301,6 @@ def run_creative_pool(
     target: str = "novel",
     topic_type: str = "general",
     research_context: str = "",
-    project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -335,7 +332,7 @@ def run_creative_pool(
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
 
     _progress("creative_planner_started", {"kind": kind})
-    plan = _run_story_planner(client, question, kind, research_context, project_context, _level)
+    plan = _run_story_planner(client, question, kind, research_context, _level)
     _progress("creative_planner_completed", {"preview": plan[:300]})
 
     # Parse plan into scenes

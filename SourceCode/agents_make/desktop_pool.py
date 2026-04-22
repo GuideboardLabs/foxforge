@@ -132,7 +132,7 @@ ReactiveUI gotchas:
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
-def _run_specifier(client: OllamaClient, question: str, project_context: str) -> str:
+def _run_specifier(client: OllamaClient, question: str, research_context: str) -> str:
     system_prompt = (
         f"Today: {_today()}. You are a .NET software architect.\n\n"
         "Produce a concise App Specification covering:\n"
@@ -149,7 +149,7 @@ def _run_specifier(client: OllamaClient, question: str, project_context: str) ->
         result = client.chat(
             model=_MODEL_SPEC,
             system_prompt=system_prompt,
-            user_prompt=f"Request: {question}\n\nProject context:\n{_trim(project_context, 3000)}",
+            user_prompt=f"Request: {question}\n\nResearch context:\n{_trim(research_context, 3000)}",
             temperature=0.2,
             num_ctx=12288,
             think=False,
@@ -405,7 +405,6 @@ def run_desktop_pool(
     repo_root: Path,
     project_slug: str,
     bus: Any,
-    project_context: str = "",
     research_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
@@ -441,7 +440,7 @@ def run_desktop_pool(
     if _cancelled():
         return {"ok": False, "message": "Cancelled before spec.", "path": ""}
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "specifier", "model": _MODEL_SPEC})
-    spec = _run_specifier(client, question, project_context)
+    spec = _run_specifier(client, question, research_context)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "specifier", "output_chars": len(spec)})
 
     # Extract app name from spec

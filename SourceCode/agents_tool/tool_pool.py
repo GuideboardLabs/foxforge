@@ -215,7 +215,7 @@ def _run_tool_agent(
     client: OllamaClient,
     agent_cfg: dict[str, Any],
     question: str,
-    project_context: str,
+    context_knowledge: str,
     prior_findings: str = "",
     cancel_checker: Callable[[], bool] | None = None,
 ) -> dict[str, str]:
@@ -231,8 +231,8 @@ def _run_tool_agent(
         "Output clean, runnable code with explanatory comments."
     )
     context_parts: list[str] = []
-    if project_context.strip():
-        context_parts.append(f"Project context:\n{project_context.strip()}")
+    if context_knowledge.strip():
+        context_parts.append(f"Context knowledge:\n{context_knowledge.strip()}")
     if prior_findings.strip():
         context_parts.append(f"Prior agent output (use as foundation):\n{prior_findings.strip()}")
     context_block = "\n\n".join(context_parts)
@@ -270,7 +270,6 @@ def run_tool_pool(
     repo_root: Path,
     project_slug: str,
     bus: Any,
-    project_context: str = "",
     research_context: str = "",
     prior_messages: list[dict[str, str]] | None = None,
     cancel_checker: Callable[[], bool] | None = None,
@@ -300,10 +299,9 @@ def run_tool_pool(
     orchestrator_cfg = lane_model_config(repo_root, "orchestrator_reasoning")
     learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
     learned_guidance = learning.guidance_for_lane("make_tool", limit=5)
-    if learned_guidance:
-        project_context = (learned_guidance + "\n\n" + project_context).strip()
-    if research_context.strip():
-        project_context = (project_context + "\n\nResearch context:\n" + research_context.strip()).strip()
+    context_knowledge = "\n\n".join(
+        part for part in [learned_guidance, f"Research context:\n{research_context.strip()}" if research_context.strip() else ""] if part
+    ).strip()
     findings: list[dict[str, str]] = []
     prior_finding_text = ""
 
@@ -315,7 +313,7 @@ def run_tool_pool(
             client,
             agent_cfg,
             question,
-            project_context,
+            context_knowledge,
             prior_findings=prior_finding_text,
             cancel_checker=cancel_checker,
         )

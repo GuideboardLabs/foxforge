@@ -161,6 +161,10 @@ const MAKE_TARGETS = [
 ];
 const PLANNER_MONTH_VIEW_PAST_OFFSET = -2;
 const PLANNER_MONTH_VIEW_FUTURE_OFFSET = 12;
+const AGENT_GRAPH_VIEW_WIDTH = 1400;
+const AGENT_GRAPH_VIEW_HEIGHT = 840;
+const AGENT_GRAPH_MIN_ZOOM = 0.45;
+const AGENT_GRAPH_MAX_ZOOM = 2.4;
 const HOME_COMPANION_DEFAULT_NAME = "Scout";
 const HOME_PHRASE_WINDOWS = [
   { key: "night", startHour: 0, endHour: 4 },
@@ -440,11 +444,31 @@ function homePhraseWindowKey(rawDate) {
   return "day";
 }
 
+function normalizeInlineFilePath(rawPath) {
+  const text = String(rawPath || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    return decodeURIComponent(text);
+  } catch (_err) {
+    return text;
+  }
+}
+
 function formatInlineMarkdown(line) {
   const raw = String(line || "");
+  const fileLinkTokens = [];
+  const withLinkPlaceholders = raw.replace(/\[([^\]]+)\]\(\/api\/files\/read\?path=([^)]+)\)/g, (_match, label, rawPath) => {
+    const idx = fileLinkTokens.push({
+      label: String(label || "").trim(),
+      path: normalizeInlineFilePath(rawPath),
+    }) - 1;
+    return `@@GB_FILE_LINK_${idx}@@`;
+  });
   const fileTokens = [];
   FILE_PATH_REGEX.lastIndex = 0;
-  const tokenized = raw.replace(FILE_PATH_REGEX, (matchedPath) => {
+  const tokenized = withLinkPlaceholders.replace(FILE_PATH_REGEX, (matchedPath) => {
     const idx = fileTokens.push(matchedPath) - 1;
     return `@@GB_FILE_${idx}@@`;
   });
@@ -453,8 +477,14 @@ function formatInlineMarkdown(line) {
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  html = html.replace(/\[([^\]]+)\]\(\/api\/files\/read\?path=([^)]+)\)/g, (_match, label, rawPath) => {
-    return `<button type="button" class="md-inline-link file-inline-link" data-file-path="${encodeURIComponent(rawPath)}">${label}</button>`;
+  html = html.replace(/@@GB_FILE_LINK_(\d+)@@/g, (_match, idxText) => {
+    const idx = Number(idxText || -1);
+    const row = idx >= 0 && idx < fileLinkTokens.length ? fileLinkTokens[idx] : null;
+    if (!row || !row.path) {
+      return "";
+    }
+    const label = row.label || row.path;
+    return `<button type="button" class="md-inline-link file-inline-link" data-file-path="${encodeURIComponent(row.path)}">${escapeHtml(label)}</button>`;
   });
   html = html.replace(/@@GB_FILE_(\d+)@@/g, (_match, idxText) => {
     const idx = Number(idxText || -1);
@@ -1076,6 +1106,22 @@ function timeTextToMinutes(raw) {
   return hh * 60 + mm;
 }
 
+function blankAgentGraphData() {
+  return {
+    generated_at: "",
+    summary: {
+      active_jobs: 0,
+      foraging_jobs: 0,
+      building_jobs: 0,
+      active_agents: 0,
+      foraging_active_agents: 0,
+      building_active_agents: 0,
+    },
+    nodes: [],
+    edges: [],
+  };
+}
+
 if (!window.Vue || !document.getElementById("app")) {
   throw new Error("Vue runtime or #app mount node is missing.");
 }
@@ -1201,6 +1247,16 @@ const app = window.Vue.createApp({
       mdOverlayOpen: false,
       actionsOverlayOpen: false,
       panelOverlayOpen: false,
+      agentGraphModalOpen: false,
+      agentGraphLoading: false,
+      agentGraphError: "",
+      agentGraphData: blankAgentGraphData(),
+      agentGraphPositions: {},
+      agentGraphSelectedNodeId: "",
+      agentGraphZoom: 1,
+      agentGraphPan: { x: 28, y: 20 },
+      agentGraphDragState: null,
+      agentGraphPanState: null,
       mdTitle: "File Preview",
       mdPath: "",
       mdHtml: "",
@@ -1512,6 +1568,8 @@ const app = window.Vue.createApp({
       _boundResize: null,
       _boundHashChange: null,
       _boundKeydown: null,
+      _boundAgentGraphMouseMove: null,
+      _boundAgentGraphMouseUp: null,
       _boundSwipeMove: null,
       _boundSidebarTouchStart: null,
       _boundSidebarTouchEnd: null,
@@ -1965,11 +2023,87 @@ const app = window.Vue.createApp({
         return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
       }, 0);
     },
+    agentGraphSummary() {
+      const summary = this.agentGraphData && typeof this.agentGraphData === "object"
+        ? this.agentGraphData.summary
+        : {};
+      return {
+        active_jobs: Number(summary?.active_jobs || 0),
+        foraging_jobs: Number(summary?.foraging_jobs || 0),
+        building_jobs: Number(summary?.building_jobs || 0),
+        active_agents: Number(summary?.active_agents || 0),
+        foraging_active_agents: Number(summary?.foraging_active_agents || 0),
+        building_active_agents: Number(summary?.building_active_agents || 0),
+      };
+    },
+    agentGraphTransform() {
+      const zoom = Number(this.agentGraphZoom || 1);
+      const safeZoom = Number.isFinite(zoom) ? Math.max(AGENT_GRAPH_MIN_ZOOM, Math.min(AGENT_GRAPH_MAX_ZOOM, zoom)) : 1;
+      const panX = Number(this.agentGraphPan?.x || 0);
+      const panY = Number(this.agentGraphPan?.y || 0);
+      return `translate(${panX} ${panY}) scale(${safeZoom})`;
+    },
+    agentGraphNodes() {
+      const rows = Array.isArray(this.agentGraphData?.nodes) ? this.agentGraphData.nodes : [];
+      const positions = this.agentGraphPositions && typeof this.agentGraphPositions === "object"
+        ? this.agentGraphPositions
+        : {};
+      return rows.map((node) => {
+        const id = String(node?.id || "").trim();
+        const pos = positions[id] || {};
+        const x = Number(pos.x);
+        const y = Number(pos.y);
+        return {
+          ...(node || {}),
+          id,
+          x: Number.isFinite(x) ? x : 0,
+          y: Number.isFinite(y) ? y : 0,
+        };
+      });
+    },
+    agentGraphEdgeSegments() {
+      const out = [];
+      const rows = Array.isArray(this.agentGraphData?.edges) ? this.agentGraphData.edges : [];
+      const nodeMap = {};
+      for (const node of this.agentGraphNodes) {
+        const id = String(node?.id || "").trim();
+        if (id) {
+          nodeMap[id] = node;
+        }
+      }
+      for (const edge of rows) {
+        const sourceId = String(edge?.source || "").trim();
+        const targetId = String(edge?.target || "").trim();
+        const source = nodeMap[sourceId];
+        const target = nodeMap[targetId];
+        if (!source || !target) {
+          continue;
+        }
+        out.push({
+          source: sourceId,
+          target: targetId,
+          x1: Number(source.x || 0),
+          y1: Number(source.y || 0),
+          x2: Number(target.x || 0),
+          y2: Number(target.y || 0),
+          label: String(edge?.label || "").trim(),
+        });
+      }
+      return out;
+    },
+    agentGraphSelectedNode() {
+      const id = String(this.agentGraphSelectedNodeId || "").trim();
+      if (!id) {
+        return null;
+      }
+      return this.agentGraphNodes.find((node) => String(node?.id || "").trim() === id) || null;
+    },
     overlayCloseVisible() {
       return Boolean(
         this.mdOverlayOpen ||
         this.actionsOverlayOpen ||
         this.panelOverlayOpen ||
+        this.agentGraphModalOpen ||
         this.imageToolStyleModalOpen ||
         this.imageToolPromptModalOpen ||
         this.waypointTaskModalOpen ||
@@ -3911,6 +4045,7 @@ const app = window.Vue.createApp({
       body.classList.toggle(
         "family-modal-open",
         this.familyProfileModalOpen ||
+          this.agentGraphModalOpen ||
           this.imageToolStyleModalOpen ||
           this.imageToolPromptModalOpen ||
           this.videoToolOpen ||
@@ -7561,6 +7696,7 @@ const app = window.Vue.createApp({
       this.closeTaskReminderDialog();
       this.closeImageToolPromptModal();
       this.closeImageToolStyleModal();
+      this.closeAgentGraphModal();
       this.closeFamilyProfileModal();
       this.closeWebPushSettingsModal();
       this.closeEmailSettingsModal();
@@ -9095,6 +9231,346 @@ const app = window.Vue.createApp({
         await this.openSystemPanel("project_detail");
       } catch (err) {
         window.alert(`Project switch failed: ${String(err.message || err)}`);
+      }
+    },
+
+    async openAgentGraphModal() {
+      this.chatMenuOpen = false;
+      this.agentGraphError = "";
+      this.agentGraphModalOpen = true;
+      this.updateBodyClasses();
+      if (!Array.isArray(this.agentGraphData?.nodes) || !this.agentGraphData.nodes.length) {
+        this.resetAgentGraphView();
+      }
+      await this.refreshAgentGraph();
+    },
+
+    closeAgentGraphModal() {
+      this.agentGraphModalOpen = false;
+      this.agentGraphDragState = null;
+      this.agentGraphPanState = null;
+      this.updateBodyClasses();
+    },
+
+    agentGraphNodeSize(node) {
+      const kind = String(node?.kind || "").trim().toLowerCase();
+      if (kind === "root") return { width: 250, height: 86 };
+      if (kind === "lane") return { width: 230, height: 76 };
+      if (kind === "job") return { width: 280, height: 82 };
+      return { width: 260, height: 74 };
+    },
+
+    agentGraphMetaRows(node) {
+      const meta = node && typeof node === "object" ? node.meta : {};
+      if (!meta || typeof meta !== "object") {
+        return [];
+      }
+      return Object.keys(meta)
+        .sort((a, b) => a.localeCompare(b))
+        .map((key) => {
+          const value = meta[key];
+          if (value === null || value === undefined) {
+            return null;
+          }
+          let text = "";
+          if (Array.isArray(value)) {
+            text = value.join(", ");
+          } else if (typeof value === "object") {
+            try {
+              text = JSON.stringify(value);
+            } catch (_err) {
+              text = String(value);
+            }
+          } else {
+            text = String(value);
+          }
+          text = text.trim();
+          if (!text) {
+            return null;
+          }
+          return {
+            key: key.replace(/_/g, " "),
+            value: text.length > 180 ? `${text.slice(0, 177)}...` : text,
+          };
+        })
+        .filter(Boolean);
+    },
+
+    selectAgentGraphNode(nodeId) {
+      const id = String(nodeId || "").trim();
+      this.agentGraphSelectedNodeId = id;
+    },
+
+    resetAgentGraphView() {
+      this.agentGraphZoom = 1;
+      this.agentGraphPan = { x: 28, y: 20 };
+    },
+
+    zoomAgentGraphBy(factor, anchorCanvas = null) {
+      const oldZoom = Number(this.agentGraphZoom || 1);
+      const safeOldZoom = Number.isFinite(oldZoom) && oldZoom > 0 ? oldZoom : 1;
+      const nextZoom = Math.max(
+        AGENT_GRAPH_MIN_ZOOM,
+        Math.min(AGENT_GRAPH_MAX_ZOOM, safeOldZoom * Number(factor || 1))
+      );
+      if (Math.abs(nextZoom - safeOldZoom) < 0.0001) {
+        return;
+      }
+      const anchor = anchorCanvas && Number.isFinite(anchorCanvas.x) && Number.isFinite(anchorCanvas.y)
+        ? anchorCanvas
+        : { x: AGENT_GRAPH_VIEW_WIDTH / 2, y: AGENT_GRAPH_VIEW_HEIGHT / 2 };
+      const panX = Number(this.agentGraphPan?.x || 0);
+      const panY = Number(this.agentGraphPan?.y || 0);
+      const worldX = (anchor.x - panX) / safeOldZoom;
+      const worldY = (anchor.y - panY) / safeOldZoom;
+      this.agentGraphZoom = nextZoom;
+      this.agentGraphPan = {
+        x: anchor.x - worldX * nextZoom,
+        y: anchor.y - worldY * nextZoom,
+      };
+    },
+
+    zoomAgentGraphIn() {
+      this.zoomAgentGraphBy(1.12);
+    },
+
+    zoomAgentGraphOut() {
+      this.zoomAgentGraphBy(1 / 1.12);
+    },
+
+    agentGraphClientToCanvas(event) {
+      const svg = this.$refs.agentGraphCanvas;
+      if (!svg || typeof svg.getBoundingClientRect !== "function") {
+        return null;
+      }
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return null;
+      }
+      const x = ((Number(event?.clientX || 0) - rect.left) / rect.width) * AGENT_GRAPH_VIEW_WIDTH;
+      const y = ((Number(event?.clientY || 0) - rect.top) / rect.height) * AGENT_GRAPH_VIEW_HEIGHT;
+      return { x, y };
+    },
+
+    agentGraphClientToWorld(event) {
+      const canvasPoint = this.agentGraphClientToCanvas(event);
+      if (!canvasPoint) {
+        return null;
+      }
+      const zoom = Number(this.agentGraphZoom || 1);
+      const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+      const panX = Number(this.agentGraphPan?.x || 0);
+      const panY = Number(this.agentGraphPan?.y || 0);
+      return {
+        x: (canvasPoint.x - panX) / safeZoom,
+        y: (canvasPoint.y - panY) / safeZoom,
+      };
+    },
+
+    onAgentGraphCanvasWheel(event) {
+      if (!this.agentGraphModalOpen) {
+        return;
+      }
+      const anchor = this.agentGraphClientToCanvas(event);
+      const factor = Number(event?.deltaY || 0) < 0 ? 1.09 : 1 / 1.09;
+      this.zoomAgentGraphBy(factor, anchor);
+    },
+
+    onAgentGraphCanvasMouseDown(event) {
+      if (!this.agentGraphModalOpen) {
+        return;
+      }
+      if (Number(event?.button) !== 0) {
+        return;
+      }
+      const point = this.agentGraphClientToCanvas(event);
+      if (!point) {
+        return;
+      }
+      this.agentGraphPanState = {
+        startX: point.x,
+        startY: point.y,
+        panX: Number(this.agentGraphPan?.x || 0),
+        panY: Number(this.agentGraphPan?.y || 0),
+      };
+    },
+
+    startAgentGraphNodeDrag(event, nodeId) {
+      if (!this.agentGraphModalOpen) {
+        return;
+      }
+      if (Number(event?.button) !== 0) {
+        return;
+      }
+      const id = String(nodeId || "").trim();
+      if (!id) {
+        return;
+      }
+      const worldPoint = this.agentGraphClientToWorld(event);
+      const node = this.agentGraphNodes.find((item) => String(item?.id || "").trim() === id);
+      if (!node || !worldPoint) {
+        return;
+      }
+      this.agentGraphDragState = {
+        nodeId: id,
+        offsetX: worldPoint.x - Number(node.x || 0),
+        offsetY: worldPoint.y - Number(node.y || 0),
+      };
+      this.agentGraphPanState = null;
+      this.agentGraphSelectedNodeId = id;
+    },
+
+    onAgentGraphCanvasMouseMove(event) {
+      const drag = this.agentGraphDragState;
+      if (drag && drag.nodeId) {
+        const worldPoint = this.agentGraphClientToWorld(event);
+        if (!worldPoint) {
+          return;
+        }
+        const nextX = Math.max(60, Math.min(AGENT_GRAPH_VIEW_WIDTH - 60, worldPoint.x - Number(drag.offsetX || 0)));
+        const nextY = Math.max(40, Math.min(AGENT_GRAPH_VIEW_HEIGHT - 40, worldPoint.y - Number(drag.offsetY || 0)));
+        this.agentGraphPositions = {
+          ...(this.agentGraphPositions || {}),
+          [drag.nodeId]: { x: nextX, y: nextY },
+        };
+        return;
+      }
+      const pan = this.agentGraphPanState;
+      if (!pan) {
+        return;
+      }
+      const point = this.agentGraphClientToCanvas(event);
+      if (!point) {
+        return;
+      }
+      this.agentGraphPan = {
+        x: Number(pan.panX || 0) + (point.x - Number(pan.startX || 0)),
+        y: Number(pan.panY || 0) + (point.y - Number(pan.startY || 0)),
+      };
+    },
+
+    onAgentGraphCanvasMouseUp() {
+      this.agentGraphDragState = null;
+      this.agentGraphPanState = null;
+    },
+
+    seedAgentGraphLayout() {
+      const rows = Array.isArray(this.agentGraphData?.nodes) ? this.agentGraphData.nodes : [];
+      const previous = this.agentGraphPositions && typeof this.agentGraphPositions === "object"
+        ? this.agentGraphPositions
+        : {};
+      const columns = [
+        { kind: "root", x: 180 },
+        { kind: "lane", x: 450 },
+        { kind: "job", x: 810 },
+        { kind: "agent", x: 1180 },
+      ];
+      const grouped = {
+        root: [],
+        lane: [],
+        job: [],
+        agent: [],
+      };
+      for (const row of rows) {
+        const kind = String(row?.kind || "").trim().toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(grouped, kind)) {
+          grouped[kind].push(row);
+        } else {
+          grouped.agent.push(row);
+        }
+      }
+      const nextPositions = {};
+      for (const col of columns) {
+        const list = grouped[col.kind]
+          .slice()
+          .sort((a, b) => {
+            const laneA = String(a?.lane || "");
+            const laneB = String(b?.lane || "");
+            if (laneA !== laneB) return laneA.localeCompare(laneB);
+            return String(a?.label || "").localeCompare(String(b?.label || ""));
+          });
+        if (!list.length) {
+          continue;
+        }
+        const usableHeight = AGENT_GRAPH_VIEW_HEIGHT - 130;
+        const spacing = list.length <= 1
+          ? 0
+          : Math.max(88, Math.min(150, usableHeight / Math.max(1, list.length - 1)));
+        const startY = list.length <= 1
+          ? AGENT_GRAPH_VIEW_HEIGHT / 2
+          : Math.max(70, (AGENT_GRAPH_VIEW_HEIGHT - spacing * (list.length - 1)) / 2);
+        for (let idx = 0; idx < list.length; idx += 1) {
+          const node = list[idx] || {};
+          const id = String(node.id || "").trim();
+          if (!id) {
+            continue;
+          }
+          const existing = previous[id];
+          if (existing && Number.isFinite(Number(existing.x)) && Number.isFinite(Number(existing.y))) {
+            nextPositions[id] = {
+              x: Number(existing.x),
+              y: Number(existing.y),
+            };
+          } else {
+            nextPositions[id] = {
+              x: col.x,
+              y: startY + idx * spacing,
+            };
+          }
+        }
+      }
+      this.agentGraphPositions = nextPositions;
+
+      const selectedId = String(this.agentGraphSelectedNodeId || "").trim();
+      const availableIds = new Set(rows.map((row) => String(row?.id || "").trim()).filter(Boolean));
+      if (!selectedId || !availableIds.has(selectedId)) {
+        this.agentGraphSelectedNodeId = rows.length ? String(rows[0]?.id || "").trim() : "";
+      }
+    },
+
+    async refreshAgentGraph() {
+      this.agentGraphLoading = true;
+      this.agentGraphError = "";
+      try {
+        const payload = await this.apiGet("/api/panel/agent-graph", { timeoutMs: 7000 });
+        const nextData = blankAgentGraphData();
+        nextData.generated_at = String(payload?.generated_at || "").trim();
+        nextData.summary = payload?.summary && typeof payload.summary === "object"
+          ? {
+            active_jobs: Number(payload.summary.active_jobs || 0),
+            foraging_jobs: Number(payload.summary.foraging_jobs || 0),
+            building_jobs: Number(payload.summary.building_jobs || 0),
+            active_agents: Number(payload.summary.active_agents || 0),
+            foraging_active_agents: Number(payload.summary.foraging_active_agents || 0),
+            building_active_agents: Number(payload.summary.building_active_agents || 0),
+          }
+          : nextData.summary;
+        nextData.nodes = Array.isArray(payload?.nodes)
+          ? payload.nodes.map((row) => ({
+            id: String(row?.id || "").trim(),
+            label: String(row?.label || "").trim() || "Node",
+            kind: String(row?.kind || "agent").trim().toLowerCase(),
+            lane: String(row?.lane || "").trim().toLowerCase(),
+            status: String(row?.status || "active").trim().toLowerCase(),
+            subtitle: String(row?.subtitle || "").trim(),
+            meta: row?.meta && typeof row.meta === "object" ? row.meta : {},
+          })).filter((row) => row.id)
+          : [];
+        nextData.edges = Array.isArray(payload?.edges)
+          ? payload.edges
+            .map((row) => ({
+              source: String(row?.source || "").trim(),
+              target: String(row?.target || "").trim(),
+              label: String(row?.label || "").trim(),
+            }))
+            .filter((row) => row.source && row.target)
+          : [];
+        this.agentGraphData = nextData;
+        this.seedAgentGraphLayout();
+      } catch (err) {
+        this.agentGraphError = String(err?.message || err || "Could not load Agent Graph.");
+      } finally {
+        this.agentGraphLoading = false;
       }
     },
 
@@ -10779,6 +11255,7 @@ const app = window.Vue.createApp({
         this.panelOverlayOpen ||
         this.imageToolStyleModalOpen ||
         this.imageToolPromptModalOpen ||
+        this.agentGraphModalOpen ||
         this.familyProfileModalOpen ||
         this.webPushModalOpen ||
         this.projectPickerOpen ||
@@ -12227,12 +12704,16 @@ const app = window.Vue.createApp({
     this._boundResize = this.onResize.bind(this);
     this._boundHashChange = this.onHashChange.bind(this);
     this._boundKeydown = this.onKeyDown.bind(this);
+    this._boundAgentGraphMouseMove = this.onAgentGraphCanvasMouseMove.bind(this);
+    this._boundAgentGraphMouseUp = this.onAgentGraphCanvasMouseUp.bind(this);
 
     window.addEventListener("click", this._boundWindowClick);
     window.addEventListener("resize", this._boundResize);
     window.addEventListener("orientationchange", this._boundResize);
     window.addEventListener("hashchange", this._boundHashChange);
     window.addEventListener("keydown", this._boundKeydown);
+    window.addEventListener("mousemove", this._boundAgentGraphMouseMove);
+    window.addEventListener("mouseup", this._boundAgentGraphMouseUp);
     this._boundSidebarTouchStart = this._onGlobalSidebarTouchStart.bind(this);
     this._boundSidebarTouchEnd = this._onGlobalSidebarTouchEnd.bind(this);
     window.addEventListener("touchstart", this._boundSidebarTouchStart, { passive: true });
@@ -12339,6 +12820,12 @@ const app = window.Vue.createApp({
     }
     if (this._boundKeydown) {
       window.removeEventListener("keydown", this._boundKeydown);
+    }
+    if (this._boundAgentGraphMouseMove) {
+      window.removeEventListener("mousemove", this._boundAgentGraphMouseMove);
+    }
+    if (this._boundAgentGraphMouseUp) {
+      window.removeEventListener("mouseup", this._boundAgentGraphMouseUp);
     }
     if (this._boundSidebarTouchStart) {
       window.removeEventListener("touchstart", this._boundSidebarTouchStart);

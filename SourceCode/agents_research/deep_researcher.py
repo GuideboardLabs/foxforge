@@ -1,5 +1,6 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 import json
 import re
@@ -24,6 +25,15 @@ _URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _WEB_CONTEXT_SOURCE_RE = re.compile(r"^\-\s.*\|\s+(https?://\S+)\s*$", re.IGNORECASE)
+_SELF_SCORE_RE = re.compile(
+    r"^\s*SELF_SCORE:\s*confidence=([01](?:\.\d+)?);\s*coverage=([01](?:\.\d+)?);\s*notes=(.+?)\s*$",
+    re.IGNORECASE,
+)
+_OPEN_QUESTIONS_HEADING_RE = re.compile(
+    r"^\s*##\s*(?:Key Risks\s*/\s*Open Questions|Open Questions|Uncertainties\s*&\s*Risks)\s*$",
+    re.IGNORECASE,
+)
+_BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$")
 
 
 def _domain_from_url(url: str) -> str:
@@ -193,6 +203,152 @@ def _self_check(client: OllamaClient, model_cfg: dict, question: str, finding: s
     except Exception:
         pass
     return 0
+
+
+def _extract_self_score(finding: str) -> tuple[str, dict[str, float | str] | None, str]:
+    text = str(finding or "").strip()
+    if not text:
+        return text, None, "empty finding"
+    lines = text.splitlines()
+    score_idx = -1
+    score_match = None
+    for idx in range(len(lines) - 1, -1, -1):
+        match = _SELF_SCORE_RE.match(lines[idx].strip())
+        if match:
+            score_idx = idx
+            score_match = match
+            break
+    if score_match is None:
+        return text, None, "missing SELF_SCORE line"
+    try:
+        confidence = float(score_match.group(1))
+        coverage = float(score_match.group(2))
+    except (TypeError, ValueError):
+        return text, None, "invalid SELF_SCORE numeric values"
+    if not (0.0 <= confidence <= 1.0 and 0.0 <= coverage <= 1.0):
+        return text, None, "SELF_SCORE values out of range"
+    notes = str(score_match.group(3) or "").strip()[:180]
+    kept_lines = [line for i, line in enumerate(lines) if i != score_idx]
+    clean = "\n".join(kept_lines).strip()
+    return clean, {"confidence": confidence, "coverage": coverage, "notes": notes}, ""
+
+
+def _extract_open_questions(summary_md: str) -> list[str]:
+    lines = str(summary_md or "").splitlines()
+    in_section = False
+    questions: list[str] = []
+    for raw in lines:
+        line = str(raw or "").rstrip()
+        if _OPEN_QUESTIONS_HEADING_RE.match(line):
+            in_section = True
+            continue
+        if in_section and line.strip().startswith("## "):
+            break
+        if not in_section:
+            continue
+        match = _BULLET_LINE_RE.match(line)
+        if not match:
+            continue
+        cleaned = re.sub(r"\[[EIS]\]", "", match.group(1)).strip(" .-")
+        if len(cleaned) >= 8:
+            questions.append(cleaned)
+    # Deduplicate while preserving order.
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in questions:
+        key = re.sub(r"\W+", "", row.lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _normalize_question(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def _count_recycled_open_questions(new_summary_md: str, prior_questions: list[str], threshold: float = 0.8) -> int:
+    if not prior_questions:
+        return 0
+    current = _extract_open_questions(new_summary_md)
+    if not current:
+        return 0
+    prior_norm = [_normalize_question(x) for x in prior_questions if _normalize_question(x)]
+    if not prior_norm:
+        return 0
+    recycled = 0
+    for question in current:
+        norm = _normalize_question(question)
+        if not norm:
+            continue
+        best = 0.0
+        for prev in prior_norm:
+            score = SequenceMatcher(a=norm, b=prev).ratio()
+            if score > best:
+                best = score
+        if best >= float(threshold):
+            recycled += 1
+    return recycled
+
+
+def _load_prior_open_questions(repo_root: Path, project_slug: str, *, exclude_summary_name: str = "") -> list[str]:
+    root = repo_root / "Projects" / str(project_slug or "").strip() / "research_summaries"
+    if not root.exists():
+        return []
+    excluded = str(exclude_summary_name or "").strip()
+    candidates = []
+    for path in sorted(root.glob("*.md")):
+        name = path.name
+        if not path.is_file():
+            continue
+        if name.endswith(".critique.md"):
+            continue
+        if excluded and name == excluded:
+            continue
+        candidates.append(path)
+    if not candidates:
+        return []
+    latest = candidates[-1]
+    try:
+        text = latest.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    return _extract_open_questions(text)
+
+
+def _build_source_quality_footer(findings: list[dict[str, Any]], *, suffix: str = "") -> str:
+    scored_rows = [row for row in findings if isinstance(row, dict) and isinstance(row.get("self_score_confidence"), (int, float))]
+    if not scored_rows:
+        parse_errors = sum(
+            1
+            for row in findings
+            if isinstance(row, dict) and str(row.get("self_score_parse_error", "")).strip()
+        )
+        detail = f" ({parse_errors} parse error(s))" if parse_errors else ""
+        return f"**Source Quality** — agent self-scoring unavailable{detail}{suffix}"
+
+    avg_conf = sum(float(row.get("self_score_confidence", 0.0) or 0.0) for row in scored_rows) / max(1, len(scored_rows))
+    avg_cov = sum(float(row.get("self_score_coverage", 0.0) or 0.0) for row in scored_rows) / max(1, len(scored_rows))
+    line = (
+        f"**Source Quality** — {len(scored_rows)}/{len(findings)} agents self-scored "
+        f"(avg confidence {avg_conf:.2f}, avg coverage {avg_cov:.2f}){suffix}"
+    )
+    per_agent = []
+    for row in findings:
+        agent = str(row.get("agent", "agent")).strip() or "agent"
+        if isinstance(row.get("self_score_confidence"), (int, float)):
+            conf = float(row.get("self_score_confidence", 0.0) or 0.0)
+            cov = float(row.get("self_score_coverage", 0.0) or 0.0)
+            notes = str(row.get("self_score_notes", "")).strip()
+            snippet = f"- {agent}: confidence={conf:.2f}, coverage={cov:.2f}"
+            if notes:
+                snippet += f" ({notes[:80]})"
+            per_agent.append(snippet)
+        else:
+            err = str(row.get("self_score_parse_error", "")).strip()
+            per_agent.append(f"- {agent}: self-score missing ({err or 'parse error'})")
+    return line + "\n\n" + "\n".join(per_agent)
 
 
 def _lexical_overlap(a: str, b: str) -> float:
@@ -875,12 +1031,14 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "Stating 'the available sources do not cover this' is correct and preferred over filling gaps. "
         "Use [S] only as a last resort for genuine hypotheses, never to launder missing facts. "
         "Uncertainty is not a failure — fabrication is.\n\n"
-        "PROFILE HINTS DISCIPLINE: Profile hints describe who is asking and why. "
-        "Use them to choose which sources to consult and which aspects of the topic to emphasize. "
-        "Do not treat profile hints as evidence. Every specific in your findings (names, ages, breeds, "
-        "conditions, medical history, relationships, employer, location) must be traceable to a web source "
-        "or the literal research question — never to profile hints. If you reference a specific that came "
-        "only from profile hints, your finding is invalid.\n\n"
+        "SOURCE INTEGRITY: Cite only external sources retrieved this session (web pages, PDFs, docs). "
+        "Prior Foxforge research files, summaries, critiques, and project notes are internal artifacts, "
+        "not sources. Do not cite them.\n\n"
+        "SOURCE QUALITY: Prefer high-quality institutional domains (.gov, .edu, recognized medical/scientific "
+        "institutions, standards bodies). If you cite a low-editorial platform (for example Medium/LinkedIn/Substack), "
+        "label it as platform/blog evidence.\n\n"
+        "SELF SCORING: End your response with exactly one line in this format:\n"
+        "SELF_SCORE: confidence=<0.0-1.0>; coverage=<0.0-1.0>; notes=<short string>\n\n"
         "PERSONA HANDOFF: If this request is materially better handled by another persona, "
         "you may return ONLY JSON with shape "
         "{\"handoff_to\":\"<persona>\",\"reason\":\"<one sentence>\",\"confidence\":0.0-1.0}. "
@@ -916,22 +1074,6 @@ def _history_block(prior_messages: list[dict[str, str]] | None, limit_turns: int
     return (
         "Recent command-thread context (for query shaping, not evidence unless repeated in the literal research question):\n"
         + "\n".join(rows)
-    )
-
-
-def _profile_hints_block(project_context: str) -> str:
-    hints = _trim_text_block(
-        str(project_context or "").strip(),
-        max_chars=2200,
-        tail_note="profile hints truncated",
-    )
-    if not hints:
-        return ""
-    return (
-        "Profile hints — query-shaping only, NOT evidence:\n"
-        "[PROFILE_HINTS_NOT_EVIDENCE]\n"
-        f"{hints}\n"
-        "[/PROFILE_HINTS_NOT_EVIDENCE]"
     )
 
 
@@ -971,7 +1113,6 @@ def _run_one_agent(
     learned_guidance: str,
     web_context: str,
     source_evidence: list[dict[str, str]] | None,
-    project_context: str,
     prior_messages: list[dict[str, str]] | None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
@@ -996,15 +1137,7 @@ def _run_one_agent(
 
     _max_web = 30000 if persona.startswith("breaking_") else (24000 if persona.startswith("sports_") else 20000)
     system_prompt, user_prompt = _agent_prompt(question, persona, directive, learned_guidance, web_context, max_web_chars=_max_web)
-    context_blocks: list[str] = []
-    hints_block = _profile_hints_block(project_context)
-    if hints_block:
-        context_blocks.append(hints_block)
-    history = _history_block(prior_messages, limit_turns=12)
-    if history:
-        context_blocks.append(history)
-    if context_blocks:
-        user_prompt = f"{user_prompt}\n\n" + "\n\n".join(context_blocks)
+    _ = prior_messages
     temperature = float(agent_cfg.get("temperature", model_cfg.get("temperature", 0.3)))
     num_ctx = int(agent_cfg.get("num_ctx", model_cfg.get("num_ctx", 16384)))
     think = bool(agent_cfg.get("think", model_cfg.get("think", False)))
@@ -1088,6 +1221,8 @@ def _run_one_agent(
         finding = f"{finding}\n\nReliability diagnostics: {' | '.join(failure_notes[-4:])}"
 
     role = str(agent_cfg.get("role", "primary")).strip() or "primary"
+    finding_clean, self_score, score_error = _extract_self_score(finding)
+    finding = finding_clean
     handoff = _extract_handoff_request(
         finding,
         persona=persona,
@@ -1105,6 +1240,13 @@ def _run_one_agent(
         "source_evidence": source_rows,
         "handoff": handoff,
     }
+    if self_score is not None:
+        row["self_score_confidence"] = float(self_score.get("confidence", 0.0) or 0.0)
+        row["self_score_coverage"] = float(self_score.get("coverage", 0.0) or 0.0)
+        row["self_score_notes"] = str(self_score.get("notes", "")).strip()
+    else:
+        row["self_score_parse_error"] = score_error
+    return row
 
 
 def _agent_specs(model_cfg: dict[str, Any], topic_type: str = "general") -> list[dict[str, Any]]:
@@ -1242,7 +1384,6 @@ def _run_fill_agents(
     question: str,
     gap_queries: list[str],
     web_context: str,
-    project_context: str = "",
     prior_messages: list[dict[str, str]] | None = None,
     findings: list[dict[str, Any]] | None = None,
     source_evidence: list[dict[str, str]] | None = None,
@@ -1318,7 +1459,6 @@ def _run_fill_agents(
                 "",  # no learned_guidance for fill pass
                 web_context,
                 source_evidence,
-                project_context,
                 prior_messages,
                 cancel_checker,
                 pause_checker,
@@ -1331,7 +1471,10 @@ def _run_fill_agents(
                 result = future.result()
                 finding_text = str(result.get("finding", "")).strip()
                 if finding_text and not _is_failure_text(finding_text):
-                    score = _self_check(client, model_cfg, question, finding_text)
+                    if isinstance(result.get("self_score_confidence"), (int, float)):
+                        score = max(1, min(5, int(round(float(result.get("self_score_confidence", 0.0)) * 5))))
+                    else:
+                        score = _self_check(client, model_cfg, question, finding_text)
                     result["confidence"] = score
                     result["role"] = "advisory"
                     fill_findings.append(result)
@@ -1350,7 +1493,6 @@ def _recover_failed_findings(
     learned_guidance: str,
     web_context: str,
     source_evidence: list[dict[str, str]] | None,
-    project_context: str,
     prior_messages: list[dict[str, str]] | None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
@@ -1399,7 +1541,6 @@ def _recover_failed_findings(
             learned_guidance,
             web_context,
             source_evidence,
-            project_context,
             prior_messages,
             cancel_checker,
             pause_checker,
@@ -1417,7 +1558,6 @@ def _run_multipass_agent(
     learned_guidance: str,
     web_context: str,
     source_evidence: list[dict[str, str]] | None,
-    project_context: str,
     prior_messages: list[dict[str, str]] | None = None,
     cancel_checker: Any = None,
     pause_checker: Any = None,
@@ -1434,7 +1574,7 @@ def _run_multipass_agent(
     if len(source_blocks) <= _MULTI_PASS_THRESHOLD:
         return _run_one_agent(
             client, model_cfg, agent_cfg, question, learned_guidance,
-            web_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker, allowed_personas,
+            web_context, source_evidence, prior_messages, cancel_checker, pause_checker, allowed_personas,
         )
 
     batches = [
@@ -1456,7 +1596,7 @@ def _run_multipass_agent(
         )
         result = _run_one_agent(
             client, model_cfg, batch_cfg, question, learned_guidance,
-            batch_context, source_evidence, project_context, prior_messages, cancel_checker, pause_checker, allowed_personas,
+            batch_context, source_evidence, prior_messages, cancel_checker, pause_checker, allowed_personas,
         )
         last_result = result
         finding = str(result.get("finding", "")).strip()
@@ -1477,7 +1617,6 @@ def run_research_pool(
     project_slug: str,
     bus,
     web_context: str = "",
-    project_context: str = "",
     prior_messages: list[dict[str, str]] | None = None,
     cancel_checker: Callable[[], bool] | None = None,
     pause_checker: Callable[[], bool] | None = None,
@@ -1633,7 +1772,6 @@ def run_research_pool(
                     learned_guidance,
                     web_context,
                     source_evidence,
-                    project_context,
                     prior_messages,
                     cancel_checker,
                     pause_checker,
@@ -1680,7 +1818,12 @@ def run_research_pool(
                     visited_agents_per_leaf["root"].append(agent_name)
                 _finding_text = str(result.get("finding", "")).strip()
                 _finding_failed = _is_failure_text(_finding_text)
-                _confidence = 0 if _finding_failed else _self_check(client, model_cfg, question, _finding_text)
+                if _finding_failed:
+                    _confidence = 0
+                elif isinstance(result.get("self_score_confidence"), (int, float)):
+                    _confidence = max(1, min(5, int(round(float(result.get("self_score_confidence", 0.0)) * 5))))
+                else:
+                    _confidence = _self_check(client, model_cfg, question, _finding_text)
                 result["confidence"] = _confidence
                 _progress(
                     "research_agent_completed",
@@ -1717,19 +1860,25 @@ def run_research_pool(
                             learned_guidance,
                             web_context,
                             source_evidence,
-                            project_context,
                             prior_messages,
                             cancel_checker,
                             pause_checker,
                             allowed_personas,
                         )
                         handoff_text = str(handoff_result.get("finding", "")).strip()
-                        handoff_result["confidence"] = 0 if _is_failure_text(handoff_text) else _self_check(
-                            client,
-                            model_cfg,
-                            question,
-                            handoff_text,
-                        )
+                        if _is_failure_text(handoff_text):
+                            handoff_result["confidence"] = 0
+                        elif isinstance(handoff_result.get("self_score_confidence"), (int, float)):
+                            handoff_result["confidence"] = max(
+                                1, min(5, int(round(float(handoff_result.get("self_score_confidence", 0.0)) * 5)))
+                            )
+                        else:
+                            handoff_result["confidence"] = _self_check(
+                                client,
+                                model_cfg,
+                                question,
+                                handoff_text,
+                            )
                         handoff_result["handoff_from"] = agent_name
                         handoff_result["handoff_honored"] = True
                         findings.append(handoff_result)
@@ -1807,7 +1956,6 @@ def run_research_pool(
             learned_guidance=learned_guidance,
             web_context=web_context,
             source_evidence=source_evidence,
-            project_context=project_context,
             prior_messages=prior_messages,
             cancel_checker=cancel_checker,
             pause_checker=pause_checker,
@@ -1905,15 +2053,15 @@ def run_research_pool(
         synth_cfg["synthesis_fallback_models"] = ["huihui_ai/qwen3-abliterated:8b-Q4_K_M"]
 
     summary_name = store.timestamped_name("research_summary")
+    prior_open_questions = _load_prior_open_questions(repo_root, project_slug)
     conflict_report = _cross_agent_conflict_report(findings)
     summary_md = synthesize(
         question,
         findings,
         client=client,
         model_cfg=synth_cfg,
-        project_context=project_context,
-        prior_messages=prior_messages,
         conflict_report=conflict_report,
+        prior_open_questions=prior_open_questions,
     )
 
     summary_md, critique_log = run_skeptic_pass(
@@ -1924,31 +2072,11 @@ def run_research_pool(
         findings=findings,
     )
 
-    _all_scores = [f.get("confidence") for f in findings]
-    _scored = [int(s) for s in _all_scores if isinstance(s, (int, float)) and int(s) > 0]
-    _unscored_count = sum(1 for s in _all_scores if not isinstance(s, (int, float)) or int(s) == 0)
-    if _scored:
-        _avg_conf = sum(_scored) / len(_scored)
-        _conf_labels = {1: "very low", 2: "low", 3: "medium", 4: "high", 5: "very high"}
-        _agent_conf_lines = "\n".join(
-            f"- {str(f.get('agent', 'agent'))}: {int(f.get('confidence', 0))}/5"
-            + (" (unscored)" if int(f.get("confidence", 0)) == 0 else "")
-            for f in findings
-        )
-        _unscored_note = f" | {_unscored_count} agent(s) unscored" if _unscored_count else ""
-        summary_md = (
-            f"{summary_md}\n\n---\n\n"
-            f"**Source Quality** — avg confidence {_avg_conf:.1f}/5 "
-            f"({_conf_labels.get(round(_avg_conf), 'unknown')})"
-            f" | scored: {len(_scored)}/{len(findings)}{_unscored_note}\n\n"
-            f"{_agent_conf_lines}"
-        )
-    elif _unscored_count:
-        summary_md = (
-            f"{summary_md}\n\n---\n\n"
-            f"**Source Quality** — agent self-scoring unavailable "
-            f"({_unscored_count} agent(s) did not return a score)"
-        )
+    recycled_questions = _count_recycled_open_questions(summary_md, prior_open_questions)
+    quality_suffix = ""
+    if recycled_questions > 0:
+        quality_suffix = f" | recycled prior questions: {recycled_questions}"
+    summary_md = f"{summary_md}\n\n---\n\n{_build_source_quality_footer(findings, suffix=quality_suffix)}"
 
     summary_path = store.write_project_file(project_slug, "research_summaries", summary_name, summary_md)
     critique_path = ""
@@ -1963,6 +2091,7 @@ def run_research_pool(
             "summary_path": str(summary_path),
             "critique_path": critique_path,
             "findings_collected": len(findings),
+            "recycled_open_questions": recycled_questions,
         },
     )
 
@@ -1991,6 +2120,7 @@ def run_research_pool(
                 "reliability": reliability,
                 "analysis_profile": profile_name,
                 "topic_type": resolved_type,
+                "recycled_open_questions": recycled_questions,
             },
         )
 
@@ -2007,6 +2137,7 @@ def run_research_pool(
         "reliability": reliability,
         "analysis_profile": profile_name,
         "topic_type": resolved_type,
+        "recycled_open_questions": recycled_questions,
         "findings": findings,
         "retrieved_chunks": retrieved_chunks,
         "visited_agents_per_leaf": visited_agents_per_leaf,

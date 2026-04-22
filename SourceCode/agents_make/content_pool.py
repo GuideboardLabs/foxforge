@@ -91,7 +91,6 @@ def _run_planner(
     question: str,
     kind: str,
     research_context: str,
-    project_context: str,
     level: FidelityLevel = FidelityLevel.GROUNDED,
 ) -> str:
     spec = _KIND_SPECS.get(kind, _KIND_SPECS["blog"])
@@ -116,7 +115,7 @@ def _run_planner(
         result = client.chat(
             model=_MODEL_DRAFTER,
             system_prompt=system_prompt,
-            user_prompt=f"Request: {question}\n\nResearch:\n{_trim(research_context, 5000)}\n\nProject context:\n{_trim(project_context, 2000)}",
+            user_prompt=f"Request: {question}\n\nResearch:\n{_trim(research_context, 5000)}",
             temperature=0.3,
             num_ctx=12288,
             think=False,
@@ -136,7 +135,6 @@ def _run_section_writer(
     section_name: str,
     section_angle: str,
     research_context: str,
-    project_context: str,
     raw_notes_context: str = "",
     level: FidelityLevel = FidelityLevel.GROUNDED,
 ) -> tuple[str, str]:
@@ -153,8 +151,7 @@ def _run_section_writer(
     user_prompt = (
         f"Request: {question}\n"
         f"Section focus: {section_angle}\n\n"
-        f"Research:{ev_key}\n{_trim(research_context, 4000)}\n\n"
-        f"Project context:\n{_trim(project_context, 1500)}"
+        f"Research:{ev_key}\n{_trim(research_context, 4000)}"
     )
     try:
         result = client.chat(
@@ -283,7 +280,6 @@ def run_content_pool(
     topic_type: str = "general",
     research_context: str = "",
     raw_notes_context: str = "",
-    project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -318,7 +314,7 @@ def run_content_pool(
         learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
         learned_guidance = learning.guidance_for_lane("make_content", limit=5)
         if learned_guidance:
-            project_context = (learned_guidance + "\n\n" + project_context).strip()
+            research_context = (learned_guidance + "\n\n" + research_context).strip()
     except Exception:
         pass
 
@@ -337,7 +333,7 @@ def run_content_pool(
     if _cancelled():
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "planner", "model": _MODEL_DRAFTER})
-    outline = _run_planner(client, question, kind, research_context, project_context, _level)
+    outline = _run_planner(client, question, kind, research_context, _level)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "planner", "output_chars": len(outline)})
 
     # Parse outline → section angles
@@ -373,7 +369,7 @@ def run_content_pool(
             angle = section_angles.get(name, "")
             fut = executor.submit(
                 _run_section_writer,
-                client, question, kind, name, angle, research_context, project_context,
+                client, question, kind, name, angle, research_context,
                 raw_notes_context, _level,
             )
             futures[fut] = name

@@ -616,91 +616,6 @@ def _trim(text: str, max_chars: int) -> str:
     return cut or body[:max_chars]
 
 
-def _format_life_admin(project_context: str) -> str:
-    """Extract life-admin specifics into a labeled seed block for DB pre-population."""
-    raw = _trim(project_context, 2500)
-    if not raw:
-        return ""
-
-    def _norm_key(key: str) -> str:
-        low = str(key or "").strip().lower()
-        if not low:
-            return ""
-        if ("pet" in low or "dog" in low) and "name" in low:
-            return "pet.name"
-        if ("pet" in low or "dog" in low) and "breed" in low:
-            return "pet.breed"
-        if ("pet" in low or "dog" in low) and ("age" in low or "month" in low):
-            return "pet.age_months"
-        if ("pet" in low or "dog" in low) and any(tok in low for tok in ("note", "history", "injury", "condition")):
-            return "pet.notes"
-        if any(tok in low for tok in ("accommodation", "preference", "adhd", "asperger", "autism")):
-            return "owner.accommodations"
-        if low.startswith("pet.") or low.startswith("owner."):
-            return low
-        return ""
-
-    fields: dict[str, str] = {}
-
-    def _set_field(key: str, value: str) -> None:
-        k = str(key or "").strip()
-        v = re.sub(r"\s+", " ", str(value or "").strip())
-        if not k or not v:
-            return
-        if len(v) > 180:
-            v = v[:180].rstrip(" ,.;")
-        fields[k] = v
-
-    for line in raw.splitlines():
-        stripped = str(line).strip().lstrip("-*").strip()
-        match = re.match(r"^([A-Za-z0-9_. /-]{2,60})\s*:\s*(.+)$", stripped)
-        if not match:
-            continue
-        key = _norm_key(match.group(1))
-        if key:
-            _set_field(key, match.group(2))
-
-    if "pet.name" not in fields:
-        m = re.search(r"\b(?:pet|dog)\s+name\s*(?:is|:)\s*([A-Za-z][A-Za-z0-9 '\-]{0,40})", raw, re.I)
-        if m:
-            _set_field("pet.name", m.group(1))
-    if "pet.breed" not in fields:
-        m = re.search(r"\b(?:pet|dog)\s+breed\s*(?:is|:)\s*([^\n,;]{2,80})", raw, re.I)
-        if m:
-            _set_field("pet.breed", m.group(1))
-    if "pet.age_months" not in fields:
-        m = re.search(r"\b(\d{1,2})\s*(?:month|months|mo)\b", raw, re.I)
-        if m:
-            _set_field("pet.age_months", m.group(1))
-    if "pet.notes" not in fields:
-        m = re.search(r"\b(fractured leg|injury history|post-op|recovery)\b", raw, re.I)
-        if m:
-            _set_field("pet.notes", m.group(1))
-    if "owner.accommodations" not in fields:
-        accents: list[str] = []
-        if re.search(r"\bADHD\b", raw, re.I):
-            accents.append("ADHD")
-        if re.search(r"\bAsperger(?:'s|s)?\b", raw, re.I):
-            accents.append("Aspergers")
-        if re.search(r"\bautis(?:m|tic)\b", raw, re.I):
-            accents.append("Autism spectrum")
-        if accents:
-            _set_field("owner.accommodations", ", ".join(accents))
-
-    if not fields:
-        return ""
-
-    ordered_keys = ["pet.name", "pet.breed", "pet.age_months", "pet.notes", "owner.accommodations"]
-    lines: list[str] = []
-    for key in ordered_keys:
-        if key in fields:
-            lines.append(f"{key}: {fields[key]}")
-    for key in sorted(fields):
-        if key not in ordered_keys:
-            lines.append(f"{key}: {fields[key]}")
-    return "[LIFE_ADMIN_SEED]\n" + "\n".join(lines) + "\n[/LIFE_ADMIN_SEED]"
-
-
 _CODE_FENCE_RE = re.compile(r"```(?:python|sql|html|javascript|js|vue)?\n(.*?)```", re.DOTALL)
 
 
@@ -1059,7 +974,6 @@ def _step_db_architect(
     client: OllamaClient,
     question: str,
     research_knowledge: str,
-    life_admin_seed: str = "",
     existing_schema: str = "",
     existing_db_py: str = "",
 ) -> tuple[str, str]:
@@ -1070,8 +984,6 @@ def _step_db_architect(
             "You are a SQLite database architect EXTENDING an existing app. "
             "Review the existing schema and add only the tables or columns the new feature requires. "
             "Do NOT remove or rename existing tables or columns — only add. "
-            "If [LIFE_ADMIN_SEED] is present, append INSERT statements at the END of schema.sql to preload one initial row "
-            "matching the structured fields. Never use life-admin specifics in table names, column names, or db.py code. "
             "Follow these patterns exactly:\n\n" + _SQLITE_PATTERNS + "\n\n" + _SQLITE_GOTCHAS + "\n\n"
             "Output TWO code blocks:\n"
             "1. A ```sql block with the COMPLETE updated schema.sql (existing + new tables).\n"
@@ -1085,15 +997,12 @@ def _step_db_architect(
             f"Existing db.py (keep unchanged unless a new helper is needed):\n"
             f"```python\n{_trim(existing_db_py, 2000)}\n```\n\n"
             f"Research knowledge:\n{_trim(research_knowledge, 2000) or '(none)'}\n\n"
-            f"Life admin seed:\n{_trim(life_admin_seed, 1200) or '(none)'}\n\n"
             "Output the complete updated schema.sql and db.py."
         )
     else:
         system_prompt = (
             f"Today: {_today()}. "
             "You are a SQLite database architect. Design a complete schema and Flask db-helper module. "
-            "If [LIFE_ADMIN_SEED] is present, append INSERT statements at the END of schema.sql to preload one initial row "
-            "matching the structured fields. Never use life-admin specifics in table names, column names, or db.py code. "
             "Follow these patterns exactly:\n\n" + _SQLITE_PATTERNS + "\n\n" + _SQLITE_GOTCHAS + "\n\n"
             "Output TWO code blocks:\n"
             "1. A ```sql block with schema.sql — CREATE TABLE statements first, then optional INSERT seed statements.\n"
@@ -1103,7 +1012,6 @@ def _step_db_architect(
         user_prompt = (
             f"App to build: {question}\n\n"
             f"Research knowledge:\n{_trim(research_knowledge, 2500) or '(none)'}\n\n"
-            f"Life admin seed:\n{_trim(life_admin_seed, 1200) or '(none)'}\n\n"
             "Design a minimal but complete SQLite schema for this app."
         )
     raw = _chat(client, system_prompt, user_prompt, temperature=0.15, num_ctx=16384)
@@ -1785,7 +1693,6 @@ def _step_spec_generator(
     client: OllamaClient,
     question: str,
     research_knowledge: str,
-    life_admin_seed: str,
     existing_context: str = "",
 ) -> AppSpec:
     system_prompt = (
@@ -1799,7 +1706,6 @@ def _step_spec_generator(
     user_prompt = (
         f"Build request:\n{_trim(question, 1400)}\n\n"
         f"Research context:\n{_trim(research_knowledge, 2000) or '(none)'}\n\n"
-        f"Life-admin seed:\n{_trim(life_admin_seed, 1000) or '(none)'}\n\n"
         f"Existing app context:\n{_trim(existing_context, 1600) or '(none)'}"
     )
     raw = _chat(client, system_prompt, user_prompt, temperature=0.15, num_ctx=16384, timeout=300)
@@ -1829,7 +1735,6 @@ def _step_db_architect_slots(
     question: str,
     spec: AppSpec,
     research_knowledge: str,
-    life_admin_seed: str,
     existing_tables: str = "",
     existing_seeds: str = "",
 ) -> tuple[str, str]:
@@ -1844,7 +1749,6 @@ def _step_db_architect_slots(
         f"Request: {question}\n\n"
         f"Spec:\n{spec_to_json(spec)}\n\n"
         f"Research context:\n{_trim(research_knowledge, 1200) or '(none)'}\n\n"
-        f"Life-admin seed:\n{_trim(life_admin_seed, 1200) or '(none)'}\n\n"
         f"Existing tables slot:\n{_trim(existing_tables, 1500) or '(none)'}\n\n"
         f"Existing seeds slot:\n{_trim(existing_seeds, 1000) or '(none)'}"
     )
@@ -2067,7 +1971,6 @@ def run_app_pool(
     repo_root: Path,
     project_slug: str,
     bus: Any,
-    project_context: str = "",
     research_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
@@ -2097,7 +2000,6 @@ def run_app_pool(
     learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
     learned_guidance = learning.guidance_for_lane("make_app", limit=5)
     research_knowledge = "\n\n".join(filter(None, [learned_guidance, _trim(research_context, 3000)]))
-    life_admin_seed = _format_life_admin(project_context)
 
     existing = _find_existing_app(repo_root, project_slug)
     is_extend = bool(existing)
@@ -2117,7 +2019,7 @@ def run_app_pool(
 
     slot_files = _slot_paths(app_dir)
     existing_spec_ctx = migration_notes if migration_notes else ""
-    spec = _step_spec_generator(client, question, research_knowledge, life_admin_seed, existing_spec_ctx)
+    spec = _step_spec_generator(client, question, research_knowledge, existing_spec_ctx)
     _prog("app_spec_generated", {"app_name": spec.app_name, "routes": len(spec.routes), "entities": len(spec.entities)})
 
     current_tables = read_slot(slot_files["schema_sql"], "tables")
@@ -2127,7 +2029,6 @@ def run_app_pool(
         question,
         spec,
         research_knowledge,
-        life_admin_seed,
         existing_tables=current_tables,
         existing_seeds=current_seeds,
     )

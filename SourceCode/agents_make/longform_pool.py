@@ -206,7 +206,6 @@ def _run_planner(
     type_id: str,
     sections: list[tuple[str, str]],
     research_context: str,
-    project_context: str,
     level: FidelityLevel = FidelityLevel.STRICT,
 ) -> str:
     sections_text = "\n".join(f"- {name}: {hint}" for name, hint in sections)
@@ -233,8 +232,7 @@ def _run_planner(
     )
     user_prompt = (
         f"Request: {question}\n\n"
-        f"Research context:\n{_trim(research_context, 7000)}\n\n"
-        f"Project context:\n{_trim(project_context, 2000)}"
+        f"Research context:\n{_trim(research_context, 7000)}"
     )
     try:
         result = client.chat(
@@ -260,7 +258,6 @@ def _run_section_writer(
     section_name: str,
     section_thesis: str,
     research_context: str,
-    project_context: str,
     prior_section_preview: str = "",
     raw_notes_context: str = "",
     level: FidelityLevel = FidelityLevel.STRICT,
@@ -291,7 +288,6 @@ def _run_section_writer(
         user_prompt_parts.append(f"\nPrevious section (for continuity, do not repeat):\n{_trim(prior_section_preview, 600)}")
     user_prompt_parts.extend([
         f"\nResearch context:{ev_key}\n{_trim(research_context, 5000)}",
-        f"\nProject context:\n{_trim(project_context, 1500)}",
     ])
     try:
         result = client.chat(
@@ -498,7 +494,6 @@ def run_longform_pool(
     research_context: str = "",
     raw_notes_context: str = "",
     sources_context: str = "",
-    project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -537,7 +532,7 @@ def run_longform_pool(
         learning = FeedbackLearningEngine(repo_root, client=client, model_cfg=orchestrator_cfg)
         learned_guidance = learning.guidance_for_lane("make_longform", limit=5)
         if learned_guidance:
-            project_context = (learned_guidance + "\n\n" + project_context).strip()
+            combined_research = (learned_guidance + "\n\n" + combined_research).strip()
     except Exception:
         pass
 
@@ -556,7 +551,7 @@ def run_longform_pool(
         return {"ok": False, "message": "Cancelled before planning.", "body": ""}
 
     _progress("build_agent_started", {"stage": "build_agent_started", "agent": "planner", "model": _MODEL_PLANNER})
-    outline = _run_planner(client, question, type_id, sections, combined_research, project_context, _level)
+    outline = _run_planner(client, question, type_id, sections, combined_research, _level)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "planner", "output_chars": len(outline)})
 
     # Parse outline → section theses
@@ -601,7 +596,7 @@ def run_longform_pool(
             fut = executor.submit(
                 _run_section_writer,
                 client, question, type_id, name, thesis,
-                combined_research, project_context,
+                combined_research,
                 "", raw_notes_context, _level,
             )
             futures[fut] = name

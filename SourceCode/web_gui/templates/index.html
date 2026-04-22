@@ -1270,6 +1270,110 @@
         </section>
     </div>
 
+    <div class="agent-graph-overlay" :aria-hidden="agentGraphModalOpen ? 'false' : 'true'" v-show="agentGraphModalOpen">
+        <div class="agent-graph-backdrop" @click="closeAgentGraphModal"></div>
+        <section class="agent-graph-modal" role="dialog" aria-modal="true" aria-label="Agent Graph">
+            <header class="agent-graph-header">
+                <div>
+                    <h3>Agent Graph</h3>
+                    <p>Live graph of the orchestrator, active lanes, jobs, and currently active agents.</p>
+                    <div class="agent-graph-summary-line">
+                        <span>jobs: [[ agentGraphSummary.active_jobs || 0 ]]</span>
+                        <span>agents: [[ agentGraphSummary.active_agents || 0 ]]</span>
+                        <span>forage: [[ agentGraphSummary.foraging_active_agents || 0 ]]</span>
+                        <span>make: [[ agentGraphSummary.building_active_agents || 0 ]]</span>
+                        <span>updated: [[ formatDate(agentGraphData.generated_at) || 'just now' ]]</span>
+                    </div>
+                </div>
+                <div class="agent-graph-header-controls">
+                    <button type="button" class="panel-action-btn is-small" @click="refreshAgentGraph" :disabled="agentGraphLoading">Refresh</button>
+                    <button type="button" class="panel-action-btn is-small" @click="zoomAgentGraphIn">+</button>
+                    <button type="button" class="panel-action-btn is-small" @click="zoomAgentGraphOut">-</button>
+                    <button type="button" class="panel-action-btn is-small" @click="resetAgentGraphView">Reset</button>
+                    <button type="button" class="panel-action-btn is-small" @click="seedAgentGraphLayout">Relayout</button>
+                    <span class="agent-graph-zoom-readout">[[ Math.round(agentGraphZoom * 100) ]]%</span>
+                    <button type="button" class="family-profile-close" @click="closeAgentGraphModal" aria-label="Close Agent Graph">&times;</button>
+                </div>
+            </header>
+            <section class="agent-graph-body">
+                <div class="agent-graph-canvas-wrap">
+                    <svg
+                        ref="agentGraphCanvas"
+                        class="agent-graph-canvas"
+                        viewBox="0 0 1400 840"
+                        @mousedown="onAgentGraphCanvasMouseDown"
+                        @mousemove="onAgentGraphCanvasMouseMove"
+                        @mouseup="onAgentGraphCanvasMouseUp"
+                        @mouseleave="onAgentGraphCanvasMouseUp"
+                        @wheel.prevent="onAgentGraphCanvasWheel"
+                    >
+                        <defs>
+                            <marker id="agentGraphArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" />
+                            </marker>
+                        </defs>
+                        <rect x="0" y="0" width="1400" height="840" class="agent-graph-canvas-bg" />
+                        <g :transform="agentGraphTransform">
+                            <line
+                                v-for="(edge, idx) in agentGraphEdgeSegments"
+                                :key="'edge_' + idx + '_' + edge.source + '_' + edge.target"
+                                class="agent-graph-edge"
+                                :x1="edge.x1"
+                                :y1="edge.y1"
+                                :x2="edge.x2"
+                                :y2="edge.y2"
+                                marker-end="url(#agentGraphArrow)"
+                            />
+                            <g
+                                v-for="node in agentGraphNodes"
+                                :key="node.id"
+                                class="agent-graph-node"
+                                :class="[
+                                  'is-' + node.kind,
+                                  'is-' + (node.status || 'active'),
+                                  { 'is-selected': node.id === agentGraphSelectedNodeId }
+                                ]"
+                                :transform="'translate(' + node.x + ' ' + node.y + ')'"
+                                @mousedown.stop="startAgentGraphNodeDrag($event, node.id)"
+                                @click.stop="selectAgentGraphNode(node.id)"
+                            >
+                                <rect
+                                    :x="-(agentGraphNodeSize(node).width / 2)"
+                                    :y="-(agentGraphNodeSize(node).height / 2)"
+                                    :width="agentGraphNodeSize(node).width"
+                                    :height="agentGraphNodeSize(node).height"
+                                    rx="12"
+                                    ry="12"
+                                />
+                                <text class="agent-graph-node-label" x="0" y="-5" text-anchor="middle">[[ node.label ]]</text>
+                                <text class="agent-graph-node-subtitle" x="0" y="15" text-anchor="middle">[[ node.subtitle || node.status || node.kind ]]</text>
+                            </g>
+                        </g>
+                    </svg>
+                    <div v-if="agentGraphLoading" class="agent-graph-canvas-empty">Loading agent graph...</div>
+                    <div v-else-if="agentGraphError" class="agent-graph-canvas-empty is-error">[[ agentGraphError ]]</div>
+                    <div v-else-if="!agentGraphNodes.length" class="agent-graph-canvas-empty">No active agents right now.</div>
+                </div>
+                <aside class="agent-graph-detail">
+                    <h4>Node Detail</h4>
+                    <template v-if="agentGraphSelectedNode">
+                        <p class="agent-graph-detail-title">[[ agentGraphSelectedNode.label ]]</p>
+                        <p class="agent-graph-detail-kind">[[ agentGraphSelectedNode.kind ]] | [[ agentGraphSelectedNode.status || 'active' ]]</p>
+                        <p v-if="agentGraphSelectedNode.subtitle" class="agent-graph-detail-subtitle">[[ agentGraphSelectedNode.subtitle ]]</p>
+                        <div v-if="agentGraphMetaRows(agentGraphSelectedNode).length" class="agent-graph-detail-meta">
+                            <div class="agent-graph-detail-meta-row" v-for="entry in agentGraphMetaRows(agentGraphSelectedNode)" :key="entry.key">
+                                <span>[[ entry.key ]]</span>
+                                <code>[[ entry.value ]]</code>
+                            </div>
+                        </div>
+                        <p v-else class="agent-graph-detail-empty">No extra metadata for this node.</p>
+                    </template>
+                    <p v-else class="agent-graph-detail-empty">Select a node to inspect details.</p>
+                </aside>
+            </section>
+        </section>
+    </div>
+
     <div class="family-profile-overlay" :aria-hidden="familyProfileModalOpen ? 'false' : 'true'" v-show="familyProfileModalOpen">
         <div class="family-profile-backdrop" @click="closeFamilyProfileModal"></div>
         <section class="family-profile-modal" role="dialog" aria-modal="true" aria-label="Add family member profile">
@@ -2321,6 +2425,7 @@
                         Foraging: [[ panelStatus.foraging_paused ? 'Paused' : ((panelStatus.foraging_active_jobs || 0) > 0 ? 'Active' : 'Ready') ]]
                       </button>
                       <button class="panel-action-btn" type="button" @click="setProjectBuildTarget">Make Target: [[ makeTargetLabel ]]</button>
+                      <button class="panel-action-btn" type="button" @click="openAgentGraphModal">Agent Graph</button>
                       <button class="panel-action-btn" type="button" @click="openSystemPanel('project_detail')">Project Detail</button>
                       <button class="panel-action-btn" type="button" @click="openSystemPanel('content')">Content Panel</button>
                       <button v-if="auth.profile && auth.profile.is_owner" class="panel-action-btn" type="button" @click="openFamilyProfileModal">Add Family Member</button>
@@ -2334,24 +2439,24 @@
                   </div>
 
                   <div class="system-settings-section system-social-panel">
-                    <h4 class="life-admin-section-title">Support Foxforge Labs</h4>
+                    <h4 class="life-admin-section-title">Support Guideboard Labs</h4>
                     <div class="system-social-section">
-                      <p class="system-social-copy">Follow Foxforge Labs to support this and more!</p>
+                      <p class="system-social-copy">Follow Guideboard Labs to support this and more!</p>
                       <div class="system-social-links">
-                        <a class="system-social-link is-x" href="https://x.com/foxforgelabs" target="_blank" rel="noopener noreferrer" title="Follow @foxforgelabs on X">
+                        <a class="system-social-link is-x" href="https://x.com/guideboardlabs" target="_blank" rel="noopener noreferrer" title="Follow @guideboardlabs on X">
                           <span class="system-social-icon" aria-hidden="true">Ⓧ</span>
                           <span class="system-social-label">X</span>
-                          <span class="system-social-handle">@foxforgelabs</span>
+                          <span class="system-social-handle">@guideboardlabs</span>
                         </a>
-                        <a class="system-social-link is-instagram" href="https://instagram.com/foxforgelabs" target="_blank" rel="noopener noreferrer" title="Follow @foxforgelabs on Instagram">
+                        <a class="system-social-link is-instagram" href="https://instagram.com/guideboardlabs" target="_blank" rel="noopener noreferrer" title="Follow @guideboardlabs on Instagram">
                           <span class="system-social-icon" aria-hidden="true">Ⓘ</span>
                           <span class="system-social-label">Instagram</span>
-                          <span class="system-social-handle">@foxforgelabs</span>
+                          <span class="system-social-handle">@guideboardlabs</span>
                         </a>
-                        <a class="system-social-link is-github" href="https://github.com/foxforgelabs" target="_blank" rel="noopener noreferrer" title="Follow @foxforgelabs on GitHub">
+                        <a class="system-social-link is-github" href="https://github.com/guideboardlabs" target="_blank" rel="noopener noreferrer" title="Follow @guideboardlabs on GitHub">
                           <span class="system-social-icon" aria-hidden="true">Ⓖ</span>
                           <span class="system-social-label">GitHub</span>
-                          <span class="system-social-handle">@foxforgelabs</span>
+                          <span class="system-social-handle">@guideboardlabs</span>
                         </a>
                       </div>
                     </div>

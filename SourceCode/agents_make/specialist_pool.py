@@ -178,7 +178,6 @@ def _run_outline(
     sections: list[tuple[str, str]],
     research_context: str,
     raw_notes_context: str,
-    project_context: str,
     kind: str,
 ) -> str:
     section_list = "\n".join(f"  {i+1}. {name}: {hint}" for i, (name, hint) in enumerate(sections))
@@ -198,7 +197,7 @@ def _run_outline(
         f"Sections to plan:\n{section_list}\n\n"
         f"Research context:\n{_trim(research_context, 12000)}\n\n"
         f"Raw research notes:\n{_trim(raw_notes_context, 6000)}\n\n"
-        f"Project context:\n{_trim(project_context, 2000)}"
+        "Focus on the literal request and supplied research only."
     )
     try:
         result = client.chat(
@@ -401,7 +400,6 @@ def run_specialist_pool(
     research_context: str = "",
     raw_notes_context: str = "",
     sources_context: str = "",
-    project_context: str = "",
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -435,7 +433,7 @@ def run_specialist_pool(
     _progress("specialist_outline_started", {"sections": [n for n, _ in sections]})
     outline = _run_outline(
         client, question, sections, research_context,
-        raw_notes_context, project_context, kind,
+        raw_notes_context, kind,
     )
     _progress("specialist_outline_completed", {"preview": outline[:300]})
 

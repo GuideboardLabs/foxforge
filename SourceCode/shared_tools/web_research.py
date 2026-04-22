@@ -1680,20 +1680,13 @@ class WebResearchEngine:
             variant_limit = 3
         variant_limit = max(1, min(variant_limit, 6))
         try:
-            summary_chars = int(settings.get("smart_query_summary_chars", 2200))
-        except (TypeError, ValueError):
-            summary_chars = 2200
-        try:
             cache_rows = int(settings.get("smart_query_cache_rows", 6))
         except (TypeError, ValueError):
             cache_rows = 6
-        summary_excerpt = self._latest_research_summary_excerpt(project, max_chars=summary_chars)
         recent_queries = self._recent_project_queries(project, limit=6)
         cache_hints = self._cached_query_hints(project, limit=cache_rows)
         recent_domain_list = sorted([d for d in (recent_domains or set()) if d])[:16]
         context_chunks: list[str] = []
-        if summary_excerpt:
-            context_chunks.append(f"Latest summary excerpt:\n{summary_excerpt}")
         if recent_queries:
             context_chunks.append("Recent run queries:\n- " + "\n- ".join(recent_queries))
         if cache_hints:
