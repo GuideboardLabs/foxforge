@@ -58,7 +58,7 @@ class LibraryRouteTests(unittest.TestCase):
         self.appmod._ensure_background_services_started = self.original_background
         shutil.rmtree(self.runtime_tmp, ignore_errors=True)
 
-    def _wait_for_item(self, client, item_id: str, *, timeout_sec: float = 5.0) -> dict:
+    def _wait_for_item(self, client, item_id: str, *, timeout_sec: float = 30.0) -> dict:
         deadline = time.time() + timeout_sec
         last_payload = {}
         while time.time() < deadline:

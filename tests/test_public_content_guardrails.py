@@ -27,7 +27,6 @@ class PublicContentGuardrailTests(unittest.TestCase):
             question="Write a blog post",
             kind="blog",
             research_context="",
-            project_context="",
         )
         self.assertIn("PUBLIC-CONTENT GUARDRAIL", client.last_system_prompt)
 
@@ -47,7 +46,6 @@ class PublicContentGuardrailTests(unittest.TestCase):
             type_id="guide",
             sections=[("Overview", "Thesis")],
             research_context="",
-            project_context="",
         )
         self.assertIn("PUBLIC-CONTENT GUARDRAIL", client.last_system_prompt)
 

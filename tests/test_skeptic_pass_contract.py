@@ -26,7 +26,10 @@ class SkepticPassContractTests(unittest.TestCase):
         self.assertEqual(revised, "Revised summary")
         self.assertEqual(critique, "Audit notes")
 
-    def test_preserves_summary_when_delimiter_missing(self) -> None:
+    def test_fallback_edit_applied_when_delimiter_missing(self) -> None:
+        # When the model returns no structured delimiter, the skeptic pass
+        # runs a second "apply edits" call. The FakeClient returns the same
+        # body both times, so the revised summary equals the client body.
         revised, critique = run_skeptic_pass(
             question="q",
             synthesis="Base summary",
@@ -34,7 +37,7 @@ class SkepticPassContractTests(unittest.TestCase):
             model_cfg={"model": "dummy-model"},
             findings=[],
         )
-        self.assertEqual(revised, "Base summary")
+        self.assertEqual(revised, "Plain critique text only")
         self.assertEqual(critique, "Plain critique text only")
 
 
