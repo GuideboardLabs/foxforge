@@ -1133,8 +1133,16 @@ class FoxforgeOrchestrator:
             _talk_guidance = self.learning_engine.guidance_for_lane("project", limit=5)
         except Exception:
             pass
+        _stack_caps = ""
+        try:
+            from orchestrator.services.make_catalog import stack_summary as _stack_summary
+            _stack_caps = str(_stack_summary() or "").strip()
+        except Exception:
+            _stack_caps = ""
         _briefing_ctx = self._watchtower_context_for_query()
         _sys_parts = [(persona_override or self._reynard_persona_block()) + "\n\n" + _talk_sys]
+        if _stack_caps:
+            _sys_parts.append(_stack_caps)
         if context_guidance:
             _sys_parts.append(context_guidance)
         if personal_context:
@@ -1293,9 +1301,10 @@ class FoxforgeOrchestrator:
             rel = artifact_path
             try:
                 from pathlib import Path
+                from urllib.parse import quote
                 rel_path = Path(artifact_path).relative_to(self.repo_root)
                 rel = str(rel_path)
-                link_url = f"/api/files/read?path={rel}"
+                link_url = f"/api/files/read?path={quote(rel, safe='/._-')}"
                 lines.append(f"\n[Open artifact]({link_url})")
             except Exception:
                 pass
@@ -2829,16 +2838,42 @@ class FoxforgeOrchestrator:
                 rel_line = f"{rel_line}  |  Profile: {profile}"
             lines.append(rel_line)
         file_lines: list[str] = []
+
+        def _file_link_line(label: str, raw_path: str) -> str:
+            from urllib.parse import quote
+            path_text = str(raw_path or "").strip()
+            if not path_text:
+                return ""
+            rel_text = path_text
+            try:
+                rel_text = str(Path(path_text).relative_to(self.repo_root))
+            except Exception:
+                pass
+            link_url = f"/api/files/read?path={quote(rel_text, safe='/._-')}"
+            name = Path(path_text).name or rel_text
+            return f"  {label} → [{name}]({link_url})"
+
         summary_path = str(out.get("summary_path", "")).strip()
         raw_path = str(out.get("raw_path", "")).strip()
+        critique_path = str(out.get("critique_path", "")).strip()
         web_details = out.get("web_details", {})
         source_path = str(web_details.get("source_path", "")).strip() if isinstance(web_details, dict) else ""
         if summary_path:
-            file_lines.append(f"  Summary   → {summary_path}")
+            row = _file_link_line("Summary  ", summary_path)
+            if row:
+                file_lines.append(row)
         if raw_path:
-            file_lines.append(f"  Raw Notes → {raw_path}")
+            row = _file_link_line("Raw Notes", raw_path)
+            if row:
+                file_lines.append(row)
+        if critique_path:
+            row = _file_link_line("Critique ", critique_path)
+            if row:
+                file_lines.append(row)
         if source_path:
-            file_lines.append(f"  Sources   → {source_path}")
+            row = _file_link_line("Sources  ", source_path)
+            if row:
+                file_lines.append(row)
         if file_lines:
             lines.append("Files:")
             lines.extend(file_lines)

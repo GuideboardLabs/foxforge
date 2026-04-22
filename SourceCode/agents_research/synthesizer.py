@@ -155,7 +155,10 @@ def synthesize(
         "You are a research synthesizer for an orchestrator. "
         "Produce concise, high-signal markdown with sections: Executive Summary, "
         "Key Findings, Uncertainties & Risks, Next Steps. Avoid fluff. "
-        "When known project facts are provided, treat them as answered context. "
+        "Profile hints may be provided to identify who is asking and why. "
+        "Profile hints are NEVER evidence and must not be cited as findings. "
+        "Do not name the user, their family, pets, diagnoses, or workplace in the summary "
+        "unless that same specific appears in agent findings. "
         "Do not wrap the response in triple backticks or fenced code blocks.\n\n"
         "SYNTHESIS DISCIPLINE: Do NOT summarize each agent sequentially "
         "('Agent X found... Agent Y found...'). Extract the highest-signal claims "
@@ -184,6 +187,12 @@ def synthesize(
         "from agents, do NOT fill the gap with general knowledge or inference. Instead write: "
         "'Coverage gap: no primary evidence found for [area].' "
         "A gap declaration is better than a gap filled with unverified claims.\n\n"
+        "Before output, run a provenance check for every personal specific (name, age, breed, condition, "
+        "relationship, employer, location). A personal specific may appear in the summary only if the same "
+        "specific appears verbatim in at least one agent finding or in the user's research question. "
+        "If it appears only in profile hints, omit it or replace it with a generic category noun "
+        "(for example: 'the dog', 'the owner', 'the user'). Profile hints are context about who is asking, "
+        "not findings about the world.\n\n"
         "End Executive Summary with: 'Evidence Confidence: [High/Mixed/Low] — [one-line reason].' "
         "For time-sensitive topics, state whether events are upcoming, ongoing, or past relative to today."
     )
@@ -212,10 +221,14 @@ def synthesize(
             f"{prior_synthesis.strip()[:1200]}\n\n"
             "New and supplementary findings below — use these to fill gaps the prior synthesis left open:\n"
         )
+    profile_hints_parts = [
+        str(project_context or "").strip(),
+        history_block,
+    ]
+    profile_hints = "\n\n".join([part for part in profile_hints_parts if part]).strip() or "(none)"
     user_prompt = (
         f"Question:\n{question}\n\n"
-        f"Known project facts (if any):\n{project_context.strip() or '(none)'}\n\n"
-        f"Recent command-thread history (if any):\n{history_block or '(none)'}\n\n"
+        f"Profile hints — DO NOT CITE OR TREAT AS EVIDENCE:\n{profile_hints}\n\n"
         f"{_prior_block}"
         f"Research outputs:\n{findings_blob}"
         f"{_conflict_section}\n\n"
@@ -278,7 +291,7 @@ def run_skeptic_pass(
     client: Any | None = None,
     model_cfg: dict | None = None,
     findings: list[dict] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """
     Adversarial second pass on the completed synthesis.
 
@@ -286,14 +299,16 @@ def run_skeptic_pass(
     challenge every claim, find unsupported conclusions, identify missing
     perspectives, and assess how easily the findings could be overturned.
 
-    Returns skeptic critique markdown, or empty string if unavailable.
-    The caller is responsible for appending this to the synthesis document.
+    Returns (revised_summary, critique_log).
+    - revised_summary is safe for publication.
+    - critique_log is for traceability/debug output and should not be appended to the summary.
     """
-    if client is None or not model_cfg or not synthesis.strip():
-        return ""
+    base_summary = str(synthesis or "").strip()
+    if client is None or not model_cfg or not base_summary:
+        return base_summary, ""
     model = str(model_cfg.get("model", "")).strip()
     if not model:
-        return ""
+        return base_summary, ""
 
     fallback_models_raw = model_cfg.get("synthesis_fallback_models", [])
     fallback_models: list[str] = (
@@ -317,19 +332,22 @@ def run_skeptic_pass(
         "You are the Skeptic Engine — an internal adversary whose only job is to stress-test "
         "research conclusions before they reach the user. You are not trying to be balanced or "
         "reassuring. You are trying to find every crack.\n\n"
-        "For the synthesis provided, produce a structured critique covering:\n"
-        "  1. Fabricated specifics — any numbers, dates, names, URLs, version strings, or direct quotes "
-        "that do not appear in the raw findings reference; flag each one explicitly\n"
-        "  2. Unsourced [E] labels — any claim marked [E] in the synthesis where the raw findings "
-        "reference contains no corresponding source URL or domain for that specific claim\n"
-        "  3. Unsupported claims — assertions presented as fact with no [E] backing in the findings\n"
-        "  4. Weak evidence — claims resting on a single source, low-tier source, or wire-laundered reporting\n"
-        "  5. Missing perspectives — what expert voices, data types, or opposing viewpoints are absent\n"
-        "  6. Conclusion vulnerabilities — what single piece of contradicting evidence would overturn the main findings\n"
-        "  7. Confidence adjustment — one direct sentence on whether the reader's confidence should be "
-        "higher, lower, or unchanged, and exactly why\n\n"
-        "Format strictly as markdown. Be direct and specific. "
-        "Do not summarise the synthesis back. Do not hedge. Attack the reasoning."
+        "You must output TWO blocks separated by a line containing exactly: ---CRITIQUE---\n\n"
+        "BLOCK 1 (before ---CRITIQUE---): Revised synthesis markdown safe for publication.\n"
+        "- Remove fabricated specifics (numbers, dates, names, URLs, version strings, direct quotes) "
+        "that are not in raw findings.\n"
+        "- Downgrade unsupported certainty to [S] with hedging language.\n"
+        "- Remove or rewrite unsourced [E] claims.\n"
+        "- Keep required sections and preserve readability.\n\n"
+        "BLOCK 2 (after ---CRITIQUE---): Short critique log of what changed and why, covering:\n"
+        "  1. Fabricated specifics removed\n"
+        "  2. Unsourced [E] labels corrected\n"
+        "  3. Unsupported claims demoted/removed\n"
+        "  4. Weak evidence caveats added\n"
+        "  5. Missing perspectives flagged\n"
+        "  6. Conclusion vulnerability summary\n"
+        "  7. Confidence adjustment sentence\n\n"
+        "Be direct and specific. Do not output any extra wrapper text."
     )
     _findings_section = (
         f"\n\nRaw findings reference (first 400 chars per agent — use to cross-check [E] claims):\n{_findings_ref}"
@@ -337,9 +355,9 @@ def run_skeptic_pass(
     )
     user_prompt = (
         f"Research question: {question}\n\n"
-        f"Synthesis to challenge:\n{synthesis}"
+        f"Synthesis to challenge:\n{base_summary}"
         f"{_findings_section}\n\n"
-        "Return your critique as markdown only."
+        "Return exactly the two-block format."
     )
 
     try:
@@ -355,6 +373,17 @@ def run_skeptic_pass(
             retry_attempts=2,
             retry_backoff_sec=1.5,
         )
-        return str(result or "").strip()
+        body = str(result or "").strip()
+        if not body:
+            return base_summary, ""
+        if "---CRITIQUE---" in body:
+            revised, critique = body.split("---CRITIQUE---", 1)
+            revised_text = revised.strip()
+            critique_text = critique.strip()
+            if revised_text:
+                return revised_text, critique_text
+        # Fallback format: preserve existing publication behavior (unchanged summary),
+        # but retain the critique text for sidecar debug output.
+        return base_summary, body
     except Exception:
-        return ""
+        return base_summary, ""

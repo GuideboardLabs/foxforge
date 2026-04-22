@@ -67,6 +67,68 @@ def _pascal(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Canonical stack patterns / gotchas
+# ---------------------------------------------------------------------------
+
+_DOTNET_PATTERNS = """\
+# Validated against: .NET 8 LTS, C# 12
+- Use <TargetFramework>net8.0</TargetFramework>, <Nullable>enable</Nullable>, <ImplicitUsings>enable</ImplicitUsings>.
+- Prefer file-scoped namespaces.
+- Use GlobalUsings.cs for shared imports.
+- Use record for immutable DTOs, class for mutable state.
+- Use async Task for I/O methods and Async suffix names.
+- Prefer System.Text.Json for new code.
+"""
+
+_AVALONIA_PATTERNS = """\
+# Validated against: Avalonia 11.x
+- Add x:DataType on each Window/UserControl root for compiled bindings.
+- Keep AXAML logic in bindings; code-behind only InitializeComponent().
+- Use FluentTheme in App.axaml.
+- Prefer Grid/StackPanel/DockPanel layouts over absolute positioning.
+- Keep shared styles in App.axaml or Styles/.
+- Program.cs should use AppBuilder.Configure<App>().UsePlatformDetect().
+"""
+
+_REACTIVEUI_PATTERNS = """\
+# Validated against: ReactiveUI compatible with Avalonia 11
+- ViewModelBase inherits ReactiveObject.
+- Use RaiseAndSetIfChanged for reactive properties.
+- Use ReactiveCommand.Create/CreateFromTask for actions.
+- Manage subscriptions in WhenActivated(...) blocks.
+- Use ObservableAsPropertyHelper for derived properties.
+- Use IScreen + RoutedViewHost for multi-screen navigation.
+"""
+
+_DOTNET_GOTCHAS = """\
+Dotnet gotchas:
+- Avoid async void except event handlers.
+- Avoid .Result/.Wait() on UI thread tasks (deadlock risk).
+- Prefer DateTime.UtcNow or DateTimeOffset for persisted time.
+- Do not mutate collections during enumeration.
+- Avoid swallowing Exception silently.
+- Avoid repeated string concatenation in loops.
+"""
+
+_AVALONIA_GOTCHAS = """\
+Avalonia gotchas:
+- No business logic in .axaml.cs.
+- Missing x:DataType causes runtime-only binding errors.
+- ViewModel should not reference named controls directly.
+- Avoid long-running work in View constructor.
+- Use Mode=TwoWay for editable input bindings when needed.
+"""
+
+_REACTIVEUI_GOTCHAS = """\
+ReactiveUI gotchas:
+- Always dispose subscriptions (store IDisposable).
+- Handle ReactiveCommand ThrownExceptions.
+- Ensure OAPH properties are initialized via ToProperty.
+- Ensure View constructors include WhenActivated(...) when lifecycle hooks are used.
+"""
+
+
+# ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
@@ -103,6 +165,7 @@ def _run_specifier(client: OllamaClient, question: str, project_context: str) ->
 def _run_architect(client: OllamaClient, spec: str, app_name: str) -> str:
     system_prompt = (
         f"Today: {_today()}. You are a .NET 8 + Avalonia UI architect.\n\n"
+        + _DOTNET_PATTERNS + "\n\n" + _AVALONIA_PATTERNS + "\n\n"
         "Given the app spec, produce the full project scaffold as file contents.\n\n"
         "Output format: For each file, write:\n"
         "=== FILE: path/to/file.ext ===\n"
@@ -138,6 +201,8 @@ def _run_architect(client: OllamaClient, spec: str, app_name: str) -> str:
 def _run_viewmodels(client: OllamaClient, spec: str, app_name: str, question: str) -> str:
     system_prompt = (
         f"Today: {_today()}. You are implementing .NET 8 + ReactiveUI ViewModels.\n\n"
+        + _DOTNET_PATTERNS + "\n\n" + _REACTIVEUI_PATTERNS + "\n\n"
+        + _DOTNET_GOTCHAS + "\n\n" + _REACTIVEUI_GOTCHAS + "\n\n"
         "Produce complete ViewModel implementations for each ViewModel identified in the spec.\n\n"
         "Requirements:\n"
         "- Inherit from ViewModelBase (which inherits ReactiveObject)\n"
@@ -172,6 +237,7 @@ def _run_viewmodels(client: OllamaClient, spec: str, app_name: str, question: st
 def _run_views(client: OllamaClient, spec: str, viewmodels_code: str, app_name: str, question: str) -> str:
     system_prompt = (
         f"Today: {_today()}. You are implementing Avalonia UI 11 AXAML Views.\n\n"
+        + _AVALONIA_PATTERNS + "\n\n" + _AVALONIA_GOTCHAS + "\n\n"
         "Produce complete AXAML Views and their minimal code-behind files.\n\n"
         "Requirements:\n"
         "- DataContext set to the corresponding ViewModel\n"
@@ -205,6 +271,7 @@ def _run_views(client: OllamaClient, spec: str, viewmodels_code: str, app_name: 
 def _run_services(client: OllamaClient, spec: str, app_name: str, question: str) -> str:
     system_prompt = (
         f"Today: {_today()}. You are implementing .NET 8 service and data layer classes.\n\n"
+        + _DOTNET_PATTERNS + "\n\n" + _DOTNET_GOTCHAS + "\n\n"
         "Based on the app spec, produce the service and data-layer implementations.\n\n"
         "Requirements:\n"
         "- Services are injected into ViewModels via constructor\n"

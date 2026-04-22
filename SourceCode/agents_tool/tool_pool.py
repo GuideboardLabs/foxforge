@@ -18,6 +18,34 @@ _MAX_FIX_CYCLES = 3
 _RUN_TIMEOUT_SEC = 30
 _CODE_FENCE_RE = re.compile(r"```(?:python)?\n(.*?)```", re.DOTALL)
 
+_PYTHON_CLI_PATTERNS = """\
+# Validated against: Python 3.12+
+
+Python CLI patterns:
+1. Use `from __future__ import annotations` at file top.
+2. Prefer `pathlib.Path` over `os.path`.
+3. Use `argparse` for CLI parsing unless richer UX is explicitly requested.
+4. Use `subprocess.run([...], check=False, text=True, capture_output=True)` when invoking commands.
+5. Use `logging` (not print) for non-interactive status and error reporting.
+6. Add type hints on all function signatures.
+7. Use distinct exit codes from `main()` and `sys.exit(code)`.
+8. Include a smoke entry path under `if __name__ == "__main__":`.
+"""
+
+_PYTHON_GOTCHAS = """\
+Python gotchas to avoid:
+- Never use mutable default arguments; use `None` guard.
+- Never use `subprocess.run(..., shell=True)` with variable user input.
+- Do not use `os.path.join` for URLs (use `urllib.parse.urljoin`).
+- Never call `requests.get(url)` without a timeout.
+- Never use bare `except:`; use `except Exception:`.
+- Prefer `datetime.now(timezone.utc)` over naive `datetime.now()`.
+- Always open text files with `encoding="utf-8"` and a context manager.
+- Never use `eval`/`exec` on untrusted input.
+- Avoid unbounded `json.load` on untrusted large payloads.
+- Avoid fragile relative imports in single-file scripts.
+"""
+
 _TOOL_AGENTS = [
     {
         "persona": "tool_architect",
@@ -25,7 +53,8 @@ _TOOL_AGENTS = [
         "directive": (
             "Design the tool's structure, interface, and dependencies. "
             "Specify inputs, outputs, data flow, and error handling approach. "
-            "Be concrete — name the functions, their signatures, and any external libs needed."
+            "Be concrete — name the functions, their signatures, and any external libs needed.\n\n"
+            + _PYTHON_CLI_PATTERNS + "\n\n" + _PYTHON_GOTCHAS
         ),
     },
     {
@@ -35,7 +64,8 @@ _TOOL_AGENTS = [
             "Produce the complete, runnable implementation. "
             "Write clean, well-commented code. Include a usage example at the bottom. "
             "Handle edge cases and errors explicitly. "
-            "Use only Python standard library unless the request clearly requires a third-party package."
+            "Use only Python standard library unless the request clearly requires a third-party package.\n\n"
+            + _PYTHON_CLI_PATTERNS + "\n\n" + _PYTHON_GOTCHAS
         ),
     },
 ]

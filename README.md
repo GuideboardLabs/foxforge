@@ -98,9 +98,13 @@ Each agent applies **evidence discipline**: findings are labeled `[E]` (evidence
 
 **Citation linker** — post-processes synthesized text to anchor each sentence to the retrieved chunk that supports it; cosine-misaligned citations are dropped rather than passed through as fabrication.
 
+**Skeptic sidecar** — the skeptic pass revises the publishable synthesis directly and writes its rationale to a separate `*.critique.md` sidecar file (linked in the artifact block when present).
+
 **Web research cache** — repeat queries are served from a content-addressed SQLite cache with volatility-tiered TTL (24h general, 2h recency-sensitive, 10m live events).
 
 **Web foraging stack** (optional, Docker): SearXNG + Crawl4AI for live web research.
+
+**Stack-decision guard** — outside a `technical` topic, research requests that are purely stack-choice comparisons (for example SQLite vs Postgres, Flask vs FastAPI, Vue vs React) are short-circuited with guidance to re-run in a Technical topic.
 
 ---
 
@@ -173,6 +177,8 @@ Planner → Writers (parallel) → Critic (think=True) → Revisor → Composito
 
 Video scripts include `[SEGMENT: name]` and `[B-ROLL: description]` markers for production use.
 
+Public-content guardrail: planner/compositor stages avoid personal specifics from profile hints (family, pets, health, workplace) unless the user explicitly asks for them.
+
 **Models:** `qwen3:8b` (planner/writer/compositor), `deepseek-r1:8b` (critic, `think=True`). Upgrades to `qwen2.5:32b` + `deepseek-r1:14b` automatically when available.
 
 ---
@@ -194,6 +200,8 @@ Planner → Writers (≤3 parallel) → Critic (think=True) → Revisor → Comp
 | `email` | 200–400 | Subject (<60 chars) → Front-loaded ask → Short body → Sign-off |
 
 Drafter and Polish agents use `huihui_ai/qwen3-abliterated:8b-Q4_K_M` for creative latitude. Critic uses `deepseek-r1:8b`. Integrates learned feedback from the FeedbackLearningEngine across prior Make runs.
+
+Public-content guardrail: planner/compositor stages avoid personal specifics from profile hints (family, pets, health, workplace) unless the user explicitly asks for them.
 
 ---
 
@@ -246,27 +254,34 @@ Each scene writer receives the last 1,500 characters of the prior scene to maint
 
 #### Web App Pool
 
-Full-stack web applications: Flask backend + Vue 3 frontend + SQLite database.
+Full-stack web applications: Flask backend + Vue 3 frontend + SQLite database, built on a fixed Canon v1 scaffold.
 
-**Pipeline — 8 sequential stages:**
+**Pipeline — 10 sequential stages:**
 
 ```
-DB Architect → API Implementer (+ py_compile fix loop) → Vue Architect → Vue Implementer
-→ Integration Check → Integration Fixer → CSS Writer → README Writer
+Spec Generator → Scaffold Copy → DB Architect (slot-fill) → API Implementer (slot-fill)
+→ Vue Architect → Vue Implementer (slot-fill) → Integration Check → Integration Fixer (slot-fill)
+→ CSS Writer (slot-fill) → README Writer (slot-fill)
 ```
 
 | Stage | Output |
 |---|---|
-| DB Architect | SQLite schema + Flask `db.py` helpers (parameterized queries, `sqlite3.Row`, PRAGMA foreign_keys) |
-| API Implementer | Complete `app.py` (CRUD routes, CORS, error handling) — syntax-checked, auto-fixed up to 2 cycles |
+| Spec Generator | Emits validated `AppSpec` JSON (entities, routes, views) for deterministic slot-fills |
+| Scaffold Copy | Copies `agents_make/canon/web_app_v1/` (working app shell before feature slots are filled) |
+| DB Architect | Fills `schema.sql` slots (`tables`, `seeds`) from spec + life-admin seed |
+| API Implementer | Fills `app.py` feature slots only (routes/imports) with envelope helpers + `py_compile` import-smoke checks |
 | Vue Architect | Component/store plan derived from Flask routes |
-| Vue Implementer | `index.html` (Vue 3 CDN, unpkg) + `app.js` (Composition API, fetch-based, no axios) |
+| Vue Implementer | Fills `index.html` + `app.js` feature slots (Vue 3.5 prod CDN, Composition API, fetch-based, no axios) |
 | Integration Check | Flags route/fetch mismatches, CORS issues, JSON field name divergence |
-| Integration Fixer | Applies fixes to both Flask and JS |
-| CSS Writer | Full `styles.css` generated from HTML selectors (or extends existing) |
-| README Writer | Setup instructions, DB init, API endpoint list, file structure |
+| Integration Fixer | Re-fills only the impacted slots (no full-file rewrites) |
+| CSS Writer | Fills `styles.css` feature slot using Canon neuromorphic tokens (`var(--neu-*)`) |
+| README Writer | Fills `README.md` feature slots (`feature-list`, `run-notes`) |
 
-**Extend Mode** — detects existing builds automatically; incremental updates preserve working code rather than regenerating from scratch.
+**Automated guardrails in-pipeline:** `py_compile` + import smoke + runtime smoke (`/api/health` + spec-derived GET probe), Vue binding audit (`setup()` return vs template refs), feature-coverage check (backend + frontend presence for user-named features), policy lints (route naming, envelope conformance, CSS token usage, strict comment/docstring checks), and plumbing integrity verification against Canon v1 outside slot regions.
+
+**Extend Mode** — detects existing builds automatically.
+- Canon build (`.canon-version` present): copies prior app and updates only named slots.
+- Legacy pre-canon build: one-shot migration into Canon slots, then pins `.canon-version` for all future extends.
 
 **Output structure:**
 ```
@@ -282,7 +297,7 @@ Projects/{slug}/implementation/{timestamp}_app/
 └── INTEGRATION_NOTES.md   (if integration issues were found and fixed)
 ```
 
-**Model:** `qwen2.5-coder:7b` (or `qwen2.5-coder:14b` when available, all stages)
+**Model:** `qwen2.5-coder:7b` (or `qwen2.5-coder:14b` when available, all generation stages)
 
 ---
 
@@ -331,6 +346,13 @@ Projects/{slug}/desktop_apps/{AppName}/
 ### Talk Lane
 
 Conversational orchestration. Requests that aren't research or build tasks route here — the Reynard layer handles multi-turn dialogue, memory retrieval, and personal context via `dolphin3:8b`.
+
+**Fixed-stack capability injection.** Chat prompt assembly includes a static capabilities block for Make coding types:
+- `tool` → Python 3.12+ single-file/CLI stack
+- `web_app` → Flask 3.x + Vue 3.5 (CDN) + SQLite (`sqlite3`)
+- `desktop_app` → .NET 8 LTS + Avalonia 11 + ReactiveUI
+
+For these types, stack/framework/database choice is treated as system-fixed by default; re-evaluation is routed through a Technical topic.
 
 **Two-stage routing gate.** Every incoming request is first scored by a semantic-router layer (embedding lookup against known web vs. no-web exemplars, ~20ms) and only falls through to the `gemma3:4b` intent confirmer for genuinely ambiguous messages. A second `qwen3:4b` context gate validates the routing decision against full conversation history before any web-research pipeline fires, eliminating false-positive crawls on long technical messages.
 
@@ -449,7 +471,7 @@ The inference router automatically falls back to Ollama if a configured llama.cp
 | Content pool | Available | Blog, social, email with feedback learning |
 | Specialist pool | Available | Medical, finance, history, sports, game design |
 | Creative pool | Available | Novel, memoir, book, screenplay with continuity |
-| Web app pool | Available | Flask + Vue 3 + SQLite, Extend Mode |
+| Web app pool | Available | Flask 3.x + Vue 3.5 (prod CDN) + SQLite (`sqlite3`), Canon v1 scaffold + slot-fill Extend Mode |
 | Desktop app pool | Available | .NET 8 + Avalonia, MVVM scaffold |
 | Topic system + Second Brain memory | Available | Persistent context across sessions |
 | Typed memory (episodic / semantic / procedural) | Available | Conflict resolution via source reputation + recency |

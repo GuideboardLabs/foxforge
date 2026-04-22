@@ -44,6 +44,7 @@ MAKE_CATALOG: dict[str, dict[str, Any]] = {
         "lane": "make_app",
         "destination": "web_apps",
         "model_lane": "make_app",
+        "scaffold_path": "canon/web_app_v1",
     },
     "desktop_app": {
         "label": "Desktop App",
@@ -367,6 +368,19 @@ def catalog_for_api() -> list[dict[str, Any]]:
             "destination": entry["destination"],
         })
     return rows
+
+
+def stack_summary() -> str:
+    """One-line stack capabilities per fixed Make type for chat prompt injection."""
+    return (
+        "SYSTEM CAPABILITIES — the following Make types have fixed stacks:\n"
+        "  tool         → Python 3.12+ / POSIX shell, single-file\n"
+        "  web_app      → Flask 3.x + Vue 3.5 (CDN) + SQLite (sqlite3 stdlib)\n"
+        "  desktop_app  → .NET 8 LTS + Avalonia 11 + ReactiveUI (MVVM)\n\n"
+        "Do NOT suggest researching DB choice, framework choice, or stack tradeoffs\n"
+        "for these types — those decisions are system-fixed. If the user wants to\n"
+        "re-evaluate a stack, they should raise it in a Technical topic."
+    )
 
 
 # Reverse maps from lane → frozenset of type_ids (for main.py routing compatibility)

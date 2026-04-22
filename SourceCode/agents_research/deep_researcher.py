@@ -875,6 +875,12 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "Stating 'the available sources do not cover this' is correct and preferred over filling gaps. "
         "Use [S] only as a last resort for genuine hypotheses, never to launder missing facts. "
         "Uncertainty is not a failure — fabrication is.\n\n"
+        "PROFILE HINTS DISCIPLINE: Profile hints describe who is asking and why. "
+        "Use them to choose which sources to consult and which aspects of the topic to emphasize. "
+        "Do not treat profile hints as evidence. Every specific in your findings (names, ages, breeds, "
+        "conditions, medical history, relationships, employer, location) must be traceable to a web source "
+        "or the literal research question — never to profile hints. If you reference a specific that came "
+        "only from profile hints, your finding is invalid.\n\n"
         "PERSONA HANDOFF: If this request is materially better handled by another persona, "
         "you may return ONLY JSON with shape "
         "{\"handoff_to\":\"<persona>\",\"reason\":\"<one sentence>\",\"confidence\":0.0-1.0}. "
@@ -907,7 +913,26 @@ def _history_block(prior_messages: list[dict[str, str]] | None, limit_turns: int
         rows.append(f"{tag}: {content}")
     if not rows:
         return ""
-    return "Recent command-thread context:\n" + "\n".join(rows)
+    return (
+        "Recent command-thread context (for query shaping, not evidence unless repeated in the literal research question):\n"
+        + "\n".join(rows)
+    )
+
+
+def _profile_hints_block(project_context: str) -> str:
+    hints = _trim_text_block(
+        str(project_context or "").strip(),
+        max_chars=2200,
+        tail_note="profile hints truncated",
+    )
+    if not hints:
+        return ""
+    return (
+        "Profile hints — query-shaping only, NOT evidence:\n"
+        "[PROFILE_HINTS_NOT_EVIDENCE]\n"
+        f"{hints}\n"
+        "[/PROFILE_HINTS_NOT_EVIDENCE]"
+    )
 
 
 _MULTI_PASS_BATCH_SIZE = 6   # sources per LLM pass (doubled from 3 — models have 24K ctx)
@@ -972,8 +997,9 @@ def _run_one_agent(
     _max_web = 30000 if persona.startswith("breaking_") else (24000 if persona.startswith("sports_") else 20000)
     system_prompt, user_prompt = _agent_prompt(question, persona, directive, learned_guidance, web_context, max_web_chars=_max_web)
     context_blocks: list[str] = []
-    if project_context.strip():
-        context_blocks.append(project_context.strip())
+    hints_block = _profile_hints_block(project_context)
+    if hints_block:
+        context_blocks.append(hints_block)
     history = _history_block(prior_messages, limit_turns=12)
     if history:
         context_blocks.append(history)
@@ -1890,9 +1916,13 @@ def run_research_pool(
         conflict_report=conflict_report,
     )
 
-    skeptic_md = run_skeptic_pass(question, summary_md, client=client, model_cfg=synth_cfg, findings=findings)
-    if skeptic_md:
-        summary_md = f"{summary_md}\n\n---\n\n{skeptic_md}"
+    summary_md, critique_log = run_skeptic_pass(
+        question,
+        summary_md,
+        client=client,
+        model_cfg=synth_cfg,
+        findings=findings,
+    )
 
     _all_scores = [f.get("confidence") for f in findings]
     _scored = [int(s) for s in _all_scores if isinstance(s, (int, float)) and int(s) > 0]
@@ -1921,9 +1951,19 @@ def run_research_pool(
         )
 
     summary_path = store.write_project_file(project_slug, "research_summaries", summary_name, summary_md)
+    critique_path = ""
+    if critique_log.strip():
+        critique_name = f"{summary_name}.critique.md"
+        critique_path = str(
+            store.write_project_file(project_slug, "research_summaries", critique_name, critique_log)
+        )
     _progress(
         "research_summary_written",
-        {"summary_path": str(summary_path), "findings_collected": len(findings)},
+        {
+            "summary_path": str(summary_path),
+            "critique_path": critique_path,
+            "findings_collected": len(findings),
+        },
     )
 
     # Release Ollama-hosted models from VRAM now that the full pipeline is done.
@@ -1942,6 +1982,7 @@ def run_research_pool(
             "project": project_slug,
             "raw_path": str(raw_path),
                 "summary_path": str(summary_path),
+                "critique_path": critique_path,
                 "model": model_cfg.get("model", ""),
                 "workers": worker_count,
                 "agents_total": len(agents),
@@ -1960,6 +2001,7 @@ def run_research_pool(
             f"weak={reliability.get('weak', 0)}, failed={reliability.get('failed', 0)}."
         ),
         "summary_path": str(summary_path),
+        "critique_path": critique_path,
         "raw_path": str(raw_path),
         "web_context_used": bool(web_context.strip()),
         "reliability": reliability,

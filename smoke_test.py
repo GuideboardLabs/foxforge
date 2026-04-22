@@ -119,6 +119,104 @@ def main() -> int:
             traceback.print_exc()
 
         try:
+            make_catalog = importlib.import_module("orchestrator.services.make_catalog")
+            stack_summary = getattr(make_catalog, "stack_summary")
+            summary_text = str(stack_summary() or "")
+            assert "tool" in summary_text and "web_app" in summary_text and "desktop_app" in summary_text
+            assert "Flask 3.x" in summary_text and "Vue 3.5" in summary_text
+            web_app_entry = dict(getattr(make_catalog, "MAKE_CATALOG", {}).get("web_app", {}) or {})
+            assert web_app_entry.get("scaffold_path") == "canon/web_app_v1"
+            _print(PASS, "Stack summary helper exposes fixed stack capabilities")
+        except Exception:
+            failures += 1
+            _print(FAIL, "Stack summary helper check failed")
+            traceback.print_exc()
+
+        try:
+            canon_renderer = importlib.import_module("agents_make.canon.renderer")
+            copy_scaffold = getattr(canon_renderer, "copy_scaffold")
+            list_slots = getattr(canon_renderer, "list_slots")
+            verify_plumbing_intact = getattr(canon_renderer, "verify_plumbing_intact")
+            probe_dir = tmp_repo / "Runtime" / "smoke_canon_probe"
+            copy_scaffold("web_app_v1", probe_dir)
+            slots = list_slots(probe_dir)
+            app_slots = slots.get(probe_dir / "app.py", [])
+            assert "routes-feature" in app_slots and "imports-feature" in app_slots
+            assert verify_plumbing_intact(probe_dir, "web_app_v1") == []
+            _print(PASS, "Canon scaffold copy, slot discovery, and plumbing checks are healthy")
+        except Exception:
+            failures += 1
+            _print(FAIL, "Canon scaffold sanity check failed")
+            traceback.print_exc()
+
+        try:
+            research_service = importlib.import_module("orchestrator.services.research_service")
+            guard = getattr(research_service, "_is_stack_decided_question")
+            assert guard("Should I use SQLite or Postgres?", "general") is True
+            assert guard("React vs Vue?", "general") is True
+            assert guard("Should I use SQLite or Postgres?", "technical") is False
+            _print(PASS, "Research stack-decision guard behavior is correct")
+        except Exception:
+            failures += 1
+            _print(FAIL, "Research stack-decision guard check failed")
+            traceback.print_exc()
+
+        try:
+            mainmod = importlib.import_module("orchestrator.main")
+            host_cls = getattr(mainmod, "FoxforgeOrchestrator")
+            host = host_cls.__new__(host_cls)
+            host.repo_root = tmp_repo
+            artifacts = host._format_research_artifacts_block(
+                {
+                    "summary_path": str(tmp_repo / "Projects" / "demo" / "research_summaries" / "summary with space.md"),
+                    "raw_path": str(tmp_repo / "Projects" / "demo" / "research_raw" / "raw.md"),
+                }
+            )
+            assert "](/api/files/read?path=Projects/demo/research_summaries/summary%20with%20space.md)" in artifacts
+            assert "](/api/files/read?path=Projects/demo/research_raw/raw.md)" in artifacts
+            _print(PASS, "Research artifact block emits clickable markdown file links")
+        except Exception:
+            failures += 1
+            _print(FAIL, "Research artifact link formatting check failed")
+            traceback.print_exc()
+
+        try:
+            synth = importlib.import_module("agents_research.synthesizer")
+
+            class _FakeClient:
+                def chat(self, **_kwargs):
+                    return "Revised summary\n---CRITIQUE---\nAudit notes"
+
+            revised, critique = synth.run_skeptic_pass(
+                question="q",
+                synthesis="Base summary",
+                client=_FakeClient(),
+                model_cfg={"model": "dummy"},
+                findings=[],
+            )
+            assert revised == "Revised summary"
+            assert critique == "Audit notes"
+            _print(PASS, "Skeptic pass returns revised summary plus critique sidecar")
+        except Exception:
+            failures += 1
+            _print(FAIL, "Skeptic pass contract check failed")
+            traceback.print_exc()
+
+        try:
+            readme_text = (tmp_repo / "README.md").read_text(encoding="utf-8")
+            assert "Flask 3.x + Vue 3.5" in readme_text
+            assert "system-fixed" in readme_text
+            assert "Technical topic" in readme_text
+            assert "Skeptic sidecar" in readme_text
+            assert "Public-content guardrail" in readme_text
+            assert "Canon v1" in readme_text
+            _print(PASS, "README includes current stack and routing guidance")
+        except Exception:
+            failures += 1
+            _print(FAIL, "README accuracy check failed")
+            traceback.print_exc()
+
+        try:
             app = appmod.create_app()
             _print(PASS, "create_app() returned a Flask app")
         except Exception:

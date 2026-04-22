@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,37 @@ LOGGER = logging.getLogger(__name__)
 # Keyed by project_slug (single-user system — slug is sufficient).
 _active_foraging_lock = threading.Lock()
 _active_foraging: set[str] = set()
+
+
+def _is_stack_decided_question(text: str, topic_type: str) -> bool:
+    if str(topic_type or "").strip().lower() == "technical":
+        return False
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    triggers = (
+        "database choice", "which database", "db choice",
+        "which framework", "framework choice", "stack recommendation",
+        "vue vs react", "react vs vue", "flask vs fastapi",
+        "sqlite vs postgres", "postgres vs sqlite",
+        "sqlite or postgres", "postgres or sqlite",
+        "flask or fastapi", "fastapi or flask",
+        "vue or react", "react or vue",
+        "dotnet vs", "electron vs", "tauri vs",
+    )
+    if any(token in low for token in triggers):
+        return True
+    pair_patterns = (
+        r"\bsqlite\s+(?:vs|or)\s+postgres\b",
+        r"\bpostgres\s+(?:vs|or)\s+sqlite\b",
+        r"\bflask\s+(?:vs|or)\s+fastapi\b",
+        r"\bfastapi\s+(?:vs|or)\s+flask\b",
+        r"\bvue\s+(?:vs|or)\s+react\b",
+        r"\breact\s+(?:vs|or)\s+vue\b",
+        r"\bdotnet\s+(?:vs|or)\s+(?:electron|tauri)\b",
+        r"\b(?:electron|tauri)\s+(?:vs|or)\s+dotnet\b",
+    )
+    return any(re.search(pattern, low) for pattern in pair_patterns)
 
 
 class ResearchService:
@@ -56,6 +88,8 @@ class ResearchService:
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before research execution started."
+        if _is_stack_decided_question(text, topic_type):
+            return "This is a system-level stack decision. To re-evaluate, switch to a Technical topic."
         full_foraging = force_research or bool(getattr(turn_plan, "should_run_foraging", False))
         if not full_foraging:
             return self._execute_light_research(
@@ -103,6 +137,8 @@ class ResearchService:
     ) -> str:
         if self._is_cancelled(cancel_checker):
             return "Request cancelled before project-research execution started."
+        if _is_stack_decided_question(text, topic_type):
+            return "This is a system-level stack decision. To re-evaluate, switch to a Technical topic."
         slug = str(getattr(host, "project_slug", "") or "").strip()
         with _active_foraging_lock:
             if slug and slug in _active_foraging:
@@ -582,9 +618,13 @@ class ResearchService:
         )
 
         # Adversarial skeptic pass on the updated synthesis.
-        skeptic_md = run_skeptic_pass(text, new_summary_md, client=client, model_cfg=synth_cfg)
-        if skeptic_md:
-            new_summary_md = f"{new_summary_md}\n\n---\n\n{skeptic_md}"
+        new_summary_md, critique_log = run_skeptic_pass(
+            text,
+            new_summary_md,
+            client=client,
+            model_cfg=synth_cfg,
+            findings=merged_findings,
+        )
 
         # Append source quality block with merged confidence scores.
         new_reliability = _reliability_summary(merged_findings)
@@ -625,6 +665,16 @@ class ResearchService:
         filled_path = store.write_project_file(
             project_slug, "research_summaries", filled_name, new_summary_md
         )
+        filled_critique_path = ""
+        if critique_log.strip():
+            filled_critique_path = str(
+                store.write_project_file(
+                    project_slug,
+                    "research_summaries",
+                    f"{filled_name}.critique.md",
+                    critique_log,
+                )
+            )
 
         LOGGER.info("gap_fill completed filled_summary=%s fill_agents=%d", filled_path, len(fill_findings))
 
@@ -632,6 +682,7 @@ class ResearchService:
             try:
                 progress_callback("gap_fill_completed", {
                     "filled_summary_path": str(filled_path),
+                    "filled_critique_path": filled_critique_path,
                     "fill_agents_used": len(fill_findings),
                     "gap_queries": gap_queries,
                 })
@@ -640,6 +691,8 @@ class ResearchService:
 
         updated_out = dict(out)
         updated_out["summary_path"] = str(filled_path)
+        if filled_critique_path:
+            updated_out["critique_path"] = filled_critique_path
         updated_out["gap_fill_used"] = True
         updated_out["reliability"] = new_reliability
         updated_out["findings"] = merged_findings
