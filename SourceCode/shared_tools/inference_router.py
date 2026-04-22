@@ -221,6 +221,40 @@ class InferenceRouter:
         tail = " | ".join(errors[-8:]) if errors else "No model candidates were available."
         raise RuntimeError(f"InferenceRouter chat failed after routed retries/fallbacks: {tail}")
 
+    def wait_for_available(
+        self,
+        model: str,
+        *,
+        max_wait_sec: int = 300,
+        poll_interval_sec: int = 15,
+    ) -> bool:
+        """Poll until the model responds to a trivial ping or timeout expires."""
+        name = str(model or "").strip()
+        if not name:
+            return False
+        elapsed = 0
+        while elapsed < max_wait_sec:
+            try:
+                self.chat(
+                    model=name,
+                    system_prompt="",
+                    user_prompt="ping",
+                    num_predict=1,
+                    timeout=10,
+                    retry_attempts=1,
+                    retry_backoff_sec=0.0,
+                )
+                return True
+            except Exception:
+                LOGGER.debug(
+                    "wait_for_available: model=%r not responding, elapsed=%ds",
+                    name,
+                    elapsed,
+                )
+                time.sleep(poll_interval_sec)
+                elapsed += poll_interval_sec
+        return False
+
     def release_models(self, models: list[str]) -> None:
         """Release Ollama-hosted models from VRAM after a pool run completes.
 

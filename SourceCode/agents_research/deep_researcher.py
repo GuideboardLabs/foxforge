@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from typing import Any, Callable
 
 from agents_research.citation_linker import build_retrieved_chunks
-from agents_research.synthesizer import synthesize, run_skeptic_pass
+from agents_research.synthesizer import SynthesisUnavailableError, synthesize, run_skeptic_pass
 from shared_tools.embedding_memory import _vec_cosine
 from shared_tools.file_store import ProjectStore
 from shared_tools.feedback_learning import FeedbackLearningEngine
@@ -27,6 +27,10 @@ _URL_PATTERN = re.compile(
 _WEB_CONTEXT_SOURCE_RE = re.compile(r"^\-\s.*\|\s+(https?://\S+)\s*$", re.IGNORECASE)
 _SELF_SCORE_RE = re.compile(
     r"^\s*SELF_SCORE:\s*confidence=([01](?:\.\d+)?);\s*coverage=([01](?:\.\d+)?);\s*notes=(.+?)\s*$",
+    re.IGNORECASE,
+)
+_SELF_SCORE_RE_LENIENT = re.compile(
+    r"^\s*SELF_SCORE:\s*(?:confidence|conf)=(\d*\.?\d+);\s*coverage=(\d*\.?\d+);\s*notes=(.+?)[.;]?\s*$",
     re.IGNORECASE,
 )
 _OPEN_QUESTIONS_HEADING_RE = re.compile(
@@ -217,6 +221,13 @@ def _extract_self_score(finding: str) -> tuple[str, dict[str, float | str] | Non
         if match:
             score_idx = idx
             score_match = match
+            break
+        lenient = _SELF_SCORE_RE_LENIENT.match(lines[idx].strip())
+        if lenient:
+            import logging as _lg
+            _lg.getLogger(__name__).debug("_extract_self_score: using lenient SELF_SCORE regex at line %d", idx)
+            score_idx = idx
+            score_match = lenient
             break
     if score_match is None:
         return text, None, "missing SELF_SCORE line"
@@ -1037,8 +1048,9 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "SOURCE QUALITY: Prefer high-quality institutional domains (.gov, .edu, recognized medical/scientific "
         "institutions, standards bodies). If you cite a low-editorial platform (for example Medium/LinkedIn/Substack), "
         "label it as platform/blog evidence.\n\n"
-        "SELF SCORING: End your response with exactly one line in this format:\n"
-        "SELF_SCORE: confidence=<0.0-1.0>; coverage=<0.0-1.0>; notes=<short string>\n\n"
+        "SELF SCORING: Your response MUST end with exactly this line (no blank lines after it):\n"
+        "SELF_SCORE: confidence=<0.0-1.0>; coverage=<0.0-1.0>; notes=<short string>\n"
+        "Omitting this line makes your findings unusable to the synthesizer. Use a decimal between 0.0 and 1.0.\n\n"
         "PERSONA HANDOFF: If this request is materially better handled by another persona, "
         "you may return ONLY JSON with shape "
         "{\"handoff_to\":\"<persona>\",\"reason\":\"<one sentence>\",\"confidence\":0.0-1.0}. "
@@ -1988,7 +2000,13 @@ def run_research_pool(
 
     if canceled:
         summary_name = store.timestamped_name("research_summary")
-        partial = synthesize(question, findings, client=None, model_cfg=None)
+        _partial_lines = ["## Partial Findings"]
+        for _item in findings:
+            _agent = str(_item.get("agent", "agent")).strip()
+            _text = str(_item.get("finding", "")).strip()[:500]
+            if _text:
+                _partial_lines.append(f"\n**{_agent}:** {_text}")
+        partial = "\n".join(_partial_lines)
         cancel_md = (
             "# Research Synthesis (Cancelled)\n\n"
             f"Question: {question}\n\n"
@@ -2055,14 +2073,30 @@ def run_research_pool(
     summary_name = store.timestamped_name("research_summary")
     prior_open_questions = _load_prior_open_questions(repo_root, project_slug)
     conflict_report = _cross_agent_conflict_report(findings)
-    summary_md = synthesize(
-        question,
-        findings,
-        client=client,
-        model_cfg=synth_cfg,
-        conflict_report=conflict_report,
-        prior_open_questions=prior_open_questions,
-    )
+    try:
+        summary_md = synthesize(
+            question,
+            findings,
+            client=client,
+            model_cfg=synth_cfg,
+            conflict_report=conflict_report,
+            prior_open_questions=prior_open_questions,
+        )
+    except SynthesisUnavailableError as exc:
+        LOGGER.error("Synthesis unavailable during research pool run: %s", exc)
+        bus.emit("research_pool", "synthesis_unavailable", {"project": project_slug, "reason": str(exc)})
+        return {
+            "message": "Research could not complete — the synthesis model was unavailable. Try again in a few minutes.",
+            "summary_path": "",
+            "critique_path": "",
+            "raw_path": str(raw_path),
+            "web_context_used": bool(web_context.strip()),
+            "reliability": reliability,
+            "synthesis_unavailable": True,
+            "findings": findings,
+            "retrieved_chunks": [],
+            "visited_agents_per_leaf": visited_agents_per_leaf,
+        }
 
     summary_md, critique_log = run_skeptic_pass(
         question,
@@ -2079,12 +2113,12 @@ def run_research_pool(
     summary_md = f"{summary_md}\n\n---\n\n{_build_source_quality_footer(findings, suffix=quality_suffix)}"
 
     summary_path = store.write_project_file(project_slug, "research_summaries", summary_name, summary_md)
-    critique_path = ""
-    if critique_log.strip():
-        critique_name = f"{summary_name}.critique.md"
-        critique_path = str(
-            store.write_project_file(project_slug, "research_summaries", critique_name, critique_log)
-        )
+    if not critique_log.strip():
+        critique_log = "_Skeptic pass produced no output for this run._"
+    critique_name = f"{summary_name}.critique.md"
+    critique_path = str(
+        store.write_project_file(project_slug, "research_summaries", critique_name, critique_log)
+    )
     _progress(
         "research_summary_written",
         {

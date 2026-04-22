@@ -1,9 +1,12 @@
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 from threading import Lock
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -149,6 +152,40 @@ class OllamaClient:
 
         tail = " | ".join(errors[-6:]) if errors else "unknown failure"
         raise RuntimeError(f"Ollama chat failed after retries/fallbacks: {tail}")
+
+    def wait_for_available(
+        self,
+        model: str,
+        *,
+        max_wait_sec: int = 300,
+        poll_interval_sec: int = 15,
+    ) -> bool:
+        """Poll until the model responds to a trivial ping or timeout expires."""
+        name = str(model or "").strip()
+        if not name:
+            return False
+        elapsed = 0
+        while elapsed < max_wait_sec:
+            try:
+                self.chat(
+                    model=name,
+                    system_prompt="",
+                    user_prompt="ping",
+                    num_predict=1,
+                    timeout=10,
+                    retry_attempts=1,
+                    retry_backoff_sec=0.0,
+                )
+                return True
+            except Exception:
+                LOGGER.debug(
+                    "wait_for_available: model=%r not responding, elapsed=%ds",
+                    name,
+                    elapsed,
+                )
+                time.sleep(poll_interval_sec)
+                elapsed += poll_interval_sec
+        return False
 
     def release_model(self, model: str) -> None:
         """Tell Ollama to immediately unload a model from VRAM (keep_alive=0)."""

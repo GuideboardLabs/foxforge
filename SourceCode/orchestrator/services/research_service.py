@@ -16,7 +16,7 @@ from agents_research.deep_researcher import (
     _reliability_summary,
     _run_fill_agents,
 )
-from agents_research.synthesizer import synthesize, run_skeptic_pass
+from agents_research.synthesizer import SynthesisUnavailableError, synthesize, run_skeptic_pass
 from shared_tools.file_store import ProjectStore
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.model_routing import lane_model_config
@@ -180,6 +180,8 @@ class ResearchService:
                     pause_checker=pause_checker,
                     progress_callback=progress_callback,
                 )
+            if bool(out.get("synthesis_unavailable", False)):
+                return str(out.get("message") or "Research could not complete — the synthesis model was unavailable. Try again in a few minutes.")
             if bool(out.get("canceled", False)):
                 return str(
                     out.get("cancel_summary")
@@ -347,6 +349,8 @@ class ResearchService:
                 pause_checker=pause_checker,
                 progress_callback=progress_callback,
             )
+        if bool(out.get("synthesis_unavailable", False)):
+            return str(out.get("message") or "Research could not complete — the synthesis model was unavailable. Try again in a few minutes.")
         if bool(out.get("canceled", False)):
             return str(
                 out.get("cancel_summary")
@@ -601,14 +605,18 @@ class ResearchService:
 
         project_slug = str(getattr(host, "project_slug", "") or "").strip()
         prior_open_questions = _load_prior_open_questions(self.repo_root, project_slug)
-        new_summary_md = synthesize(
-            text,
-            merged_findings,
-            client=client,
-            model_cfg=synth_cfg,
-            prior_synthesis=summary_md,
-            prior_open_questions=prior_open_questions,
-        )
+        try:
+            new_summary_md = synthesize(
+                text,
+                merged_findings,
+                client=client,
+                model_cfg=synth_cfg,
+                prior_synthesis=summary_md,
+                prior_open_questions=prior_open_questions,
+            )
+        except SynthesisUnavailableError as exc:
+            LOGGER.error("Synthesis unavailable during gap-fill pass: %s", exc)
+            return out
 
         # Adversarial skeptic pass on the updated synthesis.
         new_summary_md, critique_log = run_skeptic_pass(
@@ -633,16 +641,16 @@ class ResearchService:
         filled_path = store.write_project_file(
             project_slug, "research_summaries", filled_name, new_summary_md
         )
-        filled_critique_path = ""
-        if critique_log.strip():
-            filled_critique_path = str(
-                store.write_project_file(
-                    project_slug,
-                    "research_summaries",
-                    f"{filled_name}.critique.md",
-                    critique_log,
-                )
+        if not critique_log.strip():
+            critique_log = "_Skeptic pass produced no output for this run._"
+        filled_critique_path = str(
+            store.write_project_file(
+                project_slug,
+                "research_summaries",
+                f"{filled_name}.critique.md",
+                critique_log,
             )
+        )
 
         LOGGER.info("gap_fill completed filled_summary=%s fill_agents=%d", filled_path, len(fill_findings))
 

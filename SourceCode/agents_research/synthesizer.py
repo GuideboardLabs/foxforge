@@ -4,8 +4,13 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 LOGGER = logging.getLogger(__name__)
+
+
+class SynthesisUnavailableError(RuntimeError):
+    """Raised when the synthesis model is unavailable or produces no output."""
 
 
 def extract_action_proposals(synthesis_text: str) -> list[dict[str, str]]:
@@ -54,32 +59,23 @@ def extract_action_proposals(synthesis_text: str) -> list[dict[str, str]]:
     return proposals
 
 
-def _fallback_synthesis(question: str, findings: list[dict]) -> str:
-    lines = [
-        "# Research Synthesis",
-        "",
-        f"Question: {question}",
-        "",
-        "## Executive Summary",
-        "Fallback synthesis — LLM unavailable. Raw findings listed below.",
-        "Evidence Confidence: Low — no synthesis model was available.",
-        "",
-        "## Key Findings",
-    ]
-    for item in findings:
-        lines.append(f"- {item['agent']}: {item['finding']}")
-    lines.extend(
-        [
-            "",
-            "## Uncertainties & Risks",
-            "- Validate assumptions with primary sources.",
-            "- Identify time-sensitive risks before execution.",
-            "",
-            "## Next Steps",
-            "- Convert this synthesis into an actionable plan at current resource scale.",
-        ]
-    )
-    return "\n".join(lines)
+def _sanitize_markdown_urls(text: str) -> str:
+    """Strip malformed markdown links; keep the label text."""
+    def _check_url(m: re.Match) -> str:
+        label = m.group(1)
+        url = m.group(2)
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return label
+            netloc = parsed.netloc or ""
+            if not netloc or "," in netloc:
+                LOGGER.warning("Stripped malformed URL from synthesis: %s", url)
+                return label
+        except Exception:
+            return label
+        return m.group(0)
+    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _check_url, text)
 
 
 def _is_valid_synthesis(text: str) -> bool:
@@ -143,11 +139,15 @@ def synthesize(
     prior_open_questions: list[str] | None = None,
 ) -> str:
     if client is None or not model_cfg:
-        return _fallback_synthesis(question, findings)
+        raise SynthesisUnavailableError(
+            "Synthesis model unavailable — no client or model config provided."
+        )
 
     model = str(model_cfg.get("synthesis_model") or model_cfg.get("model", "")).strip()
     if not model:
-        return _fallback_synthesis(question, findings)
+        raise SynthesisUnavailableError(
+            "Synthesis model unavailable — model name is empty in config."
+        )
 
     def _conf_label(item: dict) -> str:
         score = item.get("confidence", 0)
@@ -254,6 +254,13 @@ def synthesize(
             if name:
                 fallback_models.append(name)
 
+    if hasattr(client, "wait_for_available"):
+        if not client.wait_for_available(model, max_wait_sec=300, poll_interval_sec=15):
+            raise SynthesisUnavailableError(
+                f"Synthesis model '{model}' did not become available within 5 minutes. "
+                "Research run aborted — no output written."
+            )
+
     last_text = ""
     for cycle in range(validation_cycles):
         prompt = user_prompt
@@ -281,7 +288,7 @@ def synthesize(
                 if _looks_truncated_output(candidate):
                     LOGGER.warning("Synthesis output appears truncated; retrying once with truncation guard.")
                     continue
-                return candidate
+                return _sanitize_markdown_urls(candidate)
         except Exception:
             continue
 
@@ -305,19 +312,22 @@ def synthesize(
                 retry_backoff_sec=retry_backoff_sec,
             )
             if _is_valid_synthesis(recovered):
-                return recovered
+                return _sanitize_markdown_urls(recovered)
         except Exception:
             pass
 
     if _is_valid_synthesis(last_text):
-        return last_text
+        return _sanitize_markdown_urls(last_text)
     if last_text.strip():
-        return (
+        return _sanitize_markdown_urls(
             f"{last_text}\n\n"
             "_Reliability note: synthesis did not pass full section validation after retries; "
             "review before treating as final._"
         )
-    return _fallback_synthesis(question, findings)
+    raise SynthesisUnavailableError(
+        f"Synthesis model '{model}' produced no output after all retries. "
+        "Research run aborted — no output written."
+    )
 
 
 def run_skeptic_pass(
@@ -427,13 +437,13 @@ def run_skeptic_pass(
                 revised_text = str(revised_match.group(1) or "").strip()
                 critique_text = str(critique_match.group(1) or "").strip() if critique_match else ""
                 if revised_text:
-                    return revised_text, critique_text
+                    return _sanitize_markdown_urls(revised_text), critique_text
             if "---CRITIQUE---" in body:
                 revised, critique = body.split("---CRITIQUE---", 1)
                 revised_text = revised.strip()
                 critique_text = critique.strip()
                 if revised_text:
-                    return revised_text, critique_text
+                    return _sanitize_markdown_urls(revised_text), critique_text
             critique_fallback = body
         except Exception:
             continue
@@ -463,8 +473,8 @@ def run_skeptic_pass(
             )
             revised_text = str(revised or "").strip()
             if revised_text:
-                return revised_text, critique_fallback
+                return _sanitize_markdown_urls(revised_text), critique_fallback
         except Exception:
             pass
 
-    return base_summary, critique_fallback
+    return _sanitize_markdown_urls(base_summary), critique_fallback

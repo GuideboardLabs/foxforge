@@ -125,6 +125,25 @@ def format_source_label(source_obj: dict[str, Any]) -> str:
     return label.replace("-", " ").title()
 
 
+def _inline_cited_domains(synthesis_text: str, limit: int = 6) -> list[str]:
+    """Return formatted source labels for domains that appear as inline markdown links in the text."""
+    urls = re.findall(r'\(https?://([^)\s]+)\)', str(synthesis_text or ""))
+    seen: set[str] = set()
+    result: list[str] = []
+    for u in urls:
+        host = _valid_host(u.split("/")[0])
+        domain = _etld_plus_one(host)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        label = format_source_label({"url": f"https://{domain}"})
+        if label:
+            result.append(label)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def source_labels(sources: list[dict[str, Any]], limit: int = 3) -> list[str]:
     counts: dict[str, int] = {}
     for row in sources:
@@ -222,7 +241,8 @@ def compose_research_summary(
     if not raw:
         return raw
     sections = merge_duplicate_sections(parse_markdown_sections(raw))
-    labels = source_labels(sources or [], limit=4)
+    inline_labels = _inline_cited_domains(raw, limit=6)
+    labels = inline_labels if inline_labels else source_labels(sources or [], limit=4)
     schema = _choose_schema(topic_type, question)
 
     if fact_card_md.strip():
