@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 import json
+import logging
 import re
 import time
 from urllib.parse import urlsplit
@@ -17,6 +18,8 @@ from shared_tools.model_routing import lane_model_config, load_model_routing
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.ollama_client import OllamaClient
 from shared_tools.activity_bus import telemetry_emit
+
+LOGGER = logging.getLogger(__name__)
 
 
 _URL_PATTERN = re.compile(
@@ -224,8 +227,7 @@ def _extract_self_score(finding: str) -> tuple[str, dict[str, float | str] | Non
             break
         lenient = _SELF_SCORE_RE_LENIENT.match(lines[idx].strip())
         if lenient:
-            import logging as _lg
-            _lg.getLogger(__name__).debug("_extract_self_score: using lenient SELF_SCORE regex at line %d", idx)
+            LOGGER.debug("_extract_self_score: using lenient SELF_SCORE regex at line %d", idx)
             score_idx = idx
             score_match = lenient
             break
@@ -2073,6 +2075,13 @@ def run_research_pool(
     summary_name = store.timestamped_name("research_summary")
     prior_open_questions = _load_prior_open_questions(repo_root, project_slug)
     conflict_report = _cross_agent_conflict_report(findings)
+    _progress(
+        "synthesizing",
+        {
+            "model": str(synth_cfg.get("model", "")).strip(),
+            "findings_collected": len(findings),
+        },
+    )
     try:
         summary_md = synthesize(
             question,
@@ -2085,6 +2094,13 @@ def run_research_pool(
     except SynthesisUnavailableError as exc:
         LOGGER.error("Synthesis unavailable during research pool run: %s", exc)
         bus.emit("research_pool", "synthesis_unavailable", {"project": project_slug, "reason": str(exc)})
+        _progress(
+            "synthesis_unavailable",
+            {
+                "reason": str(exc),
+                "raw_path": str(raw_path),
+            },
+        )
         return {
             "message": "Research could not complete — the synthesis model was unavailable. Try again in a few minutes.",
             "summary_path": "",
@@ -2098,12 +2114,28 @@ def run_research_pool(
             "visited_agents_per_leaf": visited_agents_per_leaf,
         }
 
+    _progress(
+        "skeptic_pass_started",
+        {
+            "phase": "primary",
+            "model": str(synth_cfg.get("model", "")).strip(),
+            "note": "Running critique pass on synthesis.",
+        },
+    )
     summary_md, critique_log = run_skeptic_pass(
         question,
         summary_md,
         client=client,
         model_cfg=synth_cfg,
         findings=findings,
+    )
+    _progress(
+        "skeptic_pass_completed",
+        {
+            "phase": "primary",
+            "critique_chars": len(str(critique_log or "").strip()),
+            "note": "Critique pass finished.",
+        },
     )
 
     recycled_questions = _count_recycled_open_questions(summary_md, prior_open_questions)

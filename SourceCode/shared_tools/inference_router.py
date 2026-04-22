@@ -32,6 +32,10 @@ class InferenceRouter:
         self._llama_clients: dict[str, LlamaCppClient] = {}
         self._model_map: dict[str, str] = {}  # model_name -> server_key
         self._fallback_flags: dict[str, bool] = {}  # server_key -> fallback_to_ollama
+        self.last_wait_error = ""
+        self.last_wait_candidates: list[str] = []
+        self.last_wait_polls = 0
+        self.last_wait_elapsed_sec = 0
 
         if repo_root is None:
             repo_root = Path(__file__).resolve().parents[2]
@@ -140,6 +144,7 @@ class InferenceRouter:
         temperature: float = 0.3,
         num_ctx: int = 8192,
         think: bool | None = None,
+        num_predict: int | None = -1,
         timeout: int = 300,
         retry_attempts: int = 1,
         retry_backoff_sec: float = 1.25,
@@ -152,6 +157,7 @@ class InferenceRouter:
             temperature=temperature,
             num_ctx=num_ctx,
             think=think,
+            num_predict=num_predict,
             timeout=timeout,
             retry_attempts=retry_attempts,
             retry_backoff_sec=retry_backoff_sec,
@@ -225,6 +231,7 @@ class InferenceRouter:
         self,
         model: str,
         *,
+        fallback_models: list[str] | None = None,
         max_wait_sec: int = 300,
         poll_interval_sec: int = 15,
     ) -> bool:
@@ -232,27 +239,79 @@ class InferenceRouter:
         name = str(model or "").strip()
         if not name:
             return False
-        elapsed = 0
-        while elapsed < max_wait_sec:
+        candidates: list[str] = []
+        for item in [name, *(fallback_models or [])]:
+            entry = str(item or "").strip()
+            if entry and entry not in candidates:
+                candidates.append(entry)
+        self.last_wait_error = ""
+        self.last_wait_candidates = list(candidates)
+        self.last_wait_polls = 0
+        self.last_wait_elapsed_sec = 0
+        started = time.monotonic()
+        deadline = started + float(max_wait_sec)
+        polls = 0
+        last_error = ""
+        # First-load on local runners can take >10s; keep ping timeout above that
+        # so we don't cancel our own load request.
+        ping_timeout = max(30, int(poll_interval_sec) + 15)
+        while time.monotonic() < deadline:
+            polls += 1
             try:
                 self.chat(
                     model=name,
-                    system_prompt="",
-                    user_prompt="ping",
-                    num_predict=1,
-                    timeout=10,
+                    fallback_models=fallback_models or [],
+                    system_prompt="ok",
+                    user_prompt="Reply with OK only.",
+                    think=False,
+                    num_predict=8,
+                    timeout=ping_timeout,
                     retry_attempts=1,
                     retry_backoff_sec=0.0,
                 )
+                self.last_wait_error = ""
+                self.last_wait_polls = polls
+                self.last_wait_elapsed_sec = int(max(0.0, time.monotonic() - started))
                 return True
-            except Exception:
+            except Exception as exc:
+                err_text = str(exc).strip()
+                # Some models can return an empty short ping even when the runner
+                # is healthy; that still proves availability for preflight.
+                if "empty message content" in err_text.lower():
+                    self.last_wait_error = ""
+                    self.last_wait_polls = polls
+                    self.last_wait_elapsed_sec = int(max(0.0, time.monotonic() - started))
+                    LOGGER.debug(
+                        "wait_for_available: model=%r candidates=%s responded with empty ping; treating as available",
+                        name,
+                        candidates,
+                    )
+                    return True
+                last_error = f"{type(exc).__name__}: {err_text[:320]}"
+                elapsed = int(max(0.0, time.monotonic() - started))
                 LOGGER.debug(
-                    "wait_for_available: model=%r not responding, elapsed=%ds",
+                    "wait_for_available: model=%r candidates=%s not responding, elapsed=%ds, error=%s",
                     name,
+                    candidates,
                     elapsed,
+                    last_error,
                 )
-                time.sleep(poll_interval_sec)
-                elapsed += poll_interval_sec
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(float(poll_interval_sec), max(0.0, remaining)))
+        elapsed = int(max(0.0, time.monotonic() - started))
+        self.last_wait_error = last_error or "unknown"
+        self.last_wait_polls = polls
+        self.last_wait_elapsed_sec = elapsed
+        LOGGER.warning(
+            "wait_for_available timeout: model=%r candidates=%s elapsed=%ds polls=%d last_error=%s",
+            name,
+            candidates,
+            elapsed,
+            polls,
+            last_error or "unknown",
+        )
         return False
 
     def release_models(self, models: list[str]) -> None:

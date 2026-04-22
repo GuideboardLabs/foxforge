@@ -7431,17 +7431,34 @@ const app = window.Vue.createApp({
     _humanizeJobStage(job) {
       const stage = String(job?.stage || "").trim().toLowerCase();
       const tracker = job?.agent_tracker;
+      const webStack = (job && typeof job.web_stack === "object" && job.web_stack) ? job.web_stack : {};
+      const liveSources = Array.isArray(job?.live_sources) ? job.live_sources : [];
+      const events = Array.isArray(job?.events) ? job.events : [];
+      const lastEventDetail = events.length ? String(events[events.length - 1]?.detail || "").trim() : "";
       if (!stage || stage === "queued") return "Queued.";
 
       // Talk-mode stages
       if (stage === "message_received") return "Got it.";
       if (stage === "orchestrator_ready") return "Routing.";
+      if (stage === "orchestrator_received") return "Understanding your request.";
+      if (stage === "lane_routed") return "Intent routed.";
       if (stage === "attachment_analysis") return "Reading your files.";
       if (stage === "attachment_analysis_done") return "Files digested.";
       if (stage === "image_gen_queued") return "Image queued.";
       if (stage === "image_gen_done") return "Image ready.";
       if (stage === "talk_mode") return "Drafting a reply.";
-      if (stage === "web_stack_ready") return "Web context ready.";
+      if (stage === "web_research_started") return "Crawling the web.";
+      if (stage === "web_source_discovered") {
+        return liveSources.length > 0 ? `Crawling sources (${liveSources.length} found).` : "Crawling sources.";
+      }
+      if (stage === "web_stack_ready") {
+        const sourceCount = Number(webStack?.source_count || 0);
+        const crawlPages = Number(webStack?.crawl_pages || 0);
+        if (sourceCount > 0 || crawlPages > 0) {
+          return `Web context ready (${sourceCount} sources, ${crawlPages} pages).`;
+        }
+        return "Web context ready.";
+      }
       if (stage === "talk_mode_done") return "Finishing up.";
       if (stage === "command_mode") return "Running command.";
       if (stage === "command_mode_done") return "Done.";
@@ -7484,6 +7501,8 @@ const app = window.Vue.createApp({
       }
       if (stage === "research_raw_written") return "Notes collected.";
       if (stage === "research_summary_written") return "Synthesis written.";
+      if (stage === "skeptic_pass_started") return "Running critique pass.";
+      if (stage === "skeptic_pass_completed") return "Critique pass complete.";
       if (stage === "research_cancel_requested") return "Cancelling agents.";
       if (stage === "research_cancelled") return "Run cancelled.";
 
@@ -7493,6 +7512,9 @@ const app = window.Vue.createApp({
 
       // Synthesis
       if (stage === "synthesizing" || stage === "synthesis") return "Synthesizing.";
+      if (stage === "synthesis_unavailable") {
+        return lastEventDetail ? `Synthesis unavailable: ${lastEventDetail}` : "Synthesis unavailable.";
+      }
 
       // Terminal states
       if (stage === "cancel_requested" || stage === "cancel_acknowledged") return "Stopping.";

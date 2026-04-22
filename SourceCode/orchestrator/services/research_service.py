@@ -153,6 +153,7 @@ class ResearchService:
             if slug:
                 _active_foraging.add(slug)
         try:
+            self._emit_web_start(progress_callback, lane="project")
             web_note, web_context, web_details = host._prepare_web_context(text=text, lane="project", topic_type=topic_type, force=True, progress_callback=progress_callback)
             self._emit_web_progress(progress_callback, web_details)
             out = self._run_research_pool(
@@ -322,6 +323,7 @@ class ResearchService:
         event_note: str = "",
         details_sink: dict[str, Any] | None = None,
     ) -> str:
+        self._emit_web_start(progress_callback, lane=lane)
         web_note, web_context, web_details = host._prepare_web_context(text=text, lane=lane, topic_type=topic_type, force=True, progress_callback=progress_callback)
         self._emit_web_progress(progress_callback, web_details)
         out = self._run_research_pool(
@@ -619,6 +621,14 @@ class ResearchService:
             return out
 
         # Adversarial skeptic pass on the updated synthesis.
+        if callable(progress_callback):
+            try:
+                progress_callback("skeptic_pass_started", {
+                    "phase": "gap_fill",
+                    "note": "Running critique pass on updated synthesis.",
+                })
+            except Exception:
+                pass
         new_summary_md, critique_log = run_skeptic_pass(
             text,
             new_summary_md,
@@ -626,6 +636,15 @@ class ResearchService:
             model_cfg=synth_cfg,
             findings=merged_findings,
         )
+        if callable(progress_callback):
+            try:
+                progress_callback("skeptic_pass_completed", {
+                    "phase": "gap_fill",
+                    "critique_chars": len(str(critique_log or "").strip()),
+                    "note": "Critique pass finished.",
+                })
+            except Exception:
+                pass
 
         # Append source quality + recycled-open-question signal.
         new_reliability = _reliability_summary(merged_findings)
@@ -676,12 +695,28 @@ class ResearchService:
         updated_out["recycled_open_questions"] = recycled_questions
         return updated_out
 
+    def _emit_web_start(self, progress_callback, *, lane: str) -> None:
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback("web_research_started", {
+                "note": "Collecting fresh web sources.",
+                "lane": str(lane or "").strip(),
+            })
+        except Exception:
+            pass
+
     def _emit_web_progress(self, progress_callback, web_details: dict[str, Any] | None) -> None:
         details = web_details if isinstance(web_details, dict) else {}
         if not details.get("requested") or not callable(progress_callback):
             return
         try:
-            progress_callback("web_stack_ready", build_web_progress_payload(details))
+            payload = build_web_progress_payload(details)
+            payload["note"] = (
+                f"Web crawl complete — {int(payload.get('source_count', 0) or 0)} sources, "
+                f"{int(payload.get('crawl_pages', 0) or 0)} pages."
+            )
+            progress_callback("web_stack_ready", payload)
         except Exception:
             pass
 

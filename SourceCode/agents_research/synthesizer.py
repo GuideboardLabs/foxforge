@@ -13,6 +13,16 @@ class SynthesisUnavailableError(RuntimeError):
     """Raised when the synthesis model is unavailable or produces no output."""
 
 
+def _last_wait_error(client: Any) -> str:
+    err = str(getattr(client, "last_wait_error", "") or "").strip()
+    if err:
+        return err
+    inner = getattr(client, "_ollama", None)
+    if inner is not None:
+        return str(getattr(inner, "last_wait_error", "") or "").strip()
+    return ""
+
+
 def extract_action_proposals(synthesis_text: str) -> list[dict[str, str]]:
     """
     Parse the 'Actionable Next Steps' section of a synthesis and return
@@ -255,13 +265,30 @@ def synthesize(
                 fallback_models.append(name)
 
     if hasattr(client, "wait_for_available"):
-        if not client.wait_for_available(model, max_wait_sec=300, poll_interval_sec=15):
+        try:
+            available = bool(
+                client.wait_for_available(
+                    model,
+                    fallback_models=fallback_models,
+                    max_wait_sec=300,
+                    poll_interval_sec=15,
+                )
+            )
+        except TypeError:
+            # Backward compatibility with clients that don't accept fallback_models.
+            available = bool(client.wait_for_available(model, max_wait_sec=300, poll_interval_sec=15))
+        if not available:
+            candidates = [model, *fallback_models]
+            models_note = ", ".join([f"'{m}'" for m in candidates if str(m).strip()])
+            reason = _last_wait_error(client)
+            detail = f" Last error: {reason}." if reason else ""
             raise SynthesisUnavailableError(
-                f"Synthesis model '{model}' did not become available within 5 minutes. "
-                "Research run aborted — no output written."
+                "No synthesis model became available within 5 minutes "
+                f"(candidates: {models_note}).{detail} Research run aborted — no output written."
             )
 
     last_text = ""
+    generation_errors: list[str] = []
     for cycle in range(validation_cycles):
         prompt = user_prompt
         if cycle > 0:
@@ -289,7 +316,10 @@ def synthesize(
                     LOGGER.warning("Synthesis output appears truncated; retrying once with truncation guard.")
                     continue
                 return _sanitize_markdown_urls(candidate)
-        except Exception:
+        except Exception as exc:
+            err = f"cycle {cycle + 1}/{validation_cycles}: {type(exc).__name__}: {str(exc).strip()[:320]}"
+            generation_errors.append(err)
+            LOGGER.warning("Synthesis generation failed (%s)", err)
             continue
 
     if _is_valid_synthesis(last_text) and _looks_truncated_output(last_text):
@@ -313,7 +343,10 @@ def synthesize(
             )
             if _is_valid_synthesis(recovered):
                 return _sanitize_markdown_urls(recovered)
-        except Exception:
+        except Exception as exc:
+            err = f"truncation_recovery: {type(exc).__name__}: {str(exc).strip()[:320]}"
+            generation_errors.append(err)
+            LOGGER.warning("Synthesis truncation recovery failed (%s)", err)
             pass
 
     if _is_valid_synthesis(last_text):
@@ -324,9 +357,10 @@ def synthesize(
             "_Reliability note: synthesis did not pass full section validation after retries; "
             "review before treating as final._"
         )
+    reason = generation_errors[-1] if generation_errors else "unknown error"
     raise SynthesisUnavailableError(
         f"Synthesis model '{model}' produced no output after all retries. "
-        "Research run aborted — no output written."
+        f"Last error: {reason}. Research run aborted — no output written."
     )
 
 
