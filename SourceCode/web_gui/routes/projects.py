@@ -193,6 +193,95 @@ def _project_details(ctx: AppContext, orch: FoxforgeOrchestrator, slug: str, eve
             "artifacts": unique_artifacts, "handoffs": handoffs, "pipeline": pipeline}
 
 
+def _repo_rel_path(repo_root: Path, raw_path: str) -> str:
+    text = str(raw_path or "").strip()
+    if not text:
+        return ""
+    try:
+        path = Path(text)
+    except Exception:
+        return text
+    try:
+        resolved = path.resolve(strict=False)
+        return str(resolved.relative_to(repo_root.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def _clean_output_title(raw_stem: str) -> str:
+    stem = str(raw_stem or "").strip().replace("_", " ").replace("-", " ")
+    parts = [part for part in stem.split() if part]
+    if len(parts) >= 2 and len(parts[0]) == 8 and len(parts[1]) == 6 and parts[0].isdigit() and parts[1].isdigit():
+        parts = parts[2:]
+    cleaned = " ".join(parts).strip()
+    return cleaned if cleaned else stem
+
+
+def _collect_project_make_outputs(
+    *,
+    orch: FoxforgeOrchestrator,
+    project: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    from orchestrator.services.make_catalog import MAKE_CATALOG
+
+    rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(orch.activity_store.rows()):
+        details = row.get("details") or {}
+        if str(details.get("project", "")).strip() != project:
+            continue
+        if str(row.get("event", "")).strip() != "make_deliverable_written":
+            continue
+        make_type = str(details.get("make_type") or details.get("kind") or "").strip().lower()
+        if not make_type:
+            continue
+        entry = MAKE_CATALOG.get(make_type) or {}
+        category = str(entry.get("category", "")).strip().lower()
+        if not entry:
+            continue
+        if category == "code" or make_type in {"tool", "web_app", "desktop_app"}:
+            continue
+        summary_path_raw = str(details.get("summary_path") or details.get("path") or "").strip()
+        if not summary_path_raw:
+            continue
+        request_id = str(details.get("request_id", "")).strip() or f"activity:{idx}"
+        finished_at = str(row.get("ts", "")).strip()
+        title = str(details.get("topic", "")).strip()
+        summary_rel = _repo_rel_path(orch.repo_root, summary_path_raw)
+        raw_path_raw = str(details.get("raw_path", "")).strip()
+        if not raw_path_raw:
+            try:
+                summary_candidate = Path(summary_path_raw)
+                sidecar = summary_candidate.with_name(f"{summary_candidate.stem}_raw.md")
+                if sidecar.exists():
+                    raw_path_raw = str(sidecar)
+            except Exception:
+                raw_path_raw = ""
+        raw_rel = _repo_rel_path(orch.repo_root, raw_path_raw)
+        if not title:
+            try:
+                title = _clean_output_title(Path(summary_path_raw).stem)
+            except Exception:
+                title = ""
+        if not title:
+            title = str(entry.get("label", "")).strip() or make_type.replace("_", " ")
+        rows.append(
+            {
+                "request_id": request_id,
+                "make_type": make_type,
+                "make_label": str(entry.get("label", "")).strip() or make_type.replace("_", " "),
+                "category": category,
+                "title": title,
+                "finished_at": finished_at,
+                "summary_path": summary_rel,
+                "raw_path": raw_rel,
+            }
+        )
+
+    rows.sort(key=lambda item: str(item.get("finished_at", "")), reverse=True)
+    return rows[: max(1, min(limit, 200))]
+
+
 def _normalize_promote_mode(raw: Any) -> str:
     value = str(raw or "").strip().lower()
     if value in {"move", "cutoff", "cut_off", "detach", "rehome"}:
@@ -508,6 +597,15 @@ def create_projects_blueprint(ctx: AppContext) -> Blueprint:
         orch = ctx.new_orch(profile)
         payload = _project_details(ctx, orch, project_slug, event_limit=event_limit, artifact_limit=artifact_limit)
         return payload, 200
+
+    @bp.route('/api/projects/<project_slug>/make_outputs', methods=['GET'])
+    def project_make_outputs(project_slug: str) -> tuple[dict, int]:
+        profile = ctx.require_profile()
+        project = _normalize_project_slug(project_slug)
+        limit = parse_optional_int(request.args.get("limit"), default=40, minimum=1, maximum=200)
+        orch = ctx.new_orch(profile)
+        outputs = _collect_project_make_outputs(orch=orch, project=project, limit=limit)
+        return {"project": project, "outputs": outputs}, 200
 
     @bp.route('/api/projects/<project_slug>/content-tree', methods=['GET'])
     def project_content_tree(project_slug: str) -> tuple[dict, int]:

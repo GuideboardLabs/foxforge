@@ -1273,8 +1273,10 @@ const app = window.Vue.createApp({
         foraging_paused: false,
         foraging_active_jobs: 0,
         foraging_yielding: false,
+        foraging_completion_unread: false,
         building_paused: false,
         building_active_jobs: 0,
+        building_completion_unread: false,
         briefings_unread: 0,
         action_proposals_pending: 0,
         watchtower_active: 0,
@@ -1284,6 +1286,11 @@ const app = window.Vue.createApp({
       },
       makeType: localStorage.getItem("foxforge_make_type") || "",
       makeTypeModalOpen: false,
+      makeOutputEditModalOpen: false,
+      makeOutputEditLoading: false,
+      makeOutputEditRows: [],
+      pendingExtendsRequestId: "",
+      pendingExtendsTitle: "",
       makeTypeCatalog: [],
       watchtowerForm: { topic: "", profile: "general", schedule: "daily", schedule_hour: 7 },
       briefingsFilter: { mode: "unread", search: "" },
@@ -2009,8 +2016,8 @@ const app = window.Vue.createApp({
     junctionPanelBadgeCount() {
       const values = [
         this.panelStatus?.pending_actions,
-        this.panelStatus?.foraging_active_jobs,
-        this.panelStatus?.building_active_jobs,
+        this.panelStatus?.foraging_completion_unread ? 1 : 0,
+        this.panelStatus?.building_completion_unread ? 1 : 0,
         this.reflectionsUnreadCount,
         this.lessonsUnreadCount,
         this.panelStatus?.library_items_pending,
@@ -2122,7 +2129,8 @@ const app = window.Vue.createApp({
         this.emailSettingsModalOpen ||
         this.botSettingsModalOpen ||
         this.resetModalOpen ||
-        this.makeTypeModalOpen
+        this.makeTypeModalOpen ||
+        this.makeOutputEditModalOpen
       );
     },
     homeLastConversation() {
@@ -2570,6 +2578,9 @@ const app = window.Vue.createApp({
       if (this.panelStatus.foraging_yielding) {
         return "Foraging Yielding";
       }
+      if (Boolean(this.panelStatus.foraging_completion_unread)) {
+        return "Foraging Complete";
+      }
       return "Foraging Ready";
     },
     foragingStatusTitle() {
@@ -2588,7 +2599,48 @@ const app = window.Vue.createApp({
       if (active > 0) {
         return `Building Active (${active})`;
       }
+      if (Boolean(this.panelStatus.building_completion_unread)) {
+        return "Building Complete";
+      }
       return "Building Ready";
+    },
+    foragingPanelBadgeText() {
+      const active = Number(this.panelStatus.foraging_active_jobs || 0);
+      if (active > 0) {
+        return "RUN";
+      }
+      if (Boolean(this.panelStatus.foraging_completion_unread)) {
+        return "DONE";
+      }
+      return "";
+    },
+    foragingPanelBadgeClass() {
+      if (this.foragingPanelBadgeText === "RUN") {
+        return "is-status is-running";
+      }
+      if (this.foragingPanelBadgeText === "DONE") {
+        return "is-status is-done";
+      }
+      return "";
+    },
+    buildingPanelBadgeText() {
+      const active = Number(this.panelStatus.building_active_jobs || 0);
+      if (active > 0) {
+        return "RUN";
+      }
+      if (Boolean(this.panelStatus.building_completion_unread)) {
+        return "DONE";
+      }
+      return "";
+    },
+    buildingPanelBadgeClass() {
+      if (this.buildingPanelBadgeText === "RUN") {
+        return "is-status is-running";
+      }
+      if (this.buildingPanelBadgeText === "DONE") {
+        return "is-status is-done";
+      }
+      return "";
     },
     makeTypeCatalogCategories() {
       const cats = [];
@@ -3685,6 +3737,11 @@ const app = window.Vue.createApp({
       return String(Math.max(1, Math.floor(count)));
     },
 
+    laneJobIsCancelable(row) {
+      const status = String(row?.status || "").trim().toLowerCase();
+      return status === "running";
+    },
+
     lessonsStorageKey() {
       const profileId = String(this.auth?.profile?.id || "anon").trim() || "anon";
       return `foxforge_lessons_read_${profileId}`;
@@ -4452,6 +4509,9 @@ const app = window.Vue.createApp({
 
     setComposerMode(mode) {
       const next = mode === "forage" || mode === "make" || mode === "talk" ? mode : "talk";
+      if (next !== "make" && this.pendingExtendsRequestId) {
+        this.clearPendingMakeOutputExtension();
+      }
       this.inputMode = next;
       try {
         localStorage.setItem("foxforge_input_mode", this.inputMode);
@@ -4627,7 +4687,12 @@ const app = window.Vue.createApp({
     },
 
     setActiveProject(project) {
-      this.activeProject = normalizeProjectSlug(project);
+      const nextProject = normalizeProjectSlug(project);
+      const previous = String(this.activeProject || "").trim();
+      this.activeProject = nextProject;
+      if (previous !== nextProject && this.pendingExtendsRequestId) {
+        this.clearPendingMakeOutputExtension();
+      }
       try {
         localStorage.setItem("foxforge_active_project", this.activeProject);
       } catch (_err) {}
@@ -7577,8 +7642,10 @@ const app = window.Vue.createApp({
           foraging_paused: Boolean(payload.foraging_paused),
           foraging_active_jobs: Number(payload.foraging_active_jobs || 0),
           foraging_yielding: Boolean(payload.foraging_yielding),
+          foraging_completion_unread: Boolean(payload.foraging_completion_unread),
           building_paused: Boolean(payload.building_paused),
           building_active_jobs: Number(payload.building_active_jobs || 0),
+          building_completion_unread: Boolean(payload.building_completion_unread),
           briefings_unread: Number(payload.briefings_unread || 0),
           watchtower_active: Number(payload.watchtower_active || 0),
           topics_with_research: Number(payload.topics_with_research || 0),
@@ -7667,6 +7734,11 @@ const app = window.Vue.createApp({
       this.makeTypeModalOpen = false;
     },
 
+    clearPendingMakeOutputExtension() {
+      this.pendingExtendsRequestId = "";
+      this.pendingExtendsTitle = "";
+    },
+
     makeLabelForType(typeId) {
       const entry = this.makeTypeCatalog.find(e => e.type_id === typeId);
       return entry ? entry.label : String(typeId || "").replace(/_/g, " ");
@@ -7686,6 +7758,47 @@ const app = window.Vue.createApp({
     async openMakeTypeModal() {
       this.makeTypeModalOpen = true;
       await this.loadMakeTypeCatalog();
+    },
+
+    async openMakeOutputEditModal() {
+      const slug = String(this.activeConversationProjectSlug || "").trim();
+      if (!slug) {
+        return;
+      }
+      this.makeOutputEditModalOpen = true;
+      this.updateBodyClasses();
+      this.makeOutputEditLoading = true;
+      this.makeOutputEditRows = [];
+      try {
+        const payload = await this.apiGet(`/api/projects/${encodeURIComponent(slug)}/make_outputs?limit=40`);
+        this.makeOutputEditRows = Array.isArray(payload.outputs) ? payload.outputs : [];
+      } catch (_err) {
+        this.makeOutputEditRows = [];
+      } finally {
+        this.makeOutputEditLoading = false;
+      }
+    },
+
+    closeMakeOutputEditModal() {
+      this.makeOutputEditModalOpen = false;
+      this.updateBodyClasses();
+    },
+
+    selectMakeOutputForEdit(row) {
+      const selected = row && typeof row === "object" ? row : {};
+      const requestId = String(selected.request_id || "").trim();
+      if (!requestId) {
+        return;
+      }
+      const makeType = String(selected.make_type || "").trim();
+      const title = String(selected.title || selected.make_label || "").trim();
+      this.pendingExtendsRequestId = requestId;
+      this.pendingExtendsTitle = title;
+      if (makeType) {
+        this.makeType = makeType;
+        localStorage.setItem("foxforge_make_type", this.makeType);
+      }
+      this.closeMakeOutputEditModal();
     },
 
     closeActionsOverlay() {
@@ -7731,6 +7844,7 @@ const app = window.Vue.createApp({
       this.closeResetModal();
       this.closeWaypointEntryModals();
       this.makeTypeModalOpen = false;
+      this.closeMakeOutputEditModal();
     },
 
     isWorkspacePatchProposal(prop) {
@@ -8264,23 +8378,25 @@ const app = window.Vue.createApp({
           return;
         }
         if (this.panelKey === "foraging") {
-          const payload = await this.apiGet("/api/panel/foraging?limit=80");
+          const payload = await this.apiGet("/api/panel/foraging?limit=80&mark_read=1");
           const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
           this.panelData = jobs;
           if (payload.foraging && typeof payload.foraging === "object") {
             this.panelStatus.foraging_paused = Boolean(payload.foraging.paused);
-            this.panelStatus.foraging_active_jobs = Number(payload.foraging.active_jobs || jobs.length || 0);
+            this.panelStatus.foraging_active_jobs = Number(payload.foraging.active_jobs || 0);
             this.panelStatus.foraging_yielding = Boolean(payload.foraging.yielding);
+            this.panelStatus.foraging_completion_unread = Boolean(payload.foraging.completion_unread);
           }
           return;
         }
         if (this.panelKey === "building") {
-          const payload = await this.apiGet("/api/panel/building?limit=80");
+          const payload = await this.apiGet("/api/panel/building?limit=80&mark_read=1");
           const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
           this.panelData = jobs;
           if (payload.building && typeof payload.building === "object") {
             this.panelStatus.building_paused = Boolean(payload.building.paused);
-            this.panelStatus.building_active_jobs = Number(payload.building.active_jobs || jobs.length || 0);
+            this.panelStatus.building_active_jobs = Number(payload.building.active_jobs || 0);
+            this.panelStatus.building_completion_unread = Boolean(payload.building.completion_unread);
           }
           return;
         }
@@ -9966,14 +10082,10 @@ const app = window.Vue.createApp({
         ? (String(queuedItem?.mode || "talk").trim() || "talk")
         : (this.inputMode === "forage" ? "forage" : (this.inputMode === "make" ? "make" : "talk"));
       const likelyForagingRequest = sendMode === "forage";
-      const likelyImageGenRequest = sendMode !== "make" && (
-        /\b(?:\/imagine|text[- ]?to[- ]?image|t2i)\b/i.test(typedContent) ||
-        /\b(?:an?\s+)?(?:image|picture|photo|illustration|portrait|artwork)\s+of\b/i.test(typedContent) ||
-        (
-          /\b(draw|paint|generate|create|make|render|illustrate|imagine|design)\b/i.test(typedContent) &&
-          /\b(image|picture|photo|illustration|art|artwork|portrait|wallpaper)\b/i.test(typedContent)
-        )
-      );
+      const likelyImageGenRequest = false;
+      const extendsRequestId = sendMode === "make"
+        ? String(this.pendingExtendsRequestId || "").trim()
+        : "";
       let requestId = "";
       try {
         if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -10053,6 +10165,9 @@ const app = window.Vue.createApp({
           if (sendMode === "make" && this.makeType) {
             formData.append("make_type", this.makeType);
           }
+          if (sendMode === "make" && extendsRequestId) {
+            formData.append("extends_request_id", extendsRequestId);
+          }
           for (const row of imageRows) {
             if (row?.file) {
               formData.append("images", row.file, row.name || "image");
@@ -10069,6 +10184,9 @@ const app = window.Vue.createApp({
           };
           if (sendMode === "make" && this.makeType) {
             jsonBody.make_type = this.makeType;
+          }
+          if (sendMode === "make" && extendsRequestId) {
+            jsonBody.extends_request_id = extendsRequestId;
           }
           if (replyTarget) jsonBody.reply_to = replyTarget;
           payload = await this.apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, jsonBody);
@@ -10091,6 +10209,9 @@ const app = window.Vue.createApp({
           }
         }
         sentSuccessfully = true;
+        if (sendMode === "make" && extendsRequestId) {
+          this.clearPendingMakeOutputExtension();
+        }
         if (!fromQueue) {
           this.resetComposerMode();
         }

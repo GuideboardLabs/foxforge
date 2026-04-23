@@ -70,6 +70,9 @@ class ResearchPoolSynthesisUnavailableTests(unittest.TestCase):
         self.assertTrue(bool(out.get("synthesis_unavailable", False)))
         self.assertEqual(str(out.get("summary_path", "")), "")
         self.assertIn("synthesis model was unavailable", str(out.get("message", "")).lower())
+        raw_path = str(out.get("raw_path", ""))
+        self.assertTrue(raw_path.endswith("_research_raw.md"))
+        self.assertIn(raw_path, str(out.get("message", "")))
 
 
 if __name__ == "__main__":

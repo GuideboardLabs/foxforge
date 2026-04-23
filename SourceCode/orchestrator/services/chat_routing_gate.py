@@ -30,6 +30,13 @@ _FORCE_WEB_PATTERNS: tuple[str, ...] = (
     r"\bsearch the web\b",
     r"\blook it up\b",
     r"\bbrowse the web\b",
+    r"\bcurrently\b",
+    r"\bnowadays\b",
+    r"\bthese days\b",
+    r"\bas of (?:202[4-9]|20[3-9]\d)\b",
+    r"\b(?:in|since|by)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:202[4-9]|20[3-9]\d)\b",
+    r"\b(?:this|last|next)\s+(?:week|month|quarter|year)\b",
+    r"\b(?:202[5-9]|20[3-9]\d)(?:\s|\?|$|\.|,)",
 )
 
 # Patterns that are clearly not web-dependent.
@@ -64,15 +71,27 @@ def _fast_path(text: str) -> dict[str, Any] | None:
     """Return a routing decision immediately for obvious cases."""
     low = text.strip().lower()
 
-    for pat in _FORCE_WEB_PATTERNS:
-        if re.search(pat, low, re.IGNORECASE):
-            return {"route": "web", "confidence": 0.97, "reason": "Explicit live-data marker.", "skipped": True}
-
     for pat in _FORCE_NO_WEB_PATTERNS:
         if re.search(pat, low, re.IGNORECASE):
             return {"route": "no_web", "confidence": 0.97, "reason": "Matches known non-web pattern.", "skipped": True}
 
+    for pat in _FORCE_WEB_PATTERNS:
+        if re.search(pat, low, re.IGNORECASE):
+            return {"route": "web", "confidence": 0.97, "reason": "Explicit live-data marker.", "skipped": True}
+
     return None
+
+
+def first_force_web_match(text: str) -> str:
+    """Return the first explicit web-trigger phrase matched in `text`, if any."""
+    low = str(text or "").strip().lower()
+    if not low:
+        return ""
+    for pat in _FORCE_WEB_PATTERNS:
+        match = re.search(pat, low, re.IGNORECASE)
+        if match:
+            return str(match.group(0) or "").strip()
+    return ""
 
 
 def _default_repo_root() -> Path:

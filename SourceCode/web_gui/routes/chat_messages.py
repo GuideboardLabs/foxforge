@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flask import Blueprint, abort, jsonify, request
@@ -29,25 +30,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-_IMAGE_GEN_DIRECT_RE = re.compile(r"\b(/imagine|text[- ]?to[- ]?image|t2i|recreate)\b", re.IGNORECASE)
 _IMAGE_REF_TOKEN_RE = re.compile(r"\{image\s*\d+\}", re.IGNORECASE)
-_IMAGE_GEN_RECREATE_RE = re.compile(r"^recreate\b[^a-z]*$", re.IGNORECASE)
-_IMAGE_GEN_VERB_RE = re.compile(
-    r"\b(draw|paint|generate|create|make|render|illustrate|imagine|design)\b",
-    re.IGNORECASE,
-)
-_IMAGE_GEN_NOUN_RE = re.compile(
-    r"\b(image|picture|photo|illustration|art|artwork|portrait|wallpaper)\b",
-    re.IGNORECASE,
-)
-_IMAGE_GEN_OF_RE = re.compile(
-    r"\b(?:an?\s+)?(?:image|picture|photo|illustration|portrait|artwork)\s+of\b",
-    re.IGNORECASE,
-)
-_IMAGE_GEN_HELP_RE = re.compile(
-    r"\b(?:how\s+to|how\s+do\s+i|how\s+can\s+i|teach\s+me\s+to|guide\s+me\s+to)\b.*\b(?:image|picture|photo|art|illustration)\b",
-    re.IGNORECASE,
-)
 _NIGHT_SCENE_RE = re.compile(r"\b(night|dark)\b", re.IGNORECASE)
 _RELATION_SCENE_RE = re.compile(r"\b(at the bottom of|in front of|behind|foreground|background)\b", re.IGNORECASE)
 _FIRE_RE = re.compile(r"\b(on fire|burning|ablaze|in flames|flames)\b", re.IGNORECASE)
@@ -66,19 +49,6 @@ _SETTING_ENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_ASSISTANT_RULE_RE = re.compile(r"(?:\n\s*\*\*\*\s*)+\Z", re.MULTILINE)
-
-
-def _is_image_gen_request(text: str) -> bool:
-    low = str(text or "").strip().lower()
-    if not low:
-        return False
-    if _IMAGE_GEN_HELP_RE.search(low):
-        return False
-    if _IMAGE_GEN_DIRECT_RE.search(low):
-        return True
-    if _IMAGE_GEN_OF_RE.search(low):
-        return True
-    return bool(_IMAGE_GEN_VERB_RE.search(low) and _IMAGE_GEN_NOUN_RE.search(low))
 
 
 def _strip_trailing_assistant_rule(text: str) -> str:
@@ -218,6 +188,112 @@ def _build_message_web_meta(
             "retrieved_chunks": [dict(x) for x in (research.get("retrieved_chunks") or []) if isinstance(x, dict)],
         }
     return payload
+
+
+def _read_optional_text(path_text: str, *, repo_root: Path) -> str:
+    raw = str(path_text or "").strip()
+    if not raw:
+        return ""
+    try:
+        path = Path(raw)
+    except Exception:
+        return ""
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        if not path.exists() or not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _truncate_utf8(text: str, limit_bytes: int) -> str:
+    if limit_bytes <= 0:
+        return ""
+    raw = str(text or "")
+    blob = raw.encode("utf-8", errors="ignore")
+    if len(blob) <= limit_bytes:
+        return raw
+    return blob[:limit_bytes].decode("utf-8", errors="ignore")
+
+
+def _make_output_row_for_request_id(orch: Any, project_slug: str, extends_request_id: str) -> dict[str, Any] | None:
+    rid = str(extends_request_id or "").strip()
+    if not rid:
+        return None
+    rows = orch.activity_store.rows() if hasattr(orch, "activity_store") else []
+    if not isinstance(rows, list):
+        return None
+    if rid.startswith("activity:"):
+        try:
+            idx = int(rid.split(":", 1)[1].strip())
+        except (TypeError, ValueError):
+            idx = -1
+        if 0 <= idx < len(rows):
+            row = rows[idx] if isinstance(rows[idx], dict) else None
+            if not isinstance(row, dict):
+                return None
+            details = row.get("details") if isinstance(row.get("details"), dict) else {}
+            if str(details.get("project", "")).strip() == project_slug and str(row.get("event", "")).strip() == "make_deliverable_written":
+                return row
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        details = row.get("details")
+        if not isinstance(details, dict):
+            continue
+        if str(details.get("project", "")).strip() != project_slug:
+            continue
+        if str(row.get("event", "")).strip() != "make_deliverable_written":
+            continue
+        if str(details.get("request_id", "")).strip() == rid:
+            return row
+    return None
+
+
+def _seed_artifact_text_for_extension(orch: Any, project_slug: str, extends_request_id: str) -> str:
+    row = _make_output_row_for_request_id(orch, project_slug, extends_request_id)
+    if not isinstance(row, dict):
+        return ""
+    details = row.get("details")
+    if not isinstance(details, dict):
+        return ""
+    summary_path = str(details.get("summary_path") or details.get("path") or "").strip()
+    raw_path = str(details.get("raw_path") or "").strip()
+    repo_root = getattr(orch, "repo_root", Path.cwd())
+    summary_text = _read_optional_text(summary_path, repo_root=repo_root)
+    raw_text = _read_optional_text(raw_path, repo_root=repo_root)
+    if not raw_text and summary_path:
+        try:
+            summary_file = Path(summary_path)
+            sidecar = summary_file.with_name(f"{summary_file.stem}_raw.md")
+            raw_text = _read_optional_text(str(sidecar), repo_root=repo_root)
+        except Exception:
+            raw_text = ""
+    if not summary_text and not raw_text:
+        return ""
+
+    cap = 80 * 1024
+    summary_blob = summary_text.encode("utf-8", errors="ignore")
+    raw_blob = raw_text.encode("utf-8", errors="ignore")
+    if len(summary_blob) > cap:
+        summary_text = _truncate_utf8(summary_text, cap)
+        raw_text = ""
+    elif len(summary_blob) + len(raw_blob) > cap:
+        raw_budget = max(0, cap - len(summary_blob))
+        raw_text = _truncate_utf8(raw_text, raw_budget)
+
+    seed_lines = [
+        "Prior output to extend (continue, refine, or extend — do not start from scratch):",
+        "",
+        summary_text.strip() if summary_text.strip() else "(No prior summary text found.)",
+    ]
+    raw_clean = raw_text.strip()
+    if raw_clean:
+        seed_lines.extend(["", "--- raw output ---", "", raw_clean])
+    return "\n".join(seed_lines).strip()
 
 
 def _is_simple_image_prompt(prompt: str) -> bool:
@@ -1013,11 +1089,13 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         incoming_selected_loras: list[str] | None = None
 
         requested_make_type = ""
+        extends_request_id = ""
         content_type = str(request.content_type or "").strip().lower()
         if content_type.startswith("multipart/form-data"):
             raw_content = str(request.form.get("content", "")).strip()
             requested_mode = str(request.form.get("mode", "")).strip().lower()
             requested_make_type = str(request.form.get("make_type", "")).strip().lower()
+            extends_request_id = str(request.form.get("extends_request_id", "")).strip()
             request_id = str(request.form.get("request_id", "")).strip()
             attachments, upload_errors = ctx.save_uploaded_images(profile, conversation_id)
             if "image_style" in request.form:
@@ -1029,6 +1107,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             raw_content = str(payload.get("content", "")).strip()
             requested_mode = str(payload.get("mode", "")).strip().lower()
             requested_make_type = str(payload.get("make_type", "")).strip().lower()
+            extends_request_id = str(payload.get("extends_request_id", "")).strip()
             request_id = str(payload.get("request_id", "")).strip()
             if "image_style" in payload:
                 incoming_image_style = str(payload.get("image_style", "")).strip().lower()
@@ -1053,40 +1132,21 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             )
             if updated is not None:
                 convo = updated
-        selected_loras: list[str] = _normalize_lora_selection(convo.get("selected_loras", []))
-        image_style = str(convo.get("image_style", "realistic")).strip().lower() or "realistic"
 
         talk_text = _extract_talk_text(raw_content)
         is_forage_request = requested_mode == "forage"
         is_make_request = requested_mode == "make"
 
-        # Intent confirmation gate — prevents "make me some tea" from firing Make pools
-        # Fast path: skip if user explicitly chose mode=make AND selected a type
-        if is_make_request and raw_content and not raw_content.startswith("/"):
-            if not requested_make_type:
-                # Only run confirmer if no type selected (ambiguous)
-                try:
-                    from orchestrator.services.intent_confirmer import confirm_make_intent
-                    repo_root_for_confirm = ctx.repo_root_for_profile(profile)
-                    confirm_result = confirm_make_intent(
-                        raw_content,
-                        repo_root_for_confirm,
-                        ui_mode=requested_mode,
-                        make_type=requested_make_type,
-                    )
-                    if not confirm_result.get("skipped") and confirm_result.get("intent") != "make":
-                        is_make_request = False
-                        if confirm_result.get("intent") == "forage":
-                            is_forage_request = True
-                    elif confirm_result.get("suggested_type") and not requested_make_type:
-                        requested_make_type = str(confirm_result.get("suggested_type", "")).strip()
-                except Exception:
-                    pass
-
         is_make_lane_request = is_make_request and not raw_content.startswith("/")
-        is_talk_request = (requested_mode == "talk" or talk_text is not None) and not is_forage_request
+        is_talk_request = (
+            requested_mode == "talk"
+            or talk_text is not None
+            or (not is_forage_request and not is_make_request and not raw_content.startswith("/"))
+        )
         if is_make_lane_request and not raw_content and attachments:
             return {"error": "Describe what to build."}, 400
+        if not is_make_lane_request:
+            extends_request_id = ""
         normalized_talk = (talk_text if talk_text is not None else raw_content).strip()
         if is_talk_request and not normalized_talk and attachments:
             normalized_talk = "Please analyze the attached file(s)."
@@ -1108,6 +1168,16 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             mode=user_mode,
             user_text=stored_user_content,
         )
+        if is_make_lane_request and not requested_make_type and raw_content and not raw_content.startswith("/"):
+            reply_text = "I would love to do that for you, but you forgot to pick a mode!"
+            store.add_message(conversation_id, "assistant", reply_text, mode=user_mode, request_id=request_id)
+            ctx.job_manager.finish(
+                profile,
+                request_id,
+                status="completed",
+                detail="No-type make guard returned canonical reply.",
+            )
+            return jsonify({"reply": reply_text, "request_id": request_id}), 200
 
         convo_project = _normalize_project_slug(convo.get("project"))
         if not str(convo.get("project", "")).strip():
@@ -1120,51 +1190,65 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             request_project_mode["mode"] = "make"
             if requested_make_type:
                 request_project_mode["target"] = requested_make_type
+            if extends_request_id:
+                request_project_mode["extends_request_id"] = extends_request_id
+        convo_topic_id = str(convo.get("topic_id", "")).strip()
+        if convo_topic_id and convo_topic_id != "general":
+            try:
+                topic_row = ctx.get_topic_engine().get_topic(convo_topic_id)
+            except Exception:
+                topic_row = None
+            resolved_conversation_topic_type = (
+                str(topic_row.get("type", "")).strip().lower()
+                if isinstance(topic_row, dict)
+                else ""
+            )
+            if resolved_conversation_topic_type:
+                request_project_mode["topic_type"] = resolved_conversation_topic_type
+                if str(project_mode.get("topic_type", "")).strip().lower() != resolved_conversation_topic_type:
+                    try:
+                        pipeline_store.set(
+                            convo_project,
+                            topic_type=resolved_conversation_topic_type,
+                        )
+                    except Exception:
+                        pass
+        resolved_topic_type = (
+            str(request_project_mode.get("topic_type", "general")).strip().lower() or "general"
+        )
 
         guard = check_content(raw_content)
         if guard.blocked:
             reply_text = guard.reason
             store.add_message(conversation_id, "assistant", reply_text, mode=user_mode, request_id=request_id)
-            ctx.job_manager.finish(profile, request_id, reply=reply_text)
+            ctx.job_manager.finish(
+                profile,
+                request_id,
+                status="completed",
+                detail="Content guard blocked the message.",
+            )
             return jsonify({"reply": reply_text, "request_id": request_id}), 200
 
         orch = ctx.new_orch(profile)
         if orch.project_slug != convo_project:
             orch.set_project(convo_project)
 
-        command_input_base = raw_content if raw_content else "Please analyze the attached image(s)."
         lane_guess = ""
         is_foraging_request = False
         is_building_request = False
+        effective_make_type = (
+            requested_make_type or str(request_project_mode.get("target", "auto")).strip().lower() or "auto"
+        )
         if is_forage_request:
             lane_guess = "research"
             is_foraging_request = True
         elif is_make_lane_request:
             # Use make_type from UI picker first, then fall back to project target
-            effective_make_type = requested_make_type or str(request_project_mode.get("target", "auto")).strip().lower()
             lane_guess = f"build:{effective_make_type or 'auto'}"
             is_building_request = True
-        elif not is_talk_request and not raw_content.startswith("/"):
-            mode_value = str(request_project_mode.get("mode", "discovery")).strip().lower()
-            target_value = str(request_project_mode.get("target", "auto")).strip().lower()
-            if mode_value == "make":
-                effective_make_type = requested_make_type or target_value
-                lane_guess = f"build:{effective_make_type or 'auto'}"
-                is_building_request = True
-            else:
-                try:
-                    lane_guess = str(orch.router.route(command_input_base, project_slug=convo_project)).strip().lower()
-                except Exception:
-                    lane_guess = ""
-                is_foraging_request = lane_guess in {"research", "project"}
-
-        is_image_gen_request = _is_image_gen_request(raw_content) and not is_make_lane_request
-        has_image_attachments = any(str(a.get("type", "")) == "image" for a in attachments)
-        is_image_compose_request = is_image_gen_request and has_image_attachments
-        if is_image_gen_request:
-            is_foraging_request = False
-            is_building_request = False
-            is_talk_request = False
+        seed_artifact_text = ""
+        if is_make_lane_request and extends_request_id:
+            seed_artifact_text = _seed_artifact_text_for_extension(orch, convo_project, extends_request_id)
 
         user_msg = store.add_message(
             conversation_id,
@@ -1258,6 +1342,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                 request_id=request_id,
                 project=convo_project,
                 lane=lane_guess or "project",
+                topic_type=resolved_topic_type,
                 job_key=ctx.job_manager.key(profile, request_id),
             )
             _progress("foraging_started", f"Foraging task started on lane '{lane_guess or 'project'}'.")
@@ -1273,6 +1358,8 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                 project=convo_project,
                 make_type=effective_make_type,
                 lane=lane_guess or "make_longform",
+                topic_type=resolved_topic_type,
+                extends_request_id=extends_request_id,
                 job_key=ctx.job_manager.key(profile, request_id),
             )
             _progress("building_started", f"Build task started — type '{effective_make_type}', lane '{lane_guess or 'make_longform'}'.")
@@ -1281,7 +1368,6 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
         doc_context = ""
         image_analysis_failures: list[str] = []
         pipeline_error = ""
-        gen_attachments: list[dict] = []
         talk_details: dict[str, Any] = {}
         try:
             image_attachments = [a for a in attachments if str(a.get("type", "")) == "image"]
@@ -1324,65 +1410,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             else:
                 reply_text = ""
 
-            if not reply_text and is_image_gen_request:
-                _progress("image_gen_queued", "Image generation request detected.")
-                attach_dir = ctx.attachment_dir_for(profile, conversation_id)
-                attach_dir.mkdir(parents=True, exist_ok=True)
-                image_lane = "image_gen_compose" if is_image_compose_request else "image_gen"
-                image_positive = _refine_image_prompt(
-                    raw_content,
-                    image_style=image_style,
-                    selected_loras=selected_loras,
-                    has_references=is_image_compose_request,
-                )
-                image_negative = _refine_negative_prompt(
-                    "",
-                    prompt=raw_content,
-                )
-                ref_image_paths = [
-                    str(ctx.attachment_dir_for(profile, conversation_id) / a["filename"])
-                    for a in image_attachments
-                    if a.get("filename")
-                ] if is_image_compose_request else []
-                image_gen_result = orch._run_registered_agent(
-                    image_lane,
-                    orch._make_agent_task(
-                        lane=image_lane,
-                        text=image_positive,
-                        context={
-                            "positive_prompt": image_positive,
-                            "negative_prompt": image_negative,
-                            "conversation_id": conversation_id,
-                            "attach_dir": str(attach_dir),
-                            "ref_image_paths": ref_image_paths,
-                            "image_style": image_style,
-                            "selected_loras": selected_loras,
-                        },
-                        progress_callback=lambda stage, detail=None: _progress(
-                            stage,
-                            str(detail.get("note", "") if isinstance(detail, dict) else detail or ""),
-                        ),
-                    ),
-                )
-                if image_gen_result.get("ok"):
-                    gen_filename = str(image_gen_result.get("filename", ""))
-                    gen_url = str(image_gen_result.get("url", ""))
-                    gen_seed = int(image_gen_result.get("seed", 0))
-                    gen_attachments = [{
-                        "id": f"gen_{gen_seed % 100000:05d}",
-                        "type": "image",
-                        "name": gen_filename,
-                        "filename": gen_filename,
-                        "mime": "image/png",
-                        "size": 0,
-                        "url": gen_url,
-                    }]
-                    reply_text = f"Here is your generated image.\n\n_Prompt: {image_positive}_\n\n_Seed: {gen_seed}_"
-                else:
-                    reply_text = str(image_gen_result.get("message", "Image generation failed."))
-                _progress("image_gen_done", "Image generation completed.")
-
-            elif not reply_text and is_talk_request:
+            if not reply_text and is_talk_request:
                 _progress("talk_mode", "Running conversation-layer reply.")
                 talk_input = normalized_talk
                 if image_context:
@@ -1454,6 +1482,7 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
                     pause_checker=ctx.foraging_manager.is_paused,
                     yield_checker=ctx.foraging_manager.should_yield,
                     conversation_summary=conversation_summary,
+                    seed_artifact_text=seed_artifact_text,
                     force_research=is_forage_request,
                     force_make=is_make_lane_request,
                     thread_id=conversation_id,
@@ -1528,7 +1557,6 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             foraging=is_foraging_request,
             request_id=request_id,
             meta=msg_meta,
-            attachments=gen_attachments if gen_attachments else None,
         )
         if assistant_msg is None:
             ctx.job_manager.finish(profile, request_id, status="failed", detail="Failed to persist assistant reply.")
@@ -1613,6 +1641,36 @@ def register_message_routes(bp: Blueprint, ctx: AppContext) -> None:
             job_status = "completed"
             job_detail = "Message pipeline completed."
         ctx.job_manager.finish(profile, request_id, status=job_status, detail=job_detail)
+        final_job_row = ctx.job_manager.get(profile, request_id) or {}
+        if is_foraging_request:
+            try:
+                ctx.foraging_manager.record_completion(
+                    profile=profile,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    project=convo_project,
+                    lane=lane_guess or "project",
+                    topic_type=resolved_topic_type,
+                    job_row=final_job_row,
+                    status=job_status,
+                )
+            except Exception:
+                LOGGER.exception("Failed to record foraging completion for %s.", request_id)
+        if is_building_request:
+            try:
+                ctx.building_manager.record_completion(
+                    profile=profile,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    project=convo_project,
+                    make_type=effective_make_type,
+                    lane=lane_guess or "make_longform",
+                    topic_type=resolved_topic_type,
+                    job_row=final_job_row,
+                    status=job_status,
+                )
+            except Exception:
+                LOGGER.exception("Failed to record building completion for %s.", request_id)
 
         return {"conversation": updated, "assistant_message": assistant_msg, "request_id": request_id}, 200
 

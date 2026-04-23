@@ -27,13 +27,15 @@ _URL_PATTERN = re.compile(
     r"|(?<!\w)(?:[a-zA-Z0-9-]+\.(?:com|org|gov|edu|io|net|co|uk|de|fr|ca|au))(?:/\S*)?",
     re.IGNORECASE,
 )
-_WEB_CONTEXT_SOURCE_RE = re.compile(r"^\-\s.*\|\s+(https?://\S+)\s*$", re.IGNORECASE)
-_SELF_SCORE_RE = re.compile(
-    r"^\s*SELF_SCORE:\s*confidence=([01](?:\.\d+)?);\s*coverage=([01](?:\.\d+)?);\s*notes=(.+?)\s*$",
+_WEB_CONTEXT_SOURCE_RE = re.compile(
+    r"^\-\s(?:\[(?P<tier>tier[123])(?:\s+[^\]]*)?\]\s*)?.*\|\s+(?P<url>https?://\S+)\s*$",
     re.IGNORECASE,
 )
-_SELF_SCORE_RE_LENIENT = re.compile(
-    r"^\s*SELF_SCORE:\s*(?:confidence|conf)=(\d*\.?\d+);\s*coverage=(\d*\.?\d+);\s*notes=(.+?)[.;]?\s*$",
+_SELF_SCORE_RE = re.compile(
+    r"^\s*#{0,6}\s*SELF[_\s]*SCORE\s*:?\s*"
+    r"(?:confidence|conf)\s*=\s*(\d*\.?\d+)\s*[;,]\s*"
+    r"coverage\s*=\s*(\d*\.?\d+)\s*[;,]\s*"
+    r"notes\s*=\s*(.+?)[.;]?\s*$",
     re.IGNORECASE,
 )
 _OPEN_QUESTIONS_HEADING_RE = re.compile(
@@ -41,6 +43,7 @@ _OPEN_QUESTIONS_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _BULLET_LINE_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$")
+_SOURCE_MARKER_URL_RE = re.compile(r"\[source:\s*(https?://[^\s\]]+)\]", re.IGNORECASE)
 
 
 def _domain_from_url(url: str) -> str:
@@ -48,6 +51,10 @@ def _domain_from_url(url: str) -> str:
         return str(urlsplit(str(url)).hostname or "").lower().removeprefix("www.")
     except Exception:
         return ""
+
+
+def _normalize_source_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/,.")
 
 
 def _extract_web_source_evidence(web_context: str) -> list[dict[str, str]]:
@@ -61,8 +68,15 @@ def _extract_web_source_evidence(web_context: str) -> list[dict[str, str]]:
         if match:
             if current and current.get("url"):
                 evidence.append(current)
-            url = str(match.group(1)).strip()
-            current = {"url": url, "domain": _domain_from_url(url), "snippet": ""}
+            url = _normalize_source_url(match.group("url"))
+            tier = str(match.group("tier") or "").strip().lower()
+            source_tier = tier if tier in {"tier1", "tier2", "tier3"} else ""
+            current = {
+                "url": url,
+                "domain": _domain_from_url(url),
+                "snippet": "",
+                "source_tier": source_tier,
+            }
             continue
         if current is not None and line.strip().startswith("snippet:"):
             current["snippet"] = line.split("snippet:", 1)[1].strip()
@@ -71,12 +85,42 @@ def _extract_web_source_evidence(web_context: str) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in evidence:
-        url = str(row.get("url", "")).strip()
+        url = _normalize_source_url(row.get("url", ""))
         if not url or url in seen:
             continue
+        row["url"] = url
         seen.add(url)
         out.append(row)
     return out
+
+
+def _build_url_tier_map(source_evidence: list[dict[str, str]] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in source_evidence or []:
+        if not isinstance(row, dict):
+            continue
+        url = _normalize_source_url(row.get("url", ""))
+        tier = str(row.get("source_tier", "")).strip().lower()
+        if not url or tier not in {"tier1", "tier2", "tier3"}:
+            continue
+        out[url] = tier
+    return out
+
+
+def _tier_breakdown_for_finding(finding_text: str, url_tier_map: dict[str, str]) -> dict[str, int]:
+    """Count tier distribution of URLs cited in a single agent finding."""
+    urls = _SOURCE_MARKER_URL_RE.findall(str(finding_text or ""))
+    counts = {"tier1": 0, "tier2": 0, "tier3": 0}
+    for url in urls:
+        normalized = _normalize_source_url(url)
+        tier = (
+            url_tier_map.get(normalized)
+            or url_tier_map.get(normalized.rstrip("/,."))
+            or "tier3"
+        )
+        if tier in counts:
+            counts[tier] += 1
+    return counts
 
 
 def _audit_evidence_labels(findings: list[dict]) -> list[dict]:
@@ -224,12 +268,6 @@ def _extract_self_score(finding: str) -> tuple[str, dict[str, float | str] | Non
         if match:
             score_idx = idx
             score_match = match
-            break
-        lenient = _SELF_SCORE_RE_LENIENT.match(lines[idx].strip())
-        if lenient:
-            LOGGER.debug("_extract_self_score: using lenient SELF_SCORE regex at line %d", idx)
-            score_idx = idx
-            score_match = lenient
             break
     if score_match is None:
         return text, None, "missing SELF_SCORE line"
@@ -451,8 +489,12 @@ ANALYSIS_PROFILE_CURRENT_EVENTS = "current_events_analysis"
 ANALYSIS_PROFILE_UNDERGROUND    = "underground_analysis"
 STATISTICAL_ANALYSIS_PERSONA = "statistical_analysis"
 STATISTICAL_ANALYSIS_DIRECTIVE = (
-    "Focus on statistical patterns, trend quality, uncertainty bounds, and bias checks. "
-    "Prioritize quantified signal over speculation."
+    "OUTPUT CONTRACT: Return ONLY quantitative findings from sources. "
+    "Allowed finding types: prevalence or incidence rates, effect sizes or risk ratios, measurable thresholds, "
+    "comparative rates across groups/interventions, longitudinal trends with time windows, and uncertainty bounds "
+    "or confidence intervals when provided. If sources contain no quantitative data, return exactly this line under "
+    "Findings: 'No quantitative data extractable from available sources.' "
+    "Do NOT restate mechanism/prevention/management prose covered by other personas. Numeric signal only."
 )
 LEGAL_ANALYSIS_PERSONA = "legal_analysis"
 LEGAL_ANALYSIS_DIRECTIVE = (
@@ -1050,9 +1092,18 @@ def _agent_prompt(question: str, persona: str, directive: str, learned_guidance:
         "SOURCE QUALITY: Prefer high-quality institutional domains (.gov, .edu, recognized medical/scientific "
         "institutions, standards bodies). If you cite a low-editorial platform (for example Medium/LinkedIn/Substack), "
         "label it as platform/blog evidence.\n\n"
-        "SELF SCORING: Your response MUST end with exactly this line (no blank lines after it):\n"
-        "SELF_SCORE: confidence=<0.0-1.0>; coverage=<0.0-1.0>; notes=<short string>\n"
-        "Omitting this line makes your findings unusable to the synthesizer. Use a decimal between 0.0 and 1.0.\n\n"
+        "SELF SCORING: The final line of your response MUST match this exact format "
+        "(copy this template and substitute real values — do NOT write it as a section heading):\n"
+        "Literal example to copy (final line only):\n"
+        "SELF_SCORE: confidence=0.82; coverage=0.71; notes=good coverage but weak on legal edge cases\n"
+        "Do NOT output a heading like '# Self Score' or '## Self Score'.\n"
+        "The final line must start with 'SELF_SCORE:' and include numeric values.\n"
+        "Rules:\n"
+        "- confidence and coverage are floats between 0.0 and 1.0\n"
+        "- notes is a short free-form string under 180 chars\n"
+        "- No blank lines after this line. Nothing else after it.\n"
+        "- Do NOT prefix with '#': this is data, not a markdown heading.\n"
+        "- If you omit this line, your finding is discarded as unusable.\n\n"
         "PERSONA HANDOFF: If this request is materially better handled by another persona, "
         "you may return ONLY JSON with shape "
         "{\"handoff_to\":\"<persona>\",\"reason\":\"<one sentence>\",\"confidence\":0.0-1.0}. "
@@ -1244,7 +1295,7 @@ def _run_one_agent(
     )
     source_rows = [dict(x) for x in (source_evidence or []) if isinstance(x, dict)]
     source_urls = [str(x.get("url", "")).strip() for x in source_rows if str(x.get("url", "")).strip()]
-    return {
+    row = {
         "agent": persona,
         "model": used_model,
         "requested_model": requested_model,
@@ -1703,6 +1754,7 @@ def run_research_pool(
     handoff_count = 0
     visited_agents_per_leaf: dict[str, list[str]] = {"root": []}
     source_evidence = _extract_web_source_evidence(web_context)
+    source_tier_map = _build_url_tier_map(source_evidence)
     worker_count = max(1, min(int(model_cfg.get("parallel_agents", 4)), len(agents)))
     agent_roster = [
         {
@@ -1976,6 +2028,13 @@ def run_research_pool(
         )
     reliability = _reliability_summary(findings)
     findings = _audit_evidence_labels(findings)
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        item["source_tier_counts"] = _tier_breakdown_for_finding(
+            str(item.get("finding", "")),
+            source_tier_map,
+        )
     retrieved_chunks = build_retrieved_chunks(findings)
 
     store = ProjectStore(repo_root)
@@ -2090,6 +2149,7 @@ def run_research_pool(
             model_cfg=synth_cfg,
             conflict_report=conflict_report,
             prior_open_questions=prior_open_questions,
+            source_tier_map=source_tier_map,
         )
     except SynthesisUnavailableError as exc:
         LOGGER.error("Synthesis unavailable during research pool run: %s", exc)
@@ -2102,7 +2162,11 @@ def run_research_pool(
             },
         )
         return {
-            "message": "Research could not complete — the synthesis model was unavailable. Try again in a few minutes.",
+            "message": (
+                "Research could not complete — the synthesis model was unavailable. "
+                f"Raw agent findings saved to {raw_path}. "
+                "Try again once the model is available, or ask me to rescue this raw file."
+            ),
             "summary_path": "",
             "critique_path": "",
             "raw_path": str(raw_path),

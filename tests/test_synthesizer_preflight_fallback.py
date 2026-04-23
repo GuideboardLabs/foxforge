@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from tests.common import ROOT  # noqa: F401
-from agents_research.synthesizer import SynthesisUnavailableError, synthesize
+from agents_research.synthesizer import SynthesisUnavailableError, run_skeptic_pass, synthesize
 
 
 def _valid_summary() -> str:
@@ -64,6 +64,39 @@ class _ChatFailClient:
 
     def chat(self, **_kwargs) -> str:
         raise RuntimeError("backend down")
+
+
+class _TapClient:
+    def __init__(self) -> None:
+        self.wait_calls: list[dict] = []
+        self.chat_calls: list[dict] = []
+        self.last_wait_error = ""
+
+    def wait_for_available(self, model: str, **kwargs) -> bool:
+        self.wait_calls.append({"model": model, **kwargs})
+        return True
+
+    def chat(self, **kwargs) -> str:
+        self.chat_calls.append(dict(kwargs))
+        return _valid_summary()
+
+
+class _SkepticNoLinkClient:
+    def chat(self, **_kwargs) -> str:
+        return (
+            "<REVISED_SUMMARY>\n"
+            "# Research Synthesis\n\n"
+            "## Executive Summary\n"
+            "Evidence Confidence: Mixed.\n\n"
+            "## Key Findings\n"
+            "- [E] Evidence noted.\n\n"
+            "## Uncertainties & Risks\n"
+            "- Caveat.\n\n"
+            "## Next Steps\n"
+            "- Proceed.\n"
+            "</REVISED_SUMMARY>\n"
+            "<CRITIQUE_LOG>ok</CRITIQUE_LOG>"
+        )
 
 
 class SynthesizerPreflightFallbackTests(unittest.TestCase):
@@ -135,6 +168,70 @@ class SynthesizerPreflightFallbackTests(unittest.TestCase):
         msg = str(ctx.exception).lower()
         self.assertIn("last error", msg)
         self.assertIn("backend down", msg)
+
+    def test_preflight_wait_for_available_never_requires_direct_chat(self) -> None:
+        client = _TapClient()
+        out = synthesize(
+            "question",
+            [{"agent": "a1", "finding": "finding"}],
+            client=client,
+            model_cfg={
+                "model": "qwen3:8b",
+                "synthesis_fallback_models": ["deepseek-r1:8b"],
+                "synthesis_validation_cycles": 1,
+                "synthesis_retry_attempts": 1,
+            },
+        )
+        self.assertIn("Executive Summary", out)
+        self.assertEqual(len(client.wait_calls), 1)
+        # Exactly one synthesis generation call should occur for this happy path.
+        self.assertEqual(len(client.chat_calls), 1)
+        self.assertEqual(str(client.chat_calls[0].get("model", "")).strip(), "qwen3:8b")
+        self.assertIn(
+            "include an inline markdown URL citation",
+            str(client.chat_calls[0].get("system_prompt", "")),
+        )
+
+    def test_synthesize_adds_inline_links_from_raw_findings_when_missing(self) -> None:
+        client = _TapClient()
+        out = synthesize(
+            "question",
+            [
+                {
+                    "agent": "a1",
+                    "finding": (
+                        "## Findings\n"
+                        "- [E] Strong claim [source: https://avma.org/resources-tools/pet-owners]\n"
+                    ),
+                }
+            ],
+            client=client,
+            model_cfg={
+                "model": "qwen3:8b",
+                "synthesis_fallback_models": ["deepseek-r1:8b"],
+                "synthesis_validation_cycles": 1,
+                "synthesis_retry_attempts": 1,
+            },
+        )
+        self.assertIn("Source Anchors", out)
+        self.assertIn("(https://avma.org/resources-tools/pet-owners)", out)
+
+    def test_skeptic_pass_adds_inline_links_from_raw_findings_when_missing(self) -> None:
+        revised, critique = run_skeptic_pass(
+            question="q",
+            synthesis=_valid_summary(),
+            client=_SkepticNoLinkClient(),
+            model_cfg={"model": "dummy-model"},
+            findings=[
+                {
+                    "agent": "a1",
+                    "finding": "[E] Raw evidence [source: https://aspca.org/pet-care]",
+                }
+            ],
+        )
+        self.assertEqual(critique, "ok")
+        self.assertIn("Source Anchors", revised)
+        self.assertIn("(https://aspca.org/pet-care)", revised)
 
 
 if __name__ == "__main__":

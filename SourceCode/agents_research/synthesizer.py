@@ -88,6 +88,57 @@ def _sanitize_markdown_urls(text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _check_url, text)
 
 
+_INLINE_MD_URL_RE = re.compile(r"\[[^\]]+\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+_SOURCE_MARKER_URL_RE = re.compile(r"\[source:\s*(https?://[^\]\s)]+)\s*\]", re.IGNORECASE)
+_RAW_URL_RE = re.compile(r"(https?://[^\s)\]]+)", re.IGNORECASE)
+
+
+def _clean_url(url: str) -> str:
+    candidate = str(url or "").strip().rstrip(".,;:!?)]")
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return candidate
+    except Exception:
+        return ""
+    return ""
+
+
+def _extract_source_urls(findings: list[dict] | None, limit: int = 6) -> list[str]:
+    if not findings:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in findings:
+        text = str((item or {}).get("finding", "")).strip()
+        if not text:
+            continue
+        for pattern in (_SOURCE_MARKER_URL_RE, _INLINE_MD_URL_RE, _RAW_URL_RE):
+            for match in pattern.findall(text):
+                raw = match[0] if isinstance(match, tuple) else match
+                clean = _clean_url(raw)
+                if not clean or clean in seen:
+                    continue
+                seen.add(clean)
+                urls.append(clean)
+                if len(urls) >= max(1, int(limit)):
+                    return urls
+    return urls
+
+
+def _ensure_inline_source_links(text: str, findings: list[dict] | None) -> str:
+    body = str(text or "").strip()
+    if not body:
+        return body
+    if _INLINE_MD_URL_RE.search(body):
+        return body
+    urls = _extract_source_urls(findings, limit=6)
+    if not urls:
+        return body
+    anchors = ["## Source Anchors", *[f"- [S{i + 1}]({url})" for i, url in enumerate(urls)]]
+    return f"{body}\n\n" + "\n".join(anchors)
+
+
 def _is_valid_synthesis(text: str) -> bool:
     body = str(text or "").strip()
     if len(body) < 380:
@@ -147,6 +198,7 @@ def synthesize(
     conflict_report: str = "",
     prior_synthesis: str = "",
     prior_open_questions: list[str] | None = None,
+    source_tier_map: dict[str, str] | None = None,
 ) -> str:
     if client is None or not model_cfg:
         raise SynthesisUnavailableError(
@@ -171,14 +223,52 @@ def synthesize(
             return "MED"
         return "LOW"
 
+    tiers = {"tier1", "tier2", "tier3"}
+    normalized_tier_map = {
+        str(k or "").strip().rstrip("/,."): str(v or "").strip().lower()
+        for k, v in (source_tier_map or {}).items()
+        if str(k or "").strip()
+    }
+
+    def _tier_breakdown_for_finding(text: str) -> dict[str, int]:
+        counts = {"tier1": 0, "tier2": 0, "tier3": 0}
+        for raw in _SOURCE_MARKER_URL_RE.findall(str(text or "")):
+            url = _clean_url(raw) or str(raw or "").strip().rstrip("/,.")
+            if not url:
+                continue
+            tier = (
+                normalized_tier_map.get(url)
+                or normalized_tier_map.get(url.rstrip("/,."))
+                or "tier3"
+            )
+            if tier in tiers:
+                counts[tier] += 1
+        return counts
+
+    def _finding_label(item: dict) -> str:
+        label_parts = [f"{item['agent']} | confidence:{_conf_label(item)}"]
+        raw_counts = item.get("source_tier_counts")
+        if isinstance(raw_counts, dict):
+            tier_counts = {
+                "tier1": int(raw_counts.get("tier1", 0) or 0),
+                "tier2": int(raw_counts.get("tier2", 0) or 0),
+                "tier3": int(raw_counts.get("tier3", 0) or 0),
+            }
+        else:
+            tier_counts = _tier_breakdown_for_finding(str(item.get("finding", "")))
+        breakdown = ", ".join(f"{count}×{tier}" for tier, count in tier_counts.items() if count)
+        if breakdown:
+            label_parts.append(f"sources: {breakdown}")
+        return "[" + " | ".join(label_parts) + "]"
+
     primary = [item for item in findings if str(item.get("role", "primary")).strip().lower() != "advisory"]
     advisory = [item for item in findings if str(item.get("role", "primary")).strip().lower() == "advisory"]
     primary_blob = "\n\n".join([
-        f"[{item['agent']} | confidence:{_conf_label(item)}]\n{item['finding']}"
+        f"{_finding_label(item)}\n{item['finding']}"
         for item in primary
     ])
     advisory_blob = "\n\n".join([
-        f"[{item['agent']} | confidence:{_conf_label(item)}]\n{item['finding']}"
+        f"{_finding_label(item)}\n{item['finding']}"
         for item in advisory
     ])
     findings_blob = primary_blob
@@ -201,15 +291,27 @@ def synthesize(
         "('Agent X found... Agent Y found...'). Extract the highest-signal claims "
         "across ALL agents and write a unified narrative. The reader should not be "
         "able to tell which claim came from which agent.\n\n"
+        "CLAIM CONVERGENCE: For each major finding, count how many distinct agents "
+        "independently supported it and state that count explicitly. Use phrasing like "
+        "'All N agents converged on X', 'N of M agents supported Y', or "
+        "'Only one agent raised Z (single-source signal — treat with caution)'. "
+        "Compress repeated points into one sentence with convergence count and avoid "
+        "duplicate bullets that restate the same claim.\n\n"
         "CONFIDENCE WEIGHTING: Each agent finding is labelled with confidence:HIGH/MED/LOW "
         "(self-assessed by the agent on a 1-5 scale). Weight your conclusions toward HIGH-confidence "
         "findings. If your summary relies heavily on MED or LOW findings, explicitly flag this "
         "in the Evidence Confidence line.\n\n"
+        "SOURCE TIER WEIGHTING: Agent findings may include source tier markers in the label "
+        "(tier1, tier2, tier3). Treat tier1 support as stronger than tier3 support. If a claim "
+        "has only tier3 backing, hedge with language like 'one commentary source suggests' rather "
+        "than 'research shows'. Tier1 and tier3 are not equal-weight evidence.\n\n"
         "EVIDENCE DISCIPLINE: Agent findings include [E]/[I]/[S] labels.\n"
-        "- [E]: state confidently, include source domain or URL.\n"
+        "- [E]: state confidently, include an inline markdown URL citation like [source](https://...).\n"
         "- [I]: frame as inference — 'this suggests...'\n"
         "- [S]: frame as hypothesis — 'one possibility is...'\n"
         "Never launder [I] or [S] into presented facts.\n"
+        "If any [E] claim appears in your output, include at least one inline markdown URL link in the same sentence "
+        "or bullet whenever possible.\n"
         "When a sentence is source-grounded, append an inline source marker like [S1] or [S2]. "
         "For inference-only sentences, append [I].\n\n"
         "NO NEW CLAIMS: Only assert facts, statistics, names, dates, or conclusions that appear "
@@ -315,7 +417,7 @@ def synthesize(
                 if _looks_truncated_output(candidate):
                     LOGGER.warning("Synthesis output appears truncated; retrying once with truncation guard.")
                     continue
-                return _sanitize_markdown_urls(candidate)
+                return _sanitize_markdown_urls(_ensure_inline_source_links(candidate, findings))
         except Exception as exc:
             err = f"cycle {cycle + 1}/{validation_cycles}: {type(exc).__name__}: {str(exc).strip()[:320]}"
             generation_errors.append(err)
@@ -342,7 +444,7 @@ def synthesize(
                 retry_backoff_sec=retry_backoff_sec,
             )
             if _is_valid_synthesis(recovered):
-                return _sanitize_markdown_urls(recovered)
+                return _sanitize_markdown_urls(_ensure_inline_source_links(recovered, findings))
         except Exception as exc:
             err = f"truncation_recovery: {type(exc).__name__}: {str(exc).strip()[:320]}"
             generation_errors.append(err)
@@ -350,12 +452,15 @@ def synthesize(
             pass
 
     if _is_valid_synthesis(last_text):
-        return _sanitize_markdown_urls(last_text)
+        return _sanitize_markdown_urls(_ensure_inline_source_links(last_text, findings))
     if last_text.strip():
         return _sanitize_markdown_urls(
-            f"{last_text}\n\n"
-            "_Reliability note: synthesis did not pass full section validation after retries; "
-            "review before treating as final._"
+            _ensure_inline_source_links(
+                f"{last_text}\n\n"
+                "_Reliability note: synthesis did not pass full section validation after retries; "
+                "review before treating as final._",
+                findings,
+            )
         )
     reason = generation_errors[-1] if generation_errors else "unknown error"
     raise SynthesisUnavailableError(
@@ -402,7 +507,7 @@ def run_skeptic_pass(
         ref_parts: list[str] = []
         for item in findings:
             agent = str(item.get("agent", "agent")).strip()
-            text = str(item.get("finding", "")).strip()[:400]
+            text = str(item.get("finding", "")).strip()[:2000]
             if text:
                 ref_parts.append(f"[{agent}]: {text}")
         if ref_parts:
@@ -419,7 +524,12 @@ def run_skeptic_pass(
         "- Remove fabricated specifics (numbers, dates, names, URLs, version strings, direct quotes) "
         "that are not in raw findings.\n"
         "- Downgrade unsupported certainty to [S] with hedging language.\n"
-        "- Remove or rewrite unsourced [E] claims.\n"
+        "- An [E] claim IS sourced if the agent's raw finding (in the reference section below) "
+        "contains a `[source: <URL>]` marker OR an inline `(https://...)` link whose host or title "
+        "aligns with the claim. Do NOT demote [E] just because the synthesis sentence itself dropped "
+        "the link — verify against the raw findings before demoting.\n"
+        "- Only demote [E] -> [I] when NO supporting URL exists anywhere in raw findings.\n"
+        "- Preserve valid inline markdown links for supported [E] claims whenever possible.\n"
         "- Keep required sections and preserve readability.\n\n"
         "- Fabricated-authority guardrail: if a claim leans on a famous authority/framework "
         "(for example Taylor, Miller's Law, Hawthorne effect, Fogg model) via a secondary blog/post "
@@ -436,7 +546,7 @@ def run_skeptic_pass(
         "Be direct and specific. Do not output any extra wrapper text."
     )
     _findings_section = (
-        f"\n\nRaw findings reference (first 400 chars per agent — use to cross-check [E] claims):\n{_findings_ref}"
+        f"\n\nRaw findings reference (first 2000 chars per agent — use to cross-check [E] claims):\n{_findings_ref}"
         if _findings_ref else ""
     )
     user_prompt = (
@@ -471,13 +581,13 @@ def run_skeptic_pass(
                 revised_text = str(revised_match.group(1) or "").strip()
                 critique_text = str(critique_match.group(1) or "").strip() if critique_match else ""
                 if revised_text:
-                    return _sanitize_markdown_urls(revised_text), critique_text
+                    return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_text
             if "---CRITIQUE---" in body:
                 revised, critique = body.split("---CRITIQUE---", 1)
                 revised_text = revised.strip()
                 critique_text = critique.strip()
                 if revised_text:
-                    return _sanitize_markdown_urls(revised_text), critique_text
+                    return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_text
             critique_fallback = body
         except Exception:
             continue
@@ -507,8 +617,8 @@ def run_skeptic_pass(
             )
             revised_text = str(revised or "").strip()
             if revised_text:
-                return _sanitize_markdown_urls(revised_text), critique_fallback
+                return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_fallback
         except Exception:
             pass
 
-    return _sanitize_markdown_urls(base_summary), critique_fallback
+    return _sanitize_markdown_urls(_ensure_inline_source_links(base_summary, findings)), critique_fallback

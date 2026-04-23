@@ -46,9 +46,11 @@ class InferenceRouterCompatTests(unittest.TestCase):
         kwargs = router._llama_clients["llama_srv"].chat.call_args.kwargs
         self.assertEqual(kwargs.get("num_predict"), 777)
 
-    def test_wait_for_available_uses_compatible_chat_signature(self) -> None:
+    def test_wait_for_available_uses_llama_declaration_without_chat(self) -> None:
         router = InferenceRouter(ROOT)
-        router.chat = MagicMock(return_value="pong")
+        router._server_declares_model = MagicMock(side_effect=lambda m: m == "deepseek-r1:8b")
+        router._ollama = MagicMock()
+        router.chat = MagicMock(side_effect=AssertionError("preflight must not call chat"))
 
         self.assertTrue(
             router.wait_for_available(
@@ -58,22 +60,30 @@ class InferenceRouterCompatTests(unittest.TestCase):
                 poll_interval_sec=1,
             )
         )
-        kwargs = router.chat.call_args.kwargs
+        router.chat.assert_not_called()
+        router._ollama.wait_for_available.assert_not_called()
+
+    def test_wait_for_available_delegates_to_ollama_without_chat(self) -> None:
+        router = InferenceRouter(ROOT)
+        router._server_declares_model = MagicMock(return_value=False)
+        router._ollama = MagicMock()
+        router._ollama.wait_for_available.return_value = True
+        router._ollama.last_wait_polls = 2
+        router._ollama.last_wait_error = ""
+        router.chat = MagicMock(side_effect=AssertionError("preflight must not call chat"))
+
+        self.assertTrue(
+            router.wait_for_available(
+                "qwen3:8b",
+                fallback_models=["deepseek-r1:8b"],
+                max_wait_sec=1,
+                poll_interval_sec=1,
+            )
+        )
+        router.chat.assert_not_called()
+        kwargs = router._ollama.wait_for_available.call_args.kwargs
+        self.assertEqual(router._ollama.wait_for_available.call_args.args[0], "qwen3:8b")
         self.assertEqual(kwargs.get("fallback_models"), ["deepseek-r1:8b"])
-        self.assertGreaterEqual(int(kwargs.get("timeout", 0) or 0), 30)
-        self.assertFalse(bool(kwargs.get("think", True)))
-
-    def test_wait_for_available_treats_empty_ping_as_available(self) -> None:
-        router = InferenceRouter(ROOT)
-        router.chat = MagicMock(side_effect=RuntimeError("Ollama returned empty message content"))
-        self.assertTrue(
-            router.wait_for_available(
-                "qwen3:8b",
-                fallback_models=["deepseek-r1:8b"],
-                max_wait_sec=1,
-                poll_interval_sec=1,
-            )
-        )
 
 
 if __name__ == "__main__":

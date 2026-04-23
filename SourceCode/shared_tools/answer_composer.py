@@ -12,6 +12,30 @@ _DOMAIN_LABELS = {
     "draftkings.com": "DraftKings Sportsbook",
     "cbssports.com": "CBS Sports",
     "espn.com": "ESPN",
+    # Veterinary / animal care
+    "avma.org": "AVMA",
+    "aspca.org": "ASPCA",
+    "vcahospitals.com": "VCA Hospitals",
+    "petmd.com": "PetMD",
+    "aaha.org": "AAHA",
+    "akc.org": "AKC",
+    "avsab.org": "AVSAB",
+    "merckvetmanual.com": "Merck Vet Manual",
+    # Scientific / research institutions
+    "pubmed.ncbi.nlm.nih.gov": "PubMed",
+    "ncbi.nlm.nih.gov": "NCBI",
+    "nih.gov": "NIH",
+    "cdc.gov": "CDC",
+    "fda.gov": "FDA",
+    "who.int": "WHO",
+    # Government / standards
+    "usda.gov": "USDA",
+    "epa.gov": "EPA",
+    # Common editorial
+    "reuters.com": "Reuters",
+    "apnews.com": "AP News",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
     "wikipedia.org": "Wikipedia",
     "tapology.com": "Tapology",
     "sherdog.com": "Sherdog",
@@ -122,6 +146,10 @@ def format_source_label(source_obj: dict[str, Any]) -> str:
     if not pieces:
         return host
     label = pieces[-2] if len(pieces) >= 2 else pieces[0]
+    # Slugs with digits or very long token length read poorly in title case.
+    # Prefer the honest hostname for those.
+    if re.search(r"\d", label) or len(label) > 18:
+        return host.lower()
     return label.replace("-", " ").title()
 
 
@@ -242,16 +270,24 @@ def compose_research_summary(
         return raw
     sections = merge_duplicate_sections(parse_markdown_sections(raw))
     inline_labels = _inline_cited_domains(raw, limit=6)
-    labels = inline_labels if inline_labels else source_labels(sources or [], limit=4)
+    if inline_labels:
+        labels = inline_labels
+        source_note_prefix = "Sources emphasized: "
+    elif sources:
+        labels = source_labels(sources or [], limit=4)
+        source_note_prefix = "Background domains consulted: "
+    else:
+        labels = []
+        source_note_prefix = ""
     schema = _choose_schema(topic_type, question)
 
     if fact_card_md.strip():
         existing = sections.get("Fact Card", "")
         sections["Fact Card"] = fact_card_md.strip() + ("\n\n" + existing if existing else "")
 
-    if labels:
+    if labels and source_note_prefix:
         existing = sections.get("Event Overview", "")
-        source_note = "Sources emphasized: " + ", ".join(labels) + "."
+        source_note = source_note_prefix + ", ".join(labels) + "."
         if source_note not in existing:
             sections["Event Overview"] = (source_note + "\n\n" + existing).strip()
 

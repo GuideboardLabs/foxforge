@@ -175,6 +175,8 @@ class FoxforgeOrchestrator:
         self.manifesto_path = self.repo_root / "Runtime" / "config" / "foxforge_manifesto.md"
         self._manifesto_cache_mtime: float = -1.0
         self._manifesto_cache_text: str = ""
+        self._project_research_brief_cache: dict[tuple[str, float, int], dict[str, Any]] = {}
+        self._project_make_brief_cache: dict[tuple[str, float, int, int], str] = {}
 
 
     @property
@@ -691,6 +693,214 @@ class FoxforgeOrchestrator:
             return ""
         return str(rows[0])
 
+    def _read_activity_text(self, path_text: str, *, max_chars: int) -> tuple[str, float]:
+        raw = str(path_text or "").strip()
+        if not raw:
+            return "", 0.0
+        try:
+            path = Path(raw)
+        except Exception:
+            return "", 0.0
+        if not path.is_absolute():
+            path = self.repo_root / path
+        try:
+            if not path.exists() or not path.is_file():
+                return "", 0.0
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if len(text) > max_chars:
+                text = text[:max_chars]
+            mtime = float(path.stat().st_mtime)
+            return text.strip(), mtime
+        except Exception:
+            return "", 0.0
+
+    def _project_research_brief(
+        self,
+        project_slug: str,
+        *,
+        query: str,
+        max_chars: int = 1200,
+    ) -> dict[str, Any]:
+        project = str(project_slug or "").strip() or "general"
+        rows = self.activity_store.rows()
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            details = row.get("details") if isinstance(row, dict) else {}
+            if not isinstance(details, dict):
+                continue
+            if str(details.get("project", "")).strip() != project:
+                continue
+            summary_path = str(details.get("summary_path", "")).strip()
+            if not summary_path:
+                continue
+            if str(row.get("actor", "")).strip() != "research_pool":
+                continue
+            if str(row.get("event", "")).strip() != "completed":
+                continue
+            candidates.append(
+                {
+                    "ts": str(row.get("ts", "")).strip(),
+                    "summary_path": summary_path,
+                    "raw_path": str(details.get("raw_path", "")).strip(),
+                }
+            )
+        candidates.sort(key=lambda item: str(item.get("ts", "")), reverse=True)
+
+        loaded: list[dict[str, Any]] = []
+        max_mtime = 0.0
+        for item in candidates[:8]:
+            summary_text, summary_mtime = self._read_activity_text(
+                str(item.get("summary_path", "")),
+                max_chars=1200,
+            )
+            raw_text, raw_mtime = self._read_activity_text(
+                str(item.get("raw_path", "")),
+                max_chars=900,
+            )
+            if not summary_text and not raw_text:
+                continue
+            max_mtime = max(max_mtime, summary_mtime, raw_mtime)
+            loaded.append(
+                {
+                    "ts": str(item.get("ts", "")).strip(),
+                    "summary": summary_text,
+                    "raw": raw_text,
+                }
+            )
+        cache_key = (project, max_mtime, int(max_chars))
+        cached = self._project_research_brief_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return dict(cached)
+
+        raw_excerpts: list[str] = []
+        if loaded:
+            lines = [f"Research summaries for project {project}:"]
+            remaining = max_chars - len(lines[0]) - 1
+            for item in loaded[:5]:
+                day = str(item.get("ts", ""))[:10]
+                preview = " ".join(str(item.get("summary", "")).split())[:250]
+                if not preview:
+                    continue
+                line = f"- {day}: {preview}"
+                if remaining <= 0:
+                    break
+                if len(line) > remaining:
+                    line = line[: max(0, remaining)].rstrip()
+                if not line:
+                    break
+                lines.append(line)
+                remaining -= len(line) + 1
+            brief_text = "\n".join(lines).strip()
+            for item in loaded:
+                raw_preview = " ".join(str(item.get("raw", "")).split())
+                if not raw_preview:
+                    continue
+                raw_excerpts.append(raw_preview[:600])
+                if len(raw_excerpts) >= 2:
+                    break
+        else:
+            fallback = str(self.project_memory.summary_text(project, limit_chars=max_chars) or "").strip()
+            if fallback:
+                brief_text = f"Research summaries for project {project}:\n{fallback}"
+            else:
+                brief_text = ""
+
+        payload = {"brief": brief_text, "raw_excerpts": raw_excerpts, "query": str(query or "").strip()}
+        self._project_research_brief_cache.clear()
+        self._project_research_brief_cache[cache_key] = dict(payload)
+        return payload
+
+    def _project_make_brief(
+        self,
+        project_slug: str,
+        *,
+        max_items: int = 5,
+        max_chars: int = 900,
+    ) -> str:
+        from orchestrator.services.make_catalog import label_for_type
+
+        project = str(project_slug or "").strip() or "general"
+        rows = self.activity_store.rows()
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            details = row.get("details") if isinstance(row, dict) else {}
+            if not isinstance(details, dict):
+                continue
+            if str(details.get("project", "")).strip() != project:
+                continue
+            if str(row.get("event", "")).strip() != "make_deliverable_written":
+                continue
+            path = str(details.get("path", "")).strip()
+            if not path:
+                continue
+            kind = str(details.get("kind") or details.get("make_type") or "").strip().lower()
+            candidates.append(
+                {
+                    "ts": str(row.get("ts", "")).strip(),
+                    "path": path,
+                    "kind": kind,
+                    "topic": str(details.get("topic", "")).strip(),
+                }
+            )
+        candidates.sort(key=lambda item: str(item.get("ts", "")), reverse=True)
+
+        loaded: list[dict[str, Any]] = []
+        max_mtime = 0.0
+        for item in candidates[: max(1, max_items)]:
+            body, mtime = self._read_activity_text(str(item.get("path", "")), max_chars=520)
+            max_mtime = max(max_mtime, mtime)
+            if not body and not str(item.get("topic", "")).strip():
+                continue
+            loaded.append(
+                {
+                    **item,
+                    "body": body,
+                }
+            )
+        cache_key = (project, max_mtime, int(max_items), int(max_chars))
+        cached = self._project_make_brief_cache.get(cache_key)
+        if isinstance(cached, str):
+            return cached
+
+        if not loaded:
+            return ""
+        lines = [f"Recent Make outputs for project {project}:"]
+        remaining = max_chars - len(lines[0]) - 1
+        for item in loaded:
+            kind = str(item.get("kind", "")).strip()
+            label = label_for_type(kind) if kind else "Make Output"
+            title = str(item.get("topic", "")).strip()
+            if not title:
+                try:
+                    title = Path(str(item.get("path", ""))).stem.replace("_", " ").strip()
+                except Exception:
+                    title = ""
+            preview = " ".join(str(item.get("body", "")).split())[:120]
+            day = str(item.get("ts", ""))[:10]
+            line = f"- [{label}] {title or label} ({day}): {preview}"
+            if remaining <= 0:
+                break
+            if len(line) > remaining:
+                line = line[: max(0, remaining)].rstrip()
+            if not line:
+                break
+            lines.append(line)
+            remaining -= len(line) + 1
+        brief = "\n".join(lines).strip()
+        self._project_make_brief_cache.clear()
+        self._project_make_brief_cache[cache_key] = brief
+        return brief
+
+    @staticmethod
+    def _merge_make_seed_context(research_context: str, seed_artifact_text: str) -> str:
+        base = str(research_context or "").strip()
+        seed = str(seed_artifact_text or "").strip()
+        if not seed:
+            return base
+        if not base:
+            return seed
+        return f"{seed}\n\n{base}"
+
     def _forage_gate(self, seed: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         norm_seed = self._normalize_forage_seed(seed)
@@ -892,6 +1102,14 @@ class FoxforgeOrchestrator:
                 else "evolving_topic" if evolving_topic
                 else "factual_lookup"
             )
+            if recency_sensitive:
+                try:
+                    from orchestrator.services.chat_routing_gate import first_force_web_match
+                    matched_phrase = str(first_force_web_match(text) or "").strip()
+                    if matched_phrase:
+                        _trigger_reason = f"recency_phrase:{matched_phrase[:80]}"
+                except Exception:
+                    pass
             _web_gate_cleared = self._routing_context_gate(text, prior_messages, trigger_reason=_trigger_reason)
         web_note = ""
         web_context = ""
@@ -1053,6 +1271,38 @@ class FoxforgeOrchestrator:
             )
         except Exception:
             pass
+        _project_research_ctx = ""
+        _project_research_raw_ctx = ""
+        try:
+            research_bundle = self._project_research_brief(
+                project_slug,
+                query=text,
+                max_chars=1200,
+            )
+            _project_research_ctx = str(research_bundle.get("brief", "")).strip()
+            raw_excerpts = research_bundle.get("raw_excerpts")
+            if isinstance(raw_excerpts, list):
+                raw_lines = [
+                    f"- {str(item).strip()[:600]}"
+                    for item in raw_excerpts
+                    if str(item).strip()
+                ][:2]
+                if raw_lines:
+                    _project_research_raw_ctx = (
+                        f"Raw research excerpts for project {project_slug}:\n"
+                        + "\n".join(raw_lines)
+                    )
+        except Exception:
+            pass
+        _project_make_ctx = ""
+        try:
+            _project_make_ctx = self._project_make_brief(
+                project_slug,
+                max_items=5,
+                max_chars=900,
+            )
+        except Exception:
+            pass
         _general_ctx = ""
         try:
             _pool_query = text
@@ -1069,6 +1319,7 @@ class FoxforgeOrchestrator:
         _has_injected_context = bool(
             household_context.strip() or personal_context.strip()
             or web_context.strip() or _recency_rule or _library_ctx.strip()
+            or _project_research_ctx.strip() or _project_research_raw_ctx.strip() or _project_make_ctx.strip()
         )
         _is_short_query = len(text.split()) < 10
 
@@ -1151,6 +1402,12 @@ class FoxforgeOrchestrator:
             _sys_parts.append(household_context)
         if _topic_ctx:
             _sys_parts.append(_topic_ctx)
+        if _project_research_ctx:
+            _sys_parts.append(_project_research_ctx)
+        if _project_research_raw_ctx:
+            _sys_parts.append(_project_research_raw_ctx)
+        if _project_make_ctx:
+            _sys_parts.append(_project_make_ctx)
         if _library_ctx:
             _sys_parts.append(_library_ctx)
         if _general_ctx:
@@ -2450,11 +2707,15 @@ class FoxforgeOrchestrator:
         history: list[dict[str, str]] | None,
         target: str,
         mode: str = "research",
+        seed_artifact_text: str = "",
     ) -> dict[str, Any]:
         current_mode = str(mode or "research").strip().lower()
         kind = self._infer_delivery_target(text, target, mode=current_mode)
         if kind in {"web_app", "standalone_app", "app", "dashboard", "landing_page", "api"}:
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             out = self._run_registered_agent(
                 "make_app",
                 self._make_agent_task(
@@ -2477,7 +2738,10 @@ class FoxforgeOrchestrator:
 
         # --- Essay / Report / Brief / Document: multi-pass pipeline ---
         if kind in {"essay", "brief", "report", "document"}:
-            research_context = self._read_research_context(self.project_slug)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug),
+                seed_artifact_text,
+            )
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
             # Resolve topic_type from project_mode if available
@@ -2521,7 +2785,10 @@ class FoxforgeOrchestrator:
 
         # --- Creative writing: novel, memoir, book, screenplay ---
         if kind in {"novel", "memoir", "book", "screenplay"}:
-            research_context = self._read_research_context(self.project_slug)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug),
+                seed_artifact_text,
+            )
             _pm_creative = getattr(self, "_last_project_mode", {})
             topic_type_creative = str(_pm_creative.get("topic_type", "general")).strip().lower() if isinstance(_pm_creative, dict) else "general"
             creative_result = self._run_registered_agent(
@@ -2561,7 +2828,10 @@ class FoxforgeOrchestrator:
 
         # --- Short-form content: blog, social_post, email ---
         if kind in {"blog", "social_post", "email"}:
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             raw_notes_context_content = self._read_raw_notes_context(self.project_slug)
             _pm_content = getattr(self, "_last_project_mode", {})
             topic_type_content = str(_pm_content.get("topic_type", "general")).strip().lower() if isinstance(_pm_content, dict) else "general"
@@ -2602,7 +2872,10 @@ class FoxforgeOrchestrator:
 
         # --- Domain specialist: medical, finance, sports, history, game_design_doc ---
         if kind in {"medical", "finance", "sports", "history", "game_design_doc"}:
-            research_context = self._read_research_context(self.project_slug)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug),
+                seed_artifact_text,
+            )
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
             _pm = getattr(self, "_last_project_mode", {})
@@ -2652,7 +2925,10 @@ class FoxforgeOrchestrator:
         # --- Longform writing: essay_long, essay_short, guide, tutorial, video_script, newsletter, press_release ---
         _LONGFORM_KINDS = {"essay_long", "essay_short", "guide", "tutorial", "video_script", "newsletter", "press_release"}
         if kind in _LONGFORM_KINDS:
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
             _pm_longform = getattr(self, "_last_project_mode", {})
@@ -2702,7 +2978,10 @@ class FoxforgeOrchestrator:
 
         # --- Desktop app: .NET 8 + Avalonia ---
         if kind == "desktop_app":
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             out = self._run_registered_agent(
                 "make_desktop_app",
                 self._make_agent_task(
@@ -2725,7 +3004,10 @@ class FoxforgeOrchestrator:
 
         # --- Tool / script ---
         if kind in {"tool", "script"}:
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             out = self._run_registered_agent(
                 "make_tool",
                 self._make_agent_task(
@@ -2786,6 +3068,9 @@ class FoxforgeOrchestrator:
             f"Latest research summary path: {summary_path or 'none'}\n"
             f"Latest research summary preview:\n{summary_preview.strip()[:6500] or '(none)'}\n"
         )
+        seed_block = str(seed_artifact_text or "").strip()
+        if seed_block:
+            user_prompt = f"{seed_block}\n\n{user_prompt}"
         body = self.ollama.chat(
             model=model,
             system_prompt=system_prompt,
@@ -2911,6 +3196,7 @@ class FoxforgeOrchestrator:
         yield_checker=None,
         progress_callback=None,
         conversation_summary: str = "",
+        seed_artifact_text: str = "",
         force_research: bool = False,
         force_make: bool = False,
         thread_id: str = "",
@@ -3205,6 +3491,7 @@ class FoxforgeOrchestrator:
                 history=history,
                 target=target,
                 mode=mode,
+                seed_artifact_text=seed_artifact_text,
             )
             fallback = f"{out.get('message', 'UI lane completed.')} Output: {out.get('path', '')}"
             internal_reply = self._orchestrator_finalize(text, lane, out, fallback, topic_type=topic_type)
@@ -3241,6 +3528,7 @@ class FoxforgeOrchestrator:
                 history=history,
                 target=target,
                 mode=mode,
+                seed_artifact_text=seed_artifact_text,
             )
             fallback = f"{out.get('message', 'App build completed.')} Output: {out.get('path', '')}"
             reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
@@ -3265,7 +3553,10 @@ class FoxforgeOrchestrator:
             self._last_project_mode = pipeline
             self._last_progress_callback = progress_callback
             self._last_cancel_checker = cancel_checker
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             out = self._run_registered_agent(
                 "make_tool",
                 self._make_agent_task(
@@ -3307,6 +3598,7 @@ class FoxforgeOrchestrator:
                 history=history,
                 target=target,
                 mode=mode,
+                seed_artifact_text=seed_artifact_text,
             )
             fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
             reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
@@ -3336,6 +3628,7 @@ class FoxforgeOrchestrator:
                 history=history,
                 target=target,
                 mode=mode,
+                seed_artifact_text=seed_artifact_text,
             )
             fallback = f"{out.get('message', 'MAKE lane completed.')} Output: {out.get('path', '')}"
             reply = self._make_summary_reply(lane=lane, out=out, fallback=fallback)
@@ -3360,7 +3653,10 @@ class FoxforgeOrchestrator:
             self._last_project_mode = pipeline
             self._last_progress_callback = progress_callback
             self._last_cancel_checker = cancel_checker
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             raw_notes_context = self._read_raw_notes_context(self.project_slug)
             sources_context = self._read_sources_context(self.project_slug)
             longform_result = self._run_registered_agent(
@@ -3427,7 +3723,10 @@ class FoxforgeOrchestrator:
             self._last_project_mode = pipeline
             self._last_progress_callback = progress_callback
             self._last_cancel_checker = cancel_checker
-            research_context = self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000)
+            research_context = self._merge_make_seed_context(
+                self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
+                seed_artifact_text,
+            )
             out = self._run_registered_agent(
                 "make_desktop_app",
                 self._make_agent_task(

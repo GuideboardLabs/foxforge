@@ -83,8 +83,8 @@
                 </span>
                 <span class="panel-btn-label">Foraging</span>
               </span>
-              <span class="panel-badge" v-if="panelBadgeValue(panelStatus.foraging_active_jobs)">
-                [[ panelBadgeValue(panelStatus.foraging_active_jobs) ]]
+              <span class="panel-badge" :class="foragingPanelBadgeClass" v-if="foragingPanelBadgeText">
+                [[ foragingPanelBadgeText ]]
               </span>
             </button>
                             <button class="panel-btn panel-btn-building" type="button" @click="openSystemPanel('building')">
@@ -94,8 +94,8 @@
                 </span>
                 <span class="panel-btn-label">Building</span>
               </span>
-              <span class="panel-badge" v-if="panelBadgeValue(panelStatus.building_active_jobs)">
-                [[ panelBadgeValue(panelStatus.building_active_jobs) ]]
+              <span class="panel-badge" :class="buildingPanelBadgeClass" v-if="buildingPanelBadgeText">
+                [[ buildingPanelBadgeText ]]
               </span>
             </button>
                             <button class="panel-btn panel-btn-reflections" type="button" @click="openSystemPanel('reflections')">
@@ -354,6 +354,19 @@
                                     <span class="make-type-picker-caret" aria-hidden="true">&#9662;</span>
                                 </button>
                             </div>
+                            <button
+                                v-show="inputMode === 'make'"
+                                class="make-output-edit-btn"
+                                type="button"
+                                :disabled="!activeConversationProjectSlug"
+                                :title="activeConversationProjectSlug ? 'Edit / extend a past Make output' : 'Assign a project first'"
+                                aria-label="Edit past Make outputs"
+                                @click="openMakeOutputEditModal()"
+                            >
+                                <svg class="composer-mode-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                    <path fill="currentColor" d="M14.06 4.94l5 5L7.5 21.5H2.5v-5L14.06 4.94zm1.41-1.41 2.12-2.12a1 1 0 0 1 1.41 0l2.59 2.59a1 1 0 0 1 0 1.41l-2.12 2.12-4-4z"/>
+                                </svg>
+                            </button>
                             <div class="composer-mode-segment" role="tablist" aria-label="Composer mode">
                                 <button class="composer-mode-btn" type="button" :class="{ 'is-active': inputMode === 'talk' }" @click="setComposerMode('talk')" title="Talk" aria-label="Talk">
                   <span class="composer-mode-icon composer-mode-icon-aa" aria-hidden="true">Aa</span>
@@ -390,13 +403,9 @@
                         </div>
                     </header>
 
-                    <section class="chat-project-toolbar" v-if="activeConversationIsProject">
-                        <span class="chat-project-chip">Project: [[ activeConversationProjectSlug ]]</span>
-                        <button type="button" class="chat-project-btn" @click="openSystemPanel('project_detail')">Project</button>
-                        <button type="button" class="chat-project-btn" @click="openSystemPanel('content')">Make</button>
-                        <button type="button" class="chat-project-btn" @click="toggleProjectMode">Mode: [[ projectModeLabel ]]</button>
-                        <button type="button" class="chat-project-btn" @click="setProjectBuildTarget">Target: [[ projectBuildTargetLabel ]]</button>
-                        <button type="button" class="chat-project-btn" @click="openProjectTopicTypeModal">Topic: [[ topicTypeLabel(projectPipeline?.topic_type) ]]</button>
+                    <section class="chat-project-welcome" v-if="activeConversationIsProject && !activeMessages.length">
+                        <h2>Project: [[ activeConversationProjectSlug ]]</h2>
+                        <p>Welcome to this project chat. Send a message to start.</p>
                     </section>
 
                     <section id="messages" class="messages" ref="messages" @click="onMessagesClick">
@@ -675,6 +684,14 @@
                             <span class="composer-reply-excerpt">[[ replyTargetMsg.excerpt ]]</span>
                         </div>
                         <button class="composer-reply-cancel" type="button" @click="cancelReply" aria-label="Cancel reply">&times;</button>
+                    </div>
+                    <div v-if="inputMode === 'make' && pendingExtendsRequestId" class="composer-reply-preview">
+                        <div class="composer-reply-bar"></div>
+                        <div class="composer-reply-body">
+                            <span class="composer-reply-label">Extending</span>
+                            <span class="composer-reply-excerpt">[[ pendingExtendsTitle || pendingExtendsRequestId ]]</span>
+                        </div>
+                        <button class="composer-reply-cancel" type="button" @click="clearPendingMakeOutputExtension()" aria-label="Clear extension seed">&times;</button>
                     </div>
                     <form class="composer" @submit.prevent="sendMessage()">
                         <input ref="imageInput" class="composer-file-input" type="file" accept="image/*" multiple @change="onComposerImagesPicked($event, 'image')" />
@@ -2606,7 +2623,7 @@
 
                 <template v-else-if="panelKey === 'foraging'">
               <header class="panel-card-head">
-                <h4><span class="road-icon" aria-hidden="true">k</span>Foraging Job</h4>
+                <h4><span class="road-icon" aria-hidden="true">k</span>[[ row.is_last_successful ? 'Last Successful Forage Run' : 'Foraging Job' ]]</h4>
                 <p>[[ formatDate(row.started_at || row.updated_at) || 'n/a' ]]</p>
               </header>
               <div class="panel-card-meta">
@@ -2614,9 +2631,10 @@
                 <span>lane: [[ row.lane || 'project' ]]</span>
                 <span>project: [[ row.project || '' ]]</span>
                 <span>status: [[ row.status || 'running' ]]</span>
+                <span v-if="row.topic_type">topic: [[ row.topic_type ]]</span>
                 <template v-if="row.agent_tracker && row.agent_tracker.profile">
                   <span>profile: [[ row.agent_tracker.profile ]]</span>
-                  <span v-if="row.agent_tracker.topic_type">topic: [[ row.agent_tracker.topic_type ]]</span>
+                  <span v-if="!row.topic_type && row.agent_tracker.topic_type">topic: [[ row.agent_tracker.topic_type ]]</span>
                 </template>
     </div>
 
@@ -2681,13 +2699,13 @@
     <p v-else-if="row.last_detail">[[ row.last_detail ]]</p>
 
     <div class="outbox-controls">
-        <button class="outbox-ingest-btn" type="button" @click="cancelForagingJob(row)">Cancel Job</button>
+        <button v-if="laneJobIsCancelable(row)" class="outbox-ingest-btn" type="button" @click="cancelForagingJob(row)">Cancel Job</button>
     </div>
     </template>
 
     <template v-else-if="panelKey === 'building'">
               <header class="panel-card-head">
-                <h4><span class="road-icon" aria-hidden="true">B</span>Build Job</h4>
+                <h4><span class="road-icon" aria-hidden="true">B</span>[[ row.is_last_successful ? 'Last Successful Build Run' : 'Build Job' ]]</h4>
                 <p>[[ formatDate(row.started_at || row.updated_at) || 'n/a' ]]</p>
               </header>
               <div class="panel-card-meta">
@@ -2695,9 +2713,10 @@
                 <span>type: [[ row.make_type || row.lane || '' ]]</span>
                 <span>project: [[ row.project || '' ]]</span>
                 <span>status: [[ row.status || 'running' ]]</span>
+                <span v-if="row.topic_type">topic: [[ row.topic_type ]]</span>
                 <template v-if="row.agent_tracker && row.agent_tracker.profile">
                   <span>type: [[ row.agent_tracker.profile ]]</span>
-                  <span v-if="row.agent_tracker.topic_type">dest: [[ row.agent_tracker.topic_type ]]</span>
+                  <span v-if="!row.topic_type && row.agent_tracker.topic_type">dest: [[ row.agent_tracker.topic_type ]]</span>
                 </template>
               </div>
 
@@ -2746,7 +2765,7 @@
               <p v-else-if="row.last_detail">[[ row.last_detail ]]</p>
 
               <div class="outbox-controls">
-                <button class="outbox-ingest-btn" type="button" @click="cancelBuildingJob(row)">Cancel Job</button>
+                <button v-if="laneJobIsCancelable(row)" class="outbox-ingest-btn" type="button" @click="cancelBuildingJob(row)">Cancel Job</button>
               </div>
     </template>
 
@@ -2928,6 +2947,32 @@
                         <span class="make-type-item-desc">[[ entry.short_description ]]</span>
                     </article>
                 </template>
+            </section>
+        </section>
+    </div>
+
+    <div class="modal-form-overlay" :aria-hidden="makeOutputEditModalOpen ? 'false' : 'true'" v-show="makeOutputEditModalOpen">
+        <div class="modal-form-backdrop" @click="closeMakeOutputEditModal()"></div>
+        <section class="modal-form-modal make-output-edit-modal" role="dialog" aria-modal="true" aria-label="Edit past Make output">
+            <header class="modal-form-header">
+                <div>
+                    <h3>Edit / Extend Past Output</h3>
+                    <p>Pick a previous Make output for this project to continue from.</p>
+                </div>
+                <button type="button" class="modal-form-close" @click="closeMakeOutputEditModal()">&times;</button>
+            </header>
+            <section class="modal-form-body">
+                <div v-if="makeOutputEditLoading" class="modal-empty">Loading…</div>
+                <div v-else-if="!makeOutputEditRows.length" class="modal-empty">No past Make outputs for this project yet.</div>
+                <article
+                    v-for="row in makeOutputEditRows"
+                    :key="'make_out_' + row.request_id"
+                    class="make-type-item"
+                    @click="selectMakeOutputForEdit(row)"
+                >
+                    <strong class="make-type-item-label">[[ row.title || row.make_label ]]</strong>
+                    <span class="make-type-item-desc">[[ row.make_label ]] · [[ row.finished_at?.slice(0,10) ]]</span>
+                </article>
             </section>
         </section>
     </div>

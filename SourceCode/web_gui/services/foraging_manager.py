@@ -25,6 +25,7 @@ class ForagingManager:
         self._lock = threading.Lock()
         self._state: dict[str, Any] = {
             "active_jobs": {},
+            "last_successful_by_profile": {},
             "updated_at": _now_iso(),
             "paused": False,
             "yield_until": 0.0,
@@ -38,9 +39,11 @@ class ForagingManager:
         now_ts = time.time()
         with self._lock:
             active_jobs = dict(self._state.get("active_jobs", {}))
+            completions = dict(self._state.get("last_successful_by_profile", {}))
             yield_until = float(self._state.get("yield_until", 0.0) or 0.0)
             paused = bool(self._state.get("paused", False))
             updated_at = str(self._state.get("updated_at", "")).strip()
+        completion_row: dict[str, Any] = {}
         if profile_id:
             pid = str(profile_id).strip()
             active_jobs = {
@@ -48,13 +51,20 @@ class ForagingManager:
                 for key, value in active_jobs.items()
                 if isinstance(value, dict) and str(value.get("profile_id", "")).strip() == pid
             }
+            candidate = completions.get(pid)
+            if isinstance(candidate, dict):
+                completion_row = dict(candidate)
         yielding = now_ts < yield_until
+        completion_unread = bool(completion_row.get("completion_unread", False))
         return {
             "paused": paused,
             "active_jobs": len(active_jobs),
             "yielding": yielding,
             "yield_until_epoch": yield_until,
             "updated_at": updated_at or _now_iso(),
+            "completion_unread": completion_unread,
+            "last_completed_id": str(completion_row.get("id", "")).strip(),
+            "last_completed_at": str(completion_row.get("finished_at", "")).strip(),
         }
 
     def rows_for_profile(
@@ -64,6 +74,7 @@ class ForagingManager:
         rows: list[dict[str, Any]] = []
         with self._lock:
             active_jobs = dict(self._state.get("active_jobs", {}))
+            completions = dict(self._state.get("last_successful_by_profile", {}))
         for item in active_jobs.values():
             if not isinstance(item, dict):
                 continue
@@ -81,6 +92,7 @@ class ForagingManager:
                 "conversation_id": str(item.get("conversation_id", "")).strip(),
                 "project": str(item.get("project", "")).strip(),
                 "lane": str(item.get("lane", "")).strip() or "project",
+                "topic_type": str(item.get("topic_type", "")).strip(),
                 "started_at": str(job_row.get("started_at", "") or item.get("started_at", "")).strip(),
                 "updated_at": str(job_row.get("updated_at", "") or item.get("started_at", "")).strip(),
                 "stage": str(job_row.get("stage", "")).strip() or "running",
@@ -91,6 +103,11 @@ class ForagingManager:
                 "last_detail": str(last_event.get("detail", "")).strip() if isinstance(last_event, dict) else "",
                 "agent_tracker": job_row.get("agent_tracker", {}) if isinstance(job_row.get("agent_tracker"), dict) else {},
             })
+        last_success = completions.get(pid)
+        if isinstance(last_success, dict):
+            completed_request_id = str(last_success.get("id", "")).strip()
+            if completed_request_id and not any(str(row.get("id", "")).strip() == completed_request_id for row in rows):
+                rows.append(dict(last_success))
         rows.sort(key=lambda row: str(row.get("started_at", "")), reverse=True)
         return rows[: max(1, int(limit))]
 
@@ -113,6 +130,7 @@ class ForagingManager:
         request_id: str,
         project: str,
         lane: str,
+        topic_type: str = "",
         job_key: str,
     ) -> None:
         with self._lock:
@@ -126,6 +144,7 @@ class ForagingManager:
                 "conversation_id": str(conversation_id).strip(),
                 "project": str(project).strip(),
                 "lane": str(lane).strip(),
+                "topic_type": str(topic_type).strip().lower(),
                 "started_at": _now_iso(),
             }
             self._state["updated_at"] = _now_iso()
@@ -136,6 +155,72 @@ class ForagingManager:
             if isinstance(active_jobs, dict):
                 active_jobs.pop(job_key, None)
             self._state["updated_at"] = _now_iso()
+
+    def record_completion(
+        self,
+        *,
+        profile: dict[str, Any],
+        conversation_id: str,
+        request_id: str,
+        project: str,
+        lane: str,
+        topic_type: str = "",
+        job_row: dict[str, Any] | None = None,
+        status: str = "completed",
+    ) -> None:
+        status_key = str(status or "").strip().lower()
+        if status_key not in {"completed", "completed_with_warnings"}:
+            return
+        row = job_row if isinstance(job_row, dict) else {}
+        events = row.get("events", [])
+        last_event = events[-1] if isinstance(events, list) and events else {}
+        started_at = str(row.get("started_at", "")).strip() or _now_iso()
+        finished_at = str(row.get("updated_at", "")).strip() or _now_iso()
+        snapshot = {
+            "id": str(request_id).strip(),
+            "conversation_id": str(conversation_id).strip(),
+            "project": str(project).strip(),
+            "lane": str(lane).strip() or "project",
+            "topic_type": str(topic_type).strip().lower(),
+            "started_at": started_at,
+            "updated_at": finished_at,
+            "finished_at": finished_at,
+            "stage": str(row.get("stage", "")).strip() or status_key,
+            "status": status_key,
+            "summary_path": str(row.get("summary_path", "")).strip(),
+            "raw_path": str(row.get("raw_path", "")).strip(),
+            "web_stack": row.get("web_stack", {}) if isinstance(row.get("web_stack"), dict) else {},
+            "last_detail": str(last_event.get("detail", "")).strip() if isinstance(last_event, dict) else "",
+            "agent_tracker": row.get("agent_tracker", {}) if isinstance(row.get("agent_tracker"), dict) else {},
+            "is_last_successful": True,
+            "completion_unread": True,
+        }
+        pid = str(profile.get("id", "")).strip()
+        if not pid:
+            return
+        with self._lock:
+            completions = self._state.get("last_successful_by_profile", {})
+            if not isinstance(completions, dict):
+                completions = {}
+                self._state["last_successful_by_profile"] = completions
+            completions[pid] = snapshot
+            self._state["updated_at"] = _now_iso()
+
+    def mark_completion_read(self, profile_id: str | None = None) -> None:
+        pid = str(profile_id or "").strip()
+        if not pid:
+            return
+        with self._lock:
+            completions = self._state.get("last_successful_by_profile", {})
+            if not isinstance(completions, dict):
+                return
+            row = completions.get(pid)
+            if not isinstance(row, dict):
+                return
+            if bool(row.get("completion_unread", False)):
+                row["completion_unread"] = False
+                row["updated_at"] = _now_iso()
+                self._state["updated_at"] = row["updated_at"]
 
     # ------------------------------------------------------------------
     # Pause / yield control

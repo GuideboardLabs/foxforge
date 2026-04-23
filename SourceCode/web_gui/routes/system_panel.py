@@ -135,8 +135,13 @@ def register_panel_routes(bp: Blueprint, ctx: AppContext) -> None:
         from web_gui.utils.request_utils import parse_optional_int
 
         profile = ctx.require_profile()
+        profile_id = str(profile.get("id", ""))
         limit = parse_optional_int(request.args.get("limit"), default=60, minimum=1, maximum=200)
-        snapshot = ctx.foraging_manager.snapshot(profile_id=str(profile.get("id", "")))
+        mark_read = str(request.args.get("mark_read", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if mark_read:
+            ctx.foraging_manager.mark_completion_read(profile_id=profile_id)
+            ctx.cache_clear(profile_id)
+        snapshot = ctx.foraging_manager.snapshot(profile_id=profile_id)
         jobs = ctx.foraging_manager.rows_for_profile(profile, ctx.job_manager, limit=limit)
         return {"foraging": snapshot, "jobs": jobs}, 200
 
@@ -145,8 +150,13 @@ def register_panel_routes(bp: Blueprint, ctx: AppContext) -> None:
         from web_gui.utils.request_utils import parse_optional_int
 
         profile = ctx.require_profile()
+        profile_id = str(profile.get("id", ""))
         limit = parse_optional_int(request.args.get("limit"), default=60, minimum=1, maximum=200)
-        snapshot = ctx.building_manager.snapshot(profile_id=str(profile.get("id", "")))
+        mark_read = str(request.args.get("mark_read", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if mark_read:
+            ctx.building_manager.mark_completion_read(profile_id=profile_id)
+            ctx.cache_clear(profile_id)
+        snapshot = ctx.building_manager.snapshot(profile_id=profile_id)
         jobs = ctx.building_manager.rows_for_profile(profile, ctx.job_manager, limit=limit)
         return {"building": snapshot, "jobs": jobs}, 200
 
