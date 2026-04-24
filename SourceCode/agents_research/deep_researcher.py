@@ -483,12 +483,28 @@ ANALYSIS_PROFILE_MEDICAL        = "medical_analysis"
 ANALYSIS_PROFILE_PARENTING      = "parenting_analysis"
 ANALYSIS_PROFILE_FINANCE        = "finance_analysis"
 ANALYSIS_PROFILE_SPORTS         = "sports_analysis"
+ANALYSIS_PROFILE_COMBAT_SPORTS  = "combat_sports_analysis"
+ANALYSIS_PROFILE_SPORTS_EVENT   = "sports_event_analysis"
 ANALYSIS_PROFILE_HISTORY        = "history_analysis"
 ANALYSIS_PROFILE_SCIENCE        = "science_analysis"
 ANALYSIS_PROFILE_MATH           = "math_analysis"
 ANALYSIS_PROFILE_POLITICS       = "politics_analysis"
 ANALYSIS_PROFILE_CURRENT_EVENTS = "current_events_analysis"
 ANALYSIS_PROFILE_UNDERGROUND    = "underground_analysis"
+ANALYSIS_PROFILE_ANIMAL_CARE    = "animal_care_analysis"
+ANALYSIS_PROFILE_BUSINESS       = "business_analysis"
+ANALYSIS_PROFILE_LAW            = "law_analysis"
+ANALYSIS_PROFILE_EDUCATION      = "education_analysis"
+ANALYSIS_PROFILE_TRAVEL         = "travel_analysis"
+ANALYSIS_PROFILE_FOOD           = "food_analysis"
+ANALYSIS_PROFILE_GAMING         = "gaming_analysis"
+ANALYSIS_PROFILE_BOOKS          = "books_analysis"
+ANALYSIS_PROFILE_REAL_ESTATE    = "real_estate_analysis"
+ANALYSIS_PROFILE_AUTOMOTIVE     = "automotive_analysis"
+ANALYSIS_PROFILE_TV_SHOWS       = "tv_shows_analysis"
+ANALYSIS_PROFILE_MOVIES         = "movies_analysis"
+ANALYSIS_PROFILE_MUSIC          = "music_analysis"
+ANALYSIS_PROFILE_ART            = "art_analysis"
 STATISTICAL_ANALYSIS_PERSONA = "statistical_analysis"
 STATISTICAL_ANALYSIS_DIRECTIVE = (
     "OUTPUT CONTRACT: Return ONLY quantitative findings from sources. "
@@ -508,9 +524,11 @@ LEGAL_ANALYSIS_MODEL = "qwen3:8b"
 
 TOPIC_TYPE_TO_PROFILE: dict[str, str] = {
     "sports":         ANALYSIS_PROFILE_SPORTS,
+    "combat_sports":  ANALYSIS_PROFILE_COMBAT_SPORTS,
+    "sports_event":   ANALYSIS_PROFILE_SPORTS_EVENT,
     "technical":      ANALYSIS_PROFILE_TECHNICAL,
     "medical":        ANALYSIS_PROFILE_MEDICAL,
-    "animal_care":    ANALYSIS_PROFILE_MEDICAL,
+    "animal_care":    ANALYSIS_PROFILE_ANIMAL_CARE,
     "finance":        ANALYSIS_PROFILE_FINANCE,
     "history":        ANALYSIS_PROFILE_HISTORY,
     "science":        ANALYSIS_PROFILE_SCIENCE,
@@ -519,25 +537,43 @@ TOPIC_TYPE_TO_PROFILE: dict[str, str] = {
     "current_events": ANALYSIS_PROFILE_CURRENT_EVENTS,
     "general":        ANALYSIS_PROFILE_GENERAL,
     "underground":    ANALYSIS_PROFILE_UNDERGROUND,
-    "business":       ANALYSIS_PROFILE_FINANCE,
-    "law":            ANALYSIS_PROFILE_POLITICS,
-    "education":      ANALYSIS_PROFILE_GENERAL,
-    "travel":         ANALYSIS_PROFILE_GENERAL,
-    "food":           ANALYSIS_PROFILE_GENERAL,
-    "gaming":         ANALYSIS_PROFILE_TECHNICAL,
-    "books":          ANALYSIS_PROFILE_GENERAL,
-    "real_estate":    ANALYSIS_PROFILE_FINANCE,
-    "automotive":     ANALYSIS_PROFILE_TECHNICAL,
     "parenting":      ANALYSIS_PROFILE_PARENTING,
-    "tv_shows":       ANALYSIS_PROFILE_CURRENT_EVENTS,
-    "movies":         ANALYSIS_PROFILE_CURRENT_EVENTS,
-    "music":          ANALYSIS_PROFILE_CURRENT_EVENTS,
-    "art":            ANALYSIS_PROFILE_CURRENT_EVENTS,
+    "business":       ANALYSIS_PROFILE_BUSINESS,
+    "law":            ANALYSIS_PROFILE_LAW,
+    "education":      ANALYSIS_PROFILE_EDUCATION,
+    "travel":         ANALYSIS_PROFILE_TRAVEL,
+    "food":           ANALYSIS_PROFILE_FOOD,
+    "gaming":         ANALYSIS_PROFILE_GAMING,
+    "books":          ANALYSIS_PROFILE_BOOKS,
+    "real_estate":    ANALYSIS_PROFILE_REAL_ESTATE,
+    "automotive":     ANALYSIS_PROFILE_AUTOMOTIVE,
+    "tv_shows":       ANALYSIS_PROFILE_TV_SHOWS,
+    "movies":         ANALYSIS_PROFILE_MOVIES,
+    "music":          ANALYSIS_PROFILE_MUSIC,
+    "art":            ANALYSIS_PROFILE_ART,
 }
+
+_DETECT_TOPIC_SPECIAL_CASES = {
+    "animal_care",
+    "combat_sports",
+    "sports_event",
+}
+_UNMAPPED_DETECT_SPECIAL_CASES = _DETECT_TOPIC_SPECIAL_CASES - set(TOPIC_TYPE_TO_PROFILE)
+assert not _UNMAPPED_DETECT_SPECIAL_CASES, (
+    f"detect_topic_type can return {_UNMAPPED_DETECT_SPECIAL_CASES} but no profile mapped"
+)
 
 
 def _analysis_profile_for_type(topic_type: str) -> str:
-    return TOPIC_TYPE_TO_PROFILE.get(str(topic_type).strip().lower(), ANALYSIS_PROFILE_GENERAL)
+    key = str(topic_type or "").strip().lower() or "general"
+    if key in TOPIC_TYPE_TO_PROFILE:
+        return TOPIC_TYPE_TO_PROFILE[key]
+    LOGGER.warning("uncatalogued topic_type %r - falling back to GENERAL profile", key)
+    try:
+        telemetry_emit("analysis_profile_uncatalogued", {"topic_type": key})
+    except Exception:
+        pass
+    return ANALYSIS_PROFILE_GENERAL
 
 
 def _sanitize_model_list(raw_models: Any) -> list[str]:
@@ -582,6 +618,66 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                     "Focus on injury reports, availability uncertainty, current momentum, venue/officiating factors, "
                     "and what could shift the expected outcome."
                 ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_COMBAT_SPORTS:
+        return [
+            {
+                "persona": "combat_card_context_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: professional combat sports only. Focus on bout card changes, weight-class context, "
+                    "title type (divisional vs symbolic), and verified event timing."
+                ),
+            },
+            {
+                "persona": "combat_form_and_styles_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: combat sports analysis only. Focus on stylistic matchups, camp changes, injury news, "
+                    "weigh-in outcomes, and recent performance quality with dated evidence."
+                ),
+            },
+            {
+                "persona": "combat_risk_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: combat event uncertainty only. Focus on missed-weight scenarios, late replacement risk, "
+                    "commission rulings, and fight-night variance factors."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_SPORTS_EVENT:
+        return [
+            {
+                "persona": "sports_event_timing_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: live sports event context only. Confirm start times, venue, weather or arena conditions, "
+                    "broadcast availability, and recent lineup/injury updates."
+                ),
+            },
+            {
+                "persona": "sports_event_market_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: sports event market data only. Focus on spread, totals, moneyline movement, and how "
+                    "injury or lineup updates shift implied outcomes over time."
+                ),
+            },
+            {
+                "persona": "sports_event_history_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: matchup-specific event history only. Focus on recent head-to-heads, situational splits, "
+                    "and schedule-rest travel context with concrete date anchors."
+                ),
+            },
+            {
+                "persona": STATISTICAL_ANALYSIS_PERSONA,
+                "model": STATISTICAL_ANALYSIS_MODEL,
+                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
+                "role": "advisory",
             },
         ]
     if profile == ANALYSIS_PROFILE_TECHNICAL:
@@ -657,6 +753,39 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "persona": LEGAL_ANALYSIS_PERSONA,
                 "model": LEGAL_ANALYSIS_MODEL,
                 "directive": LEGAL_ANALYSIS_DIRECTIVE,
+                "role": "advisory",
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_ANIMAL_CARE:
+        return [
+            {
+                "persona": "veterinary_evidence_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: non-human animal care only. Do NOT extrapolate from human medicine or human nutrition. "
+                    "When only human evidence exists, mark it as [I] and explicitly note the species gap."
+                ),
+            },
+            {
+                "persona": "species_guideline_verifier",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: species-specific veterinary guidance only. Validate recommendations against animal-care "
+                    "guidelines (AAHA, AVMA, WSAVA, ACVIM, ASPCA poison resources) and include guideline years."
+                ),
+            },
+            {
+                "persona": "animal_safety_toxicity_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: animal toxicology and safety only. Focus on species-specific contraindications, "
+                    "food or plant toxicity, dose or weight thresholds, and veterinary escalation triggers."
+                ),
+            },
+            {
+                "persona": STATISTICAL_ANALYSIS_PERSONA,
+                "model": STATISTICAL_ANALYSIS_MODEL,
+                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
                 "role": "advisory",
             },
         ]
@@ -743,6 +872,267 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "model": STATISTICAL_ANALYSIS_MODEL,
                 "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
                 "role": "advisory",
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_BUSINESS:
+        return [
+            {
+                "persona": "business_strategy_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: business strategy and operations only. Focus on product-market fit, positioning, "
+                    "pricing, channels, and execution tradeoffs rather than purely financial valuation."
+                ),
+            },
+            {
+                "persona": "business_competitive_landscape_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: market and competitor intelligence only. Compare alternatives, incumbent reactions, "
+                    "moat durability, and likely go-to-market counterplays."
+                ),
+            },
+            {
+                "persona": "business_execution_risk_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: business execution risks only. Focus on hiring, sales-cycle friction, legal/compliance "
+                    "constraints, vendor concentration, and operational bottlenecks."
+                ),
+            },
+            {
+                "persona": STATISTICAL_ANALYSIS_PERSONA,
+                "model": STATISTICAL_ANALYSIS_MODEL,
+                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
+                "role": "advisory",
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_LAW:
+        return [
+            {
+                "persona": "legal_authority_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: legal analysis only. Prioritize statutes, case law, regulations, and jurisdiction-specific "
+                    "authority with citations to controlling sources."
+                ),
+            },
+            {
+                "persona": "jurisdiction_and_precedent_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: jurisdiction and precedent only. Distinguish binding vs persuasive authority, procedural posture, "
+                    "and unresolved splits between courts or regulators."
+                ),
+            },
+            {
+                "persona": "legal_risk_and_compliance_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: legal risk framing only. Identify compliance exposure, penalties, safe-harbor conditions, "
+                    "and where licensed counsel is required before action."
+                ),
+            },
+            {
+                "persona": LEGAL_ANALYSIS_PERSONA,
+                "model": LEGAL_ANALYSIS_MODEL,
+                "directive": LEGAL_ANALYSIS_DIRECTIVE,
+                "role": "advisory",
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_EDUCATION:
+        return [
+            {
+                "persona": "education_pedagogy_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: education and learning science only. Focus on pedagogy efficacy, learner outcomes, "
+                    "instructional design, and evidence quality by age band or context."
+                ),
+            },
+            {
+                "persona": "education_policy_and_accreditation_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: educational policy only. Focus on accreditation standards, curricular requirements, "
+                    "state or institutional policy constraints, and implementation timelines."
+                ),
+            },
+            {
+                "persona": "education_equity_and_access_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: education equity and access only. Focus on cost, accessibility, learner support models, "
+                    "and differential outcomes across demographic groups."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_TRAVEL:
+        return [
+            {
+                "persona": "travel_requirements_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: travel logistics only. Verify passport, visa, entry rules, customs constraints, and "
+                    "official advisories with date-specific sources."
+                ),
+            },
+            {
+                "persona": "travel_operations_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: trip execution only. Focus on route practicality, transfer risk, seasonality, "
+                    "weather disruptions, and local transportation constraints."
+                ),
+            },
+            {
+                "persona": "travel_risk_and_safety_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: traveler safety only. Focus on current advisories, local hazards, healthcare access, "
+                    "and contingency planning for schedule or border changes."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_FOOD:
+        return [
+            {
+                "persona": "food_nutrition_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: food and nutrition only. Focus on ingredient quality, macro and micro nutrient profiles, "
+                    "dietary context, and evidence-backed health implications."
+                ),
+            },
+            {
+                "persona": "food_safety_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: food safety only. Focus on contamination or recall risk, storage and handling thresholds, "
+                    "allergen concerns, and authoritative safety guidance."
+                ),
+            },
+            {
+                "persona": "food_practical_preparation_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: culinary execution only. Focus on preparation methods, substitution effects, "
+                    "cost-quality tradeoffs, and reproducible outcomes."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_GAMING:
+        return [
+            {
+                "persona": "gaming_systems_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: game systems and balance only. Focus on mechanics, patch impacts, progression loops, "
+                    "and design tradeoffs for players."
+                ),
+            },
+            {
+                "persona": "gaming_meta_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: live-service and competitive meta only. Track recent patch notes, usage patterns, "
+                    "counterplay shifts, and tournament or ranked implications."
+                ),
+            },
+            {
+                "persona": "gaming_community_and_platform_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: game community and platform context only. Focus on developer communications, moderation policy, "
+                    "platform constraints, and player sentiment patterns."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_BOOKS:
+        return [
+            {
+                "persona": "books_textual_analysis_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: books and literary analysis only. Focus on themes, structure, style, and genre conventions "
+                    "grounded in textual evidence."
+                ),
+            },
+            {
+                "persona": "books_context_and_reception_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: literary context only. Focus on author intent, publication context, critical reception, "
+                    "and comparative works within the canon or market segment."
+                ),
+            },
+            {
+                "persona": "books_publishing_market_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: publishing landscape only. Focus on edition history, rights, imprint strategy, "
+                    "and audience positioning."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_REAL_ESTATE:
+        return [
+            {
+                "persona": "real_estate_market_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: real-estate market analysis only. Focus on comps, inventory, absorption, rent or price trends, "
+                    "and local market microstructure."
+                ),
+            },
+            {
+                "persona": "real_estate_regulatory_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: real-estate legal and zoning context only. Focus on permitting, zoning constraints, "
+                    "tax implications, and tenancy rules by jurisdiction."
+                ),
+            },
+            {
+                "persona": "real_estate_financing_risk_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: property financing and downside risk only. Focus on leverage, rate sensitivity, vacancy risk, "
+                    "cap-rate pressure, and liquidity constraints."
+                ),
+            },
+            {
+                "persona": STATISTICAL_ANALYSIS_PERSONA,
+                "model": STATISTICAL_ANALYSIS_MODEL,
+                "directive": STATISTICAL_ANALYSIS_DIRECTIVE,
+                "role": "advisory",
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_AUTOMOTIVE:
+        return [
+            {
+                "persona": "automotive_mechanical_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: automotive engineering and maintenance only. Focus on drivetrain, reliability patterns, "
+                    "failure modes, and service bulletin context."
+                ),
+            },
+            {
+                "persona": "automotive_safety_and_recall_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: vehicle safety only. Focus on recalls, crash or defect advisories, warranty coverage, "
+                    "and manufacturer remediation timelines."
+                ),
+            },
+            {
+                "persona": "automotive_ownership_cost_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: ownership economics only. Focus on total cost of ownership, parts availability, "
+                    "fuel or charging profile, and depreciation behavior."
+                ),
             },
         ]
     if profile == ANALYSIS_PROFILE_HISTORY:
@@ -885,6 +1275,114 @@ def _profile_agent_templates(profile: str) -> list[dict[str, Any]]:
                 "directive": (
                     "Focus on why this story is developing, what precedes it, and where key signals indicate it's heading. "
                     "Track narrative arc and inflection points."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_TV_SHOWS:
+        return [
+            {
+                "persona": "tv_production_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: television analysis only. Focus on production context, release cadence, "
+                    "showrunner choices, and platform strategy."
+                ),
+            },
+            {
+                "persona": "tv_critical_reception_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: TV criticism only. Focus on narrative structure, character arcs, direction, "
+                    "and critic consensus with dated source references."
+                ),
+            },
+            {
+                "persona": "tv_audience_signal_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: TV audience and market signals only. Focus on viewership trajectories, "
+                    "renewal or cancellation indicators, and franchise impact."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_MOVIES:
+        return [
+            {
+                "persona": "film_production_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: film production analysis only. Focus on director and studio choices, "
+                    "development context, and release strategy."
+                ),
+            },
+            {
+                "persona": "film_critical_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: film criticism only. Focus on screenplay, cinematography, performance, editing, "
+                    "and comparative placement within genre history."
+                ),
+            },
+            {
+                "persona": "film_market_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: film market and audience outcomes only. Focus on box office patterning, "
+                    "distribution windows, and audience reception signals."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_MUSIC:
+        return [
+            {
+                "persona": "music_composition_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: music analysis only. Focus on composition, arrangement, performance choices, "
+                    "and stylistic evolution in the artist's catalog."
+                ),
+            },
+            {
+                "persona": "music_industry_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: music industry context only. Focus on label strategy, release model, touring dynamics, "
+                    "rights context, and platform economics."
+                ),
+            },
+            {
+                "persona": "music_reception_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: music reception only. Focus on critic viewpoints, audience reaction, chart behavior, "
+                    "and community discourse with time-stamped sources."
+                ),
+            },
+        ]
+    if profile == ANALYSIS_PROFILE_ART:
+        return [
+            {
+                "persona": "art_history_researcher",
+                "model": "deepseek-r1:8b",
+                "directive": (
+                    "STAY IN DOMAIN: visual art analysis only. Focus on art-historical context, movement lineage, medium, "
+                    "and stylistic interpretation."
+                ),
+            },
+            {
+                "persona": "art_criticism_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: art criticism only. Focus on formal analysis, curatorial framing, and critical reception "
+                    "from reputable art publications or institutional sources."
+                ),
+            },
+            {
+                "persona": "art_market_researcher",
+                "model": "qwen3:8b",
+                "directive": (
+                    "STAY IN DOMAIN: art market context only. Focus on provenance signals, exhibition history, auction trends, "
+                    "and market-position indicators."
                 ),
             },
         ]
