@@ -1318,10 +1318,11 @@
                         ref="agentGraphCanvas"
                         class="agent-graph-canvas"
                         viewBox="0 0 1400 840"
-                        @mousedown="onAgentGraphCanvasMouseDown"
-                        @mousemove="onAgentGraphCanvasMouseMove"
-                        @mouseup="onAgentGraphCanvasMouseUp"
-                        @mouseleave="onAgentGraphCanvasMouseUp"
+                        @pointerdown="onAgentGraphCanvasMouseDown"
+                        @pointermove="onAgentGraphCanvasMouseMove"
+                        @pointerup="onAgentGraphCanvasMouseUp"
+                        @pointercancel="onAgentGraphCanvasMouseUp"
+                        @lostpointercapture="onAgentGraphCanvasMouseUp"
                         @wheel.prevent="onAgentGraphCanvasWheel"
                     >
                         <defs>
@@ -1351,7 +1352,7 @@
                                   { 'is-selected': node.id === agentGraphSelectedNodeId }
                                 ]"
                                 :transform="'translate(' + node.x + ' ' + node.y + ')'"
-                                @mousedown.stop="startAgentGraphNodeDrag($event, node.id)"
+                                @pointerdown.stop="startAgentGraphNodeDrag($event, node.id)"
                                 @click.stop="selectAgentGraphNode(node.id)"
                             >
                                 <rect

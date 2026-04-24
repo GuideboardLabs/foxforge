@@ -2952,6 +2952,7 @@ class FoxforgeOrchestrator:
             longform_body = str(longform_result.get("body", "")).strip()
             if not longform_body:
                 longform_body = f"# {kind.replace('_', ' ').title()}\n\n(Longform pool returned no content.)\n"
+            warning_banner = str(longform_result.get("warning_banner", "")).strip()
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             _LONGFORM_DIRS = {
                 "video_script": "VideoScripts", "newsletter": "Newsletters",
@@ -2965,7 +2966,12 @@ class FoxforgeOrchestrator:
             self.bus.emit(
                 "orchestrator",
                 "make_deliverable_written",
-                {"project": self.project_slug, "kind": kind, "path": str(out_path)},
+                {
+                    "project": self.project_slug,
+                    "kind": kind,
+                    "path": str(out_path),
+                    "warning_banner": warning_banner,
+                },
             )
             return {
                 "ok": longform_result.get("ok", True),
@@ -2974,6 +2980,7 @@ class FoxforgeOrchestrator:
                 "delivery_kind": kind,
                 "sections_written": longform_result.get("sections_written", []),
                 "word_count": len(longform_body.split()),
+                "warning_banner": warning_banner,
             }
 
         # --- Desktop app: .NET 8 + Avalonia ---
@@ -2982,18 +2989,29 @@ class FoxforgeOrchestrator:
                 self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
                 seed_artifact_text,
             )
-            out = self._run_registered_agent(
-                "make_desktop_app",
-                self._make_agent_task(
-                    lane="make_desktop_app",
-                    text=text,
-                    context={
-                        "research_context": research_context,
-                    },
-                    cancel_checker=getattr(self, "_last_cancel_checker", None),
-                    progress_callback=getattr(self, "_last_progress_callback", None),
-                ),
-            )
+            desktop_model = str(lane_model_config(self.repo_root, "make_desktop_app").get("model", "")).strip()
+            lock_model = desktop_model or "qwen2.5-coder:14b"
+            from shared_tools.premium_model_lock import PremiumModelLock
+            premium_lock = PremiumModelLock(self.repo_root, client=self.ollama)
+            lease = premium_lock.acquire(lock_model, timeout_sec=180.0)
+            try:
+                out = self._run_registered_agent(
+                    "make_desktop_app",
+                    self._make_agent_task(
+                        lane="make_desktop_app",
+                        text=text,
+                        context={
+                            "research_context": research_context,
+                        },
+                        cancel_checker=getattr(self, "_last_cancel_checker", None),
+                        progress_callback=getattr(self, "_last_progress_callback", None),
+                    ),
+                )
+            finally:
+                try:
+                    premium_lock.release(lease, force_unload=True)
+                except Exception:
+                    pass
             out["delivery_kind"] = kind
             self.bus.emit(
                 "orchestrator",
@@ -3008,18 +3026,29 @@ class FoxforgeOrchestrator:
                 self._read_research_context(self.project_slug, max_summaries=2, chars_per_summary=4000),
                 seed_artifact_text,
             )
-            out = self._run_registered_agent(
-                "make_tool",
-                self._make_agent_task(
-                    lane="make_tool",
-                    text=text,
-                    context={
-                        "research_context": research_context,
-                    },
-                    cancel_checker=getattr(self, "_last_cancel_checker", None),
-                    progress_callback=getattr(self, "_last_progress_callback", None),
-                ),
-            )
+            tool_model = str(lane_model_config(self.repo_root, "make_tool").get("model", "")).strip()
+            lock_model = tool_model or "qwen2.5-coder:14b"
+            from shared_tools.premium_model_lock import PremiumModelLock
+            premium_lock = PremiumModelLock(self.repo_root, client=self.ollama)
+            lease = premium_lock.acquire(lock_model, timeout_sec=180.0)
+            try:
+                out = self._run_registered_agent(
+                    "make_tool",
+                    self._make_agent_task(
+                        lane="make_tool",
+                        text=text,
+                        context={
+                            "research_context": research_context,
+                        },
+                        cancel_checker=getattr(self, "_last_cancel_checker", None),
+                        progress_callback=getattr(self, "_last_progress_callback", None),
+                    ),
+                )
+            finally:
+                try:
+                    premium_lock.release(lease, force_unload=True)
+                except Exception:
+                    pass
             out["delivery_kind"] = kind
             self.bus.emit(
                 "orchestrator",

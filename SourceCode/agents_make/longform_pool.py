@@ -21,10 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from agents_research.synthesizer import run_skeptic_pass_with_severity
 from shared_tools.feedback_learning import FeedbackLearningEngine
 from shared_tools.fidelity_policy import FidelityLevel, fidelity_for, writer_constraint_block, evidence_key_block, critic_fabrication_block, planner_grounding_rule, thin_research_warning
+from shared_tools.inference_router import InferenceRouter
+from shared_tools.loop_controller import run_draft_critique_revise
 from shared_tools.model_routing import lane_model_config
-from shared_tools.ollama_client import OllamaClient
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +37,6 @@ _MODEL_PLANNER    = "qwen3:8b"
 _MODEL_WRITER     = "qwen3:8b"
 _MODEL_CRITIC     = "deepseek-r1:8b"
 _MODEL_COMPOSITOR = "qwen3:8b"
-
-# Upgraded models for longform (will be used if available via inference_router)
-_MODEL_LONGFORM_QUALITY = "qwen2.5:32b"   # for essay_long, video_script, newsletter
-_MODEL_CRITIC_UPGRADED  = "deepseek-r1:14b"
 
 
 def _today() -> str:
@@ -201,7 +199,7 @@ def _is_longform_type(type_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _run_planner(
-    client: OllamaClient,
+    client: InferenceRouter,
     question: str,
     type_id: str,
     sections: list[tuple[str, str]],
@@ -252,7 +250,7 @@ def _run_planner(
 
 
 def _run_section_writer(
-    client: OllamaClient,
+    client: InferenceRouter,
     question: str,
     type_id: str,
     section_name: str,
@@ -307,7 +305,7 @@ def _run_section_writer(
 
 
 def _run_critic(
-    client: OllamaClient,
+    client: InferenceRouter,
     assembled: str,
     type_id: str,
     question: str,
@@ -349,7 +347,7 @@ def _run_critic(
 
 
 def _run_revisor(
-    client: OllamaClient,
+    client: InferenceRouter,
     section_name: str,
     section_body: str,
     fix_note: str,
@@ -388,7 +386,7 @@ def _run_revisor(
 
 
 def _run_compositor(
-    client: OllamaClient,
+    client: InferenceRouter,
     sections: list[tuple[str, str]],
     type_id: str,
     question: str,
@@ -524,7 +522,7 @@ def run_longform_pool(
     combined_research = "\n\n".join(filter(None, [research_context, raw_notes_context, sources_context]))
     sections = _sections_for(type_id)
     section_names = [n for n, _ in sections]
-    client = OllamaClient()
+    client = InferenceRouter(repo_root)
 
     # Learning integration
     orchestrator_cfg = lane_model_config(repo_root, "orchestrator_reasoning")
@@ -651,6 +649,62 @@ def run_longform_pool(
     final_body = _run_compositor(client, revised_sections, type_id, question, combined_research)
     _progress("build_agent_completed", {"stage": "build_agent_completed", "agent": "compositor", "output_chars": len(final_body)})
 
+    warning_banner = ""
+    longform_lane_cfg = lane_model_config(repo_root, "make_longform")
+    longform_policy = (
+        longform_lane_cfg.get("escalation_policy", {})
+        if isinstance(longform_lane_cfg.get("escalation_policy", {}), dict)
+        else {}
+    )
+    if bool(longform_policy.get("enabled", False)) and not _cancelled():
+        importance = "high" if type_id in {"essay_long", "video_script", "newsletter"} else "medium"
+
+        def _merge_tier_for_critic(tier_cfg: dict[str, Any]) -> dict[str, Any]:
+            merged = dict(longform_lane_cfg)
+            if isinstance(tier_cfg, dict):
+                merged.update(tier_cfg)
+            if "synthesis_fallback_models" not in merged and isinstance(merged.get("fallback_models", []), list):
+                merged["synthesis_fallback_models"] = list(merged.get("fallback_models", []))
+            return merged
+
+        _progress("skeptic_pass_started", {"phase": "longform_loop", "note": "Running longform critique/revise loop."})
+        loop_result = run_draft_critique_revise(
+            repo_root=repo_root,
+            lane_key="make_longform",
+            draft_fn=lambda _tier_cfg: final_body,
+            critique_fn=lambda draft_text, tier_cfg: run_skeptic_pass_with_severity(
+                question,
+                draft_text,
+                client=client,
+                model_cfg=_merge_tier_for_critic(tier_cfg),
+                findings=None,
+            ),
+            importance=importance,
+            client=client,
+            telemetry_ctx={
+                "task_class": "make_longform",
+                "project_slug": project_slug,
+                "type_id": type_id,
+            },
+            cancel_checker=cancel_checker,
+        )
+        final_body = str(loop_result.final_text or "").strip() or final_body
+        if loop_result.critique_logs:
+            critic_output = "\n\n".join(
+                str(item).strip() for item in loop_result.critique_logs if str(item).strip()
+            )
+        warning_banner = str(loop_result.warning_banner or "").strip()
+        if warning_banner:
+            final_body = f"**Warning:** {warning_banner}\n\n{final_body}"
+        _progress(
+            "skeptic_pass_completed",
+            {
+                "phase": "longform_loop",
+                "critique_chars": len(str(critic_output or "").strip()),
+                "premium_activated": bool(loop_result.premium_activated),
+            },
+        )
+
     # ------------------------------------------------------------------
     # Step 6: Quality gate
     # ------------------------------------------------------------------
@@ -698,5 +752,6 @@ def run_longform_pool(
         "critic_notes": critic_output,
         "quality_gate_passed": passed,
         "quality_gate_issues": gate_issues,
+        "warning_banner": warning_banner,
         "message": f"{type_id.replace('_', ' ').title()} complete — {len(final_body):,} chars.",
     }

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from shared_tools.activity_bus import telemetry_emit
 
 LOGGER = logging.getLogger(__name__)
 
@@ -469,31 +473,137 @@ def synthesize(
     )
 
 
-def run_skeptic_pass(
+_SEVERITY_ISSUE_KEYS = (
+    "fabricated_specifics",
+    "unsupported_claims",
+    "contradictions",
+    "weak_evidence_caveats_missing",
+    "missing_perspectives",
+    "authority_misattribution",
+)
+
+
+def _default_severity_payload() -> dict[str, Any]:
+    return {
+        "severity": 2,
+        "issues": {key: 0 for key in _SEVERITY_ISSUE_KEYS},
+        "conclusion_vulnerability": "medium",
+        "recommended_action": "revise_default",
+        "revise_focus": [],
+    }
+
+
+def _sanitize_severity_payload(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return _default_severity_payload()
+    out = _default_severity_payload()
+    try:
+        sev = int(raw.get("severity", out["severity"]))
+    except (TypeError, ValueError):
+        sev = out["severity"]
+    out["severity"] = max(0, min(5, sev))
+
+    issues_in = raw.get("issues")
+    issues_out: dict[str, int] = {}
+    for key in _SEVERITY_ISSUE_KEYS:
+        val = 0
+        if isinstance(issues_in, dict):
+            try:
+                val = int(issues_in.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                val = 0
+        issues_out[key] = max(0, val)
+    out["issues"] = issues_out
+
+    vulnerability = str(raw.get("conclusion_vulnerability", out["conclusion_vulnerability"])).strip().lower()
+    if vulnerability not in {"low", "medium", "high"}:
+        vulnerability = "medium"
+    out["conclusion_vulnerability"] = vulnerability
+
+    action = str(raw.get("recommended_action", out["recommended_action"])).strip().lower()
+    if action not in {"accept", "revise_default", "escalate_premium", "reject"}:
+        action = "revise_default"
+    out["recommended_action"] = action
+
+    revise_focus = raw.get("revise_focus")
+    if isinstance(revise_focus, list):
+        out["revise_focus"] = [
+            str(item).strip()[:240]
+            for item in revise_focus
+            if str(item).strip()
+        ][:10]
+    else:
+        out["revise_focus"] = []
+    return out
+
+
+def _emit_critic_severity(
+    payload: dict[str, Any],
+    *,
+    parse_ok: bool,
+    fallback_used: bool,
+    model: str,
+) -> None:
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        telemetry_emit(
+            repo_root,
+            "critic_severity.jsonl",
+            {
+                "severity": int(payload.get("severity", 2) or 2),
+                "issues": dict(payload.get("issues", {})) if isinstance(payload.get("issues", {}), dict) else {},
+                "conclusion_vulnerability": str(payload.get("conclusion_vulnerability", "medium")).strip().lower(),
+                "recommended_action": str(payload.get("recommended_action", "revise_default")).strip().lower(),
+                "revise_focus_count": len(payload.get("revise_focus", [])) if isinstance(payload.get("revise_focus", []), list) else 0,
+                "parse_ok": bool(parse_ok),
+                "fallback_used": bool(fallback_used),
+                "model": str(model or "").strip(),
+            },
+            retention_days=30,
+        )
+    except Exception:
+        pass
+
+
+def _severity_from_response(body: str, *, model: str) -> dict[str, Any]:
+    default_payload = _default_severity_payload()
+    text = str(body or "").strip()
+    severity_match = re.search(r"<SEVERITY>\s*([\s\S]*?)\s*</SEVERITY>", text, re.IGNORECASE)
+    if not severity_match:
+        _emit_critic_severity(default_payload, parse_ok=False, fallback_used=True, model=model)
+        return default_payload
+    raw_json = str(severity_match.group(1) or "").strip()
+    if not raw_json:
+        _emit_critic_severity(default_payload, parse_ok=False, fallback_used=True, model=model)
+        return default_payload
+    try:
+        parsed = json.loads(raw_json)
+    except Exception:
+        _emit_critic_severity(default_payload, parse_ok=False, fallback_used=True, model=model)
+        return default_payload
+    cleaned = _sanitize_severity_payload(parsed)
+    _emit_critic_severity(cleaned, parse_ok=True, fallback_used=False, model=model)
+    return cleaned
+
+
+def run_skeptic_pass_with_severity(
     question: str,
     synthesis: str,
     *,
     client: Any | None = None,
     model_cfg: dict | None = None,
     findings: list[dict] | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, dict[str, Any]]:
     """
-    Adversarial second pass on the completed synthesis.
-
-    Runs the same model with a hostile system prompt that instructs it to
-    challenge every claim, find unsupported conclusions, identify missing
-    perspectives, and assess how easily the findings could be overturned.
-
-    Returns (revised_summary, critique_log).
-    - revised_summary is safe for publication.
-    - critique_log is for traceability/debug output and should not be appended to the summary.
+    Adversarial second pass that returns:
+      (revised_summary, critique_log, severity_payload)
     """
     base_summary = str(synthesis or "").strip()
     if client is None or not model_cfg or not base_summary:
-        return base_summary, ""
+        return base_summary, "", _default_severity_payload()
     model = str(model_cfg.get("model", "")).strip()
     if not model:
-        return base_summary, ""
+        return base_summary, "", _default_severity_payload()
 
     fallback_models_raw = model_cfg.get("synthesis_fallback_models", [])
     fallback_models: list[str] = (
@@ -517,9 +627,10 @@ def run_skeptic_pass(
         "You are the Skeptic Engine — an internal adversary whose only job is to stress-test "
         "research conclusions before they reach the user. You are not trying to be balanced or "
         "reassuring. You are trying to find every crack.\n\n"
-        "You must output TWO XML-tagged blocks and nothing else:\n"
+        "You must output EXACTLY THREE XML-tagged blocks and nothing else:\n"
         "<REVISED_SUMMARY>...</REVISED_SUMMARY>\n"
-        "<CRITIQUE_LOG>...</CRITIQUE_LOG>\n\n"
+        "<CRITIQUE_LOG>...</CRITIQUE_LOG>\n"
+        "<SEVERITY>{...strict JSON...}</SEVERITY>\n\n"
         "REVISED_SUMMARY must be markdown safe for publication.\n"
         "- Remove fabricated specifics (numbers, dates, names, URLs, version strings, direct quotes) "
         "that are not in raw findings.\n"
@@ -543,7 +654,22 @@ def run_skeptic_pass(
         "  5. Missing perspectives flagged\n"
         "  6. Conclusion vulnerability summary\n"
         "  7. Confidence adjustment sentence\n\n"
-        "Be direct and specific. Do not output any extra wrapper text."
+        "SEVERITY must be strict JSON with this schema:\n"
+        "{"
+        "\"severity\": 0-5, "
+        "\"issues\": {"
+        "\"fabricated_specifics\": int, "
+        "\"unsupported_claims\": int, "
+        "\"contradictions\": int, "
+        "\"weak_evidence_caveats_missing\": int, "
+        "\"missing_perspectives\": int, "
+        "\"authority_misattribution\": int"
+        "}, "
+        "\"conclusion_vulnerability\": \"low|medium|high\", "
+        "\"recommended_action\": \"accept|revise_default|escalate_premium|reject\", "
+        "\"revise_focus\": [\"specific bullet\", \"...\"]"
+        "}\n"
+        "Do not output any extra wrapper text."
     )
     _findings_section = (
         f"\n\nRaw findings reference (first 2000 chars per agent — use to cross-check [E] claims):\n{_findings_ref}"
@@ -553,10 +679,11 @@ def run_skeptic_pass(
         f"Research question: {question}\n\n"
         f"Synthesis to challenge:\n{base_summary}"
         f"{_findings_section}\n\n"
-        "Return exactly the XML-tagged two-block format."
+        "Return exactly the XML-tagged three-block format."
     )
 
     critique_fallback = ""
+    severity_payload = _default_severity_payload()
     for _ in range(2):
         try:
             result = client.chat(
@@ -564,35 +691,45 @@ def run_skeptic_pass(
                 fallback_models=fallback_models,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                temperature=0.6,  # skeptic needs adversarial latitude
+                temperature=0.6,
                 num_ctx=int(model_cfg.get("num_ctx", 16384)),
                 num_predict=int(model_cfg.get("skeptic_num_predict", 3072)),
                 think=False,
                 timeout=int(model_cfg.get("synthesis_timeout_sec", model_cfg.get("timeout_sec", 0))),
                 retry_attempts=2,
                 retry_backoff_sec=1.5,
+                task_class="skeptic_pass",
+                tier="default",
             )
             body = str(result or "").strip()
             if not body:
                 continue
+            severity_payload = _severity_from_response(body, model=model)
             revised_match = re.search(r"<REVISED_SUMMARY>\s*([\s\S]*?)\s*</REVISED_SUMMARY>", body, re.IGNORECASE)
             critique_match = re.search(r"<CRITIQUE_LOG>\s*([\s\S]*?)\s*</CRITIQUE_LOG>", body, re.IGNORECASE)
             if revised_match:
                 revised_text = str(revised_match.group(1) or "").strip()
                 critique_text = str(critique_match.group(1) or "").strip() if critique_match else ""
                 if revised_text:
-                    return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_text
+                    return (
+                        _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)),
+                        critique_text,
+                        severity_payload,
+                    )
             if "---CRITIQUE---" in body:
                 revised, critique = body.split("---CRITIQUE---", 1)
                 revised_text = revised.strip()
                 critique_text = critique.strip()
                 if revised_text:
-                    return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_text
+                    return (
+                        _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)),
+                        critique_text,
+                        severity_payload,
+                    )
             critique_fallback = body
         except Exception:
             continue
 
-    # Fallback: enforce real edit application using the critique text.
     if critique_fallback:
         try:
             revised = client.chat(
@@ -614,11 +751,39 @@ def run_skeptic_pass(
                 timeout=int(model_cfg.get("synthesis_timeout_sec", model_cfg.get("timeout_sec", 0))),
                 retry_attempts=1,
                 retry_backoff_sec=1.0,
+                task_class="skeptic_pass_fallback",
+                tier="default",
             )
             revised_text = str(revised or "").strip()
             if revised_text:
-                return _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)), critique_fallback
+                return (
+                    _sanitize_markdown_urls(_ensure_inline_source_links(revised_text, findings)),
+                    critique_fallback,
+                    severity_payload,
+                )
         except Exception:
             pass
 
-    return _sanitize_markdown_urls(_ensure_inline_source_links(base_summary, findings)), critique_fallback
+    return (
+        _sanitize_markdown_urls(_ensure_inline_source_links(base_summary, findings)),
+        critique_fallback,
+        severity_payload,
+    )
+
+
+def run_skeptic_pass(
+    question: str,
+    synthesis: str,
+    *,
+    client: Any | None = None,
+    model_cfg: dict | None = None,
+    findings: list[dict] | None = None,
+) -> tuple[str, str]:
+    revised, critique, _severity = run_skeptic_pass_with_severity(
+        question,
+        synthesis,
+        client=client,
+        model_cfg=model_cfg,
+        findings=findings,
+    )
+    return revised, critique

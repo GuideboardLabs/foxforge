@@ -10,10 +10,12 @@ from urllib.parse import urlsplit
 from typing import Any, Callable
 
 from agents_research.citation_linker import build_retrieved_chunks
-from agents_research.synthesizer import SynthesisUnavailableError, synthesize, run_skeptic_pass
+from agents_research.synthesizer import SynthesisUnavailableError, run_skeptic_pass, run_skeptic_pass_with_severity, synthesize
+from shared_tools.answer_composer import evaluate_answer_confidence
 from shared_tools.embedding_memory import _vec_cosine
 from shared_tools.file_store import ProjectStore
 from shared_tools.feedback_learning import FeedbackLearningEngine
+from shared_tools.loop_controller import run_draft_critique_revise
 from shared_tools.model_routing import lane_model_config, load_model_routing
 from shared_tools.inference_router import InferenceRouter
 from shared_tools.ollama_client import OllamaClient
@@ -2134,6 +2136,42 @@ def run_research_pool(
     summary_name = store.timestamped_name("research_summary")
     prior_open_questions = _load_prior_open_questions(repo_root, project_slug)
     conflict_report = _cross_agent_conflict_report(findings)
+    conflict_count = sum(
+        1 for line in str(conflict_report or "").splitlines() if str(line).strip().startswith("- ")
+    )
+    _confidence_sources = [
+        {
+            "source_domain": str(row.get("domain", "")).strip(),
+            "source_tier": str(row.get("source_tier", "")).strip().lower(),
+            "freshness_score": float(row.get("freshness_score", 0.0) or 0.0),
+        }
+        for row in source_evidence
+        if isinstance(row, dict)
+    ]
+    confidence_eval = evaluate_answer_confidence(
+        sources=_confidence_sources,
+        conflict_summary={"conflict_count": conflict_count},
+        question=question,
+    )
+    tier1_count = int(confidence_eval.get("tier1_count", 0) or 0)
+    confidence_mode = str(confidence_eval.get("mode", "medium")).strip().lower()
+    importance = "high" if (confidence_mode == "high" or tier1_count >= 3 or conflict_count >= 2) else "medium"
+
+    dcr_cfg = model_cfg.get("draft_critique_revise", {}) if isinstance(model_cfg.get("draft_critique_revise", {}), dict) else {}
+    critic_lane = str(dcr_cfg.get("critic_lane", "synthesis")).strip() or "synthesis"
+    dcr_enabled = bool(dcr_cfg.get("enabled", False))
+
+    def _synth_cfg_for_tier(tier_cfg: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(synth_cfg)
+        if isinstance(tier_cfg, dict):
+            for key, value in tier_cfg.items():
+                merged[key] = value
+        if str(merged.get("model", "")).strip():
+            merged["synthesis_model"] = str(merged.get("model", "")).strip()
+        if "fallback_models" in merged and "synthesis_fallback_models" not in merged:
+            merged["synthesis_fallback_models"] = list(merged.get("fallback_models", []))
+        return merged
+
     _progress(
         "synthesizing",
         {
@@ -2141,72 +2179,153 @@ def run_research_pool(
             "findings_collected": len(findings),
         },
     )
-    try:
-        summary_md = synthesize(
-            question,
-            findings,
-            client=client,
-            model_cfg=synth_cfg,
-            conflict_report=conflict_report,
-            prior_open_questions=prior_open_questions,
-            source_tier_map=source_tier_map,
-        )
-    except SynthesisUnavailableError as exc:
-        LOGGER.error("Synthesis unavailable during research pool run: %s", exc)
-        bus.emit("research_pool", "synthesis_unavailable", {"project": project_slug, "reason": str(exc)})
+    warning_banner = ""
+    if dcr_enabled:
         _progress(
-            "synthesis_unavailable",
+            "skeptic_pass_started",
             {
-                "reason": str(exc),
-                "raw_path": str(raw_path),
+                "phase": "loop_controller",
+                "model": str(synth_cfg.get("model", "")).strip(),
+                "note": "Running draft->critique->revise loop.",
             },
         )
-        return {
-            "message": (
-                "Research could not complete — the synthesis model was unavailable. "
-                f"Raw agent findings saved to {raw_path}. "
-                "Try again once the model is available, or ask me to rescue this raw file."
-            ),
-            "summary_path": "",
-            "critique_path": "",
-            "raw_path": str(raw_path),
-            "web_context_used": bool(web_context.strip()),
-            "reliability": reliability,
-            "synthesis_unavailable": True,
-            "findings": findings,
-            "retrieved_chunks": [],
-            "visited_agents_per_leaf": visited_agents_per_leaf,
-        }
+        try:
+            loop_result = run_draft_critique_revise(
+                repo_root=repo_root,
+                lane_key=critic_lane,
+                draft_fn=lambda tier_cfg: synthesize(
+                    question,
+                    findings,
+                    client=client,
+                    model_cfg=_synth_cfg_for_tier(tier_cfg),
+                    conflict_report=conflict_report,
+                    prior_open_questions=prior_open_questions,
+                    source_tier_map=source_tier_map,
+                ),
+                critique_fn=lambda draft_text, tier_cfg: run_skeptic_pass_with_severity(
+                    question,
+                    draft_text,
+                    client=client,
+                    model_cfg=_synth_cfg_for_tier(tier_cfg),
+                    findings=findings,
+                ),
+                importance=importance,
+                client=client,
+                telemetry_ctx={
+                    "task_class": "research_synthesis",
+                    "project_slug": project_slug,
+                    "topic_type": resolved_type,
+                },
+                cancel_checker=cancel_checker,
+            )
+            summary_md = str(loop_result.final_text or "").strip()
+            critique_log = "\n\n".join(
+                str(item).strip() for item in loop_result.critique_logs if str(item).strip()
+            )
+            warning_banner = str(loop_result.warning_banner or "").strip()
+        except SynthesisUnavailableError as exc:
+            LOGGER.error("Synthesis unavailable during research pool loop: %s", exc)
+            bus.emit("research_pool", "synthesis_unavailable", {"project": project_slug, "reason": str(exc)})
+            _progress(
+                "synthesis_unavailable",
+                {
+                    "reason": str(exc),
+                    "raw_path": str(raw_path),
+                },
+            )
+            return {
+                "message": (
+                    "Research could not complete — the synthesis model was unavailable. "
+                    f"Raw agent findings saved to {raw_path}. "
+                    "Try again once the model is available, or ask me to rescue this raw file."
+                ),
+                "summary_path": "",
+                "critique_path": "",
+                "raw_path": str(raw_path),
+                "web_context_used": bool(web_context.strip()),
+                "reliability": reliability,
+                "synthesis_unavailable": True,
+                "findings": findings,
+                "retrieved_chunks": [],
+                "visited_agents_per_leaf": visited_agents_per_leaf,
+            }
+        _progress(
+            "skeptic_pass_completed",
+            {
+                "phase": "loop_controller",
+                "critique_chars": len(str(critique_log or "").strip()),
+                "note": "Loop-controller critique pass finished.",
+            },
+        )
+    else:
+        try:
+            summary_md = synthesize(
+                question,
+                findings,
+                client=client,
+                model_cfg=synth_cfg,
+                conflict_report=conflict_report,
+                prior_open_questions=prior_open_questions,
+                source_tier_map=source_tier_map,
+            )
+        except SynthesisUnavailableError as exc:
+            LOGGER.error("Synthesis unavailable during research pool run: %s", exc)
+            bus.emit("research_pool", "synthesis_unavailable", {"project": project_slug, "reason": str(exc)})
+            _progress(
+                "synthesis_unavailable",
+                {
+                    "reason": str(exc),
+                    "raw_path": str(raw_path),
+                },
+            )
+            return {
+                "message": (
+                    "Research could not complete — the synthesis model was unavailable. "
+                    f"Raw agent findings saved to {raw_path}. "
+                    "Try again once the model is available, or ask me to rescue this raw file."
+                ),
+                "summary_path": "",
+                "critique_path": "",
+                "raw_path": str(raw_path),
+                "web_context_used": bool(web_context.strip()),
+                "reliability": reliability,
+                "synthesis_unavailable": True,
+                "findings": findings,
+                "retrieved_chunks": [],
+                "visited_agents_per_leaf": visited_agents_per_leaf,
+            }
 
-    _progress(
-        "skeptic_pass_started",
-        {
-            "phase": "primary",
-            "model": str(synth_cfg.get("model", "")).strip(),
-            "note": "Running critique pass on synthesis.",
-        },
-    )
-    summary_md, critique_log = run_skeptic_pass(
-        question,
-        summary_md,
-        client=client,
-        model_cfg=synth_cfg,
-        findings=findings,
-    )
-    _progress(
-        "skeptic_pass_completed",
-        {
-            "phase": "primary",
-            "critique_chars": len(str(critique_log or "").strip()),
-            "note": "Critique pass finished.",
-        },
-    )
+        _progress(
+            "skeptic_pass_started",
+            {
+                "phase": "primary",
+                "model": str(synth_cfg.get("model", "")).strip(),
+                "note": "Running critique pass on synthesis.",
+            },
+        )
+        summary_md, critique_log = run_skeptic_pass(
+            question,
+            summary_md,
+            client=client,
+            model_cfg=synth_cfg,
+            findings=findings,
+        )
+        _progress(
+            "skeptic_pass_completed",
+            {
+                "phase": "primary",
+                "critique_chars": len(str(critique_log or "").strip()),
+                "note": "Critique pass finished.",
+            },
+        )
 
     recycled_questions = _count_recycled_open_questions(summary_md, prior_open_questions)
     quality_suffix = ""
     if recycled_questions > 0:
         quality_suffix = f" | recycled prior questions: {recycled_questions}"
     summary_md = f"{summary_md}\n\n---\n\n{_build_source_quality_footer(findings, suffix=quality_suffix)}"
+    if warning_banner:
+        summary_md = f"**Warning:** {warning_banner}\n\n{summary_md}"
 
     summary_path = store.write_project_file(project_slug, "research_summaries", summary_name, summary_md)
     if not critique_log.strip():
@@ -2251,6 +2370,7 @@ def run_research_pool(
                 "analysis_profile": profile_name,
                 "topic_type": resolved_type,
                 "recycled_open_questions": recycled_questions,
+                "warning_banner": warning_banner,
             },
         )
 
@@ -2268,6 +2388,7 @@ def run_research_pool(
         "analysis_profile": profile_name,
         "topic_type": resolved_type,
         "recycled_open_questions": recycled_questions,
+        "warning_banner": warning_banner,
         "findings": findings,
         "retrieved_chunks": retrieved_chunks,
         "visited_agents_per_leaf": visited_agents_per_leaf,

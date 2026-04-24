@@ -150,7 +150,13 @@ class InferenceRouter:
         retry_backoff_sec: float = 1.25,
         fallback_models: list[str] | None = None,
         keep_alive: str = "10m",
+        task_class: str | None = None,
+        artifact_importance: str | None = None,
+        tier: str | None = None,
     ) -> str:
+        _task_class = str(task_class or "").strip() or "-"
+        _artifact_importance = str(artifact_importance or "").strip() or "-"
+        _tier = str(tier or "").strip() or "-"
         kwargs: dict[str, Any] = dict(
             prior_messages=prior_messages,
             user_images=user_images,
@@ -181,8 +187,9 @@ class InferenceRouter:
                     **call_kwargs,
                 )
                 LOGGER.info(
-                    "inference_call model=%s route=%s elapsed=%.3fs total=%.3fs attempts=%d fallback=%s status=ok",
+                    "inference_call model=%s route=%s tier=%s task_class=%s artifact_importance=%s elapsed=%.3fs total=%.3fs attempts=%d fallback=%s status=ok",
                     candidate, _route,
+                    _tier, _task_class, _artifact_importance,
                     round(time.perf_counter() - _attempt_start, 3),
                     round(time.perf_counter() - _call_start, 3),
                     _cand_idx + 1, _cand_idx > 0,
@@ -192,8 +199,9 @@ class InferenceRouter:
                 _attempt_elapsed = round(time.perf_counter() - _attempt_start, 3)
                 errors.append(f"{candidate} via {_route}: {exc}")
                 LOGGER.warning(
-                    "inference_call model=%s route=%s elapsed=%.3fs attempt=%d status=fail error=%s",
-                    candidate, _route, _attempt_elapsed, _cand_idx + 1, str(exc)[:120],
+                    "inference_call model=%s route=%s tier=%s task_class=%s artifact_importance=%s elapsed=%.3fs attempt=%d status=fail error=%s",
+                    candidate, _route, _tier, _task_class, _artifact_importance,
+                    _attempt_elapsed, _cand_idx + 1, str(exc)[:120],
                 )
                 if routed_to_llama:
                     server_key = self._model_map.get(candidate, "")
@@ -209,8 +217,9 @@ class InferenceRouter:
                                 **dict(kwargs, fallback_models=[], keep_alive=keep_alive),
                             )
                             LOGGER.info(
-                                "inference_call model=%s route=ollama_fallback elapsed=%.3fs total=%.3fs attempts=%d fallback=true status=ok",
+                                "inference_call model=%s route=ollama_fallback tier=%s task_class=%s artifact_importance=%s elapsed=%.3fs total=%.3fs attempts=%d fallback=true status=ok",
                                 candidate,
+                                _tier, _task_class, _artifact_importance,
                                 round(time.perf_counter() - _fb_start, 3),
                                 round(time.perf_counter() - _call_start, 3),
                                 _cand_idx + 1,
@@ -219,8 +228,9 @@ class InferenceRouter:
                         except RuntimeError as ollama_exc:
                             errors.append(f"{candidate} via ollama fallback: {ollama_exc}")
                             LOGGER.warning(
-                                "inference_call model=%s route=ollama_fallback elapsed=%.3fs attempt=%d status=fail",
-                                candidate, round(time.perf_counter() - _fb_start, 3), _cand_idx + 1,
+                                "inference_call model=%s route=ollama_fallback tier=%s task_class=%s artifact_importance=%s elapsed=%.3fs attempt=%d status=fail",
+                                candidate, _tier, _task_class, _artifact_importance,
+                                round(time.perf_counter() - _fb_start, 3), _cand_idx + 1,
                             )
                 continue
 

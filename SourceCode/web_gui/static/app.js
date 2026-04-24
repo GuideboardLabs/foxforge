@@ -1257,6 +1257,8 @@ const app = window.Vue.createApp({
       agentGraphPan: { x: 28, y: 20 },
       agentGraphDragState: null,
       agentGraphPanState: null,
+      agentGraphActivePointers: {},
+      agentGraphPinchState: null,
       mdTitle: "File Preview",
       mdPath: "",
       mdHtml: "",
@@ -9387,6 +9389,8 @@ const app = window.Vue.createApp({
       this.agentGraphModalOpen = false;
       this.agentGraphDragState = null;
       this.agentGraphPanState = null;
+      this.agentGraphActivePointers = {};
+      this.agentGraphPinchState = null;
       this.updateBodyClasses();
     },
 
@@ -9505,6 +9509,99 @@ const app = window.Vue.createApp({
       };
     },
 
+    agentGraphPointerId(event) {
+      const pointerId = Number(event?.pointerId);
+      return Number.isFinite(pointerId) ? pointerId : null;
+    },
+
+    agentGraphAcceptsPrimaryPointer(event) {
+      const pointerType = String(event?.pointerType || "mouse").trim().toLowerCase();
+      if (pointerType === "mouse") {
+        return Number(event?.button) === 0;
+      }
+      return true;
+    },
+
+    agentGraphPointerEntries() {
+      const pointers = this.agentGraphActivePointers && typeof this.agentGraphActivePointers === "object"
+        ? this.agentGraphActivePointers
+        : {};
+      return Object.entries(pointers)
+        .map(([pointerIdRaw, point]) => {
+          const pointerId = Number(pointerIdRaw);
+          const x = Number(point?.x);
+          const y = Number(point?.y);
+          if (!Number.isFinite(pointerId) || !Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+          }
+          return {
+            pointerId,
+            point: { x, y },
+          };
+        })
+        .filter(Boolean);
+    },
+
+    trackAgentGraphPointer(event) {
+      const pointerId = this.agentGraphPointerId(event);
+      const point = this.agentGraphClientToCanvas(event);
+      if (pointerId === null || !point) {
+        return null;
+      }
+      this.agentGraphActivePointers = {
+        ...(this.agentGraphActivePointers || {}),
+        [pointerId]: point,
+      };
+      return { pointerId, point };
+    },
+
+    untrackAgentGraphPointer(pointerId) {
+      if (pointerId === null) {
+        return;
+      }
+      const pointers = this.agentGraphActivePointers && typeof this.agentGraphActivePointers === "object"
+        ? this.agentGraphActivePointers
+        : {};
+      if (!Object.prototype.hasOwnProperty.call(pointers, pointerId)) {
+        return;
+      }
+      const next = { ...pointers };
+      delete next[pointerId];
+      this.agentGraphActivePointers = next;
+    },
+
+    startAgentGraphPinchFromTrackedPointers() {
+      const pointers = this.agentGraphPointerEntries();
+      if (pointers.length < 2) {
+        this.agentGraphPinchState = null;
+        return false;
+      }
+      const first = pointers[0];
+      const second = pointers[1];
+      const startDistanceRaw = Math.hypot(
+        Number(second.point.x || 0) - Number(first.point.x || 0),
+        Number(second.point.y || 0) - Number(first.point.y || 0)
+      );
+      const startDistance = Number.isFinite(startDistanceRaw) && startDistanceRaw > 0 ? startDistanceRaw : 1;
+      const startZoomRaw = Number(this.agentGraphZoom || 1);
+      const startZoom = Number.isFinite(startZoomRaw) && startZoomRaw > 0 ? startZoomRaw : 1;
+      this.agentGraphPinchState = {
+        pointerIdA: first.pointerId,
+        pointerIdB: second.pointerId,
+        startDistance,
+        startCenter: {
+          x: (Number(first.point.x || 0) + Number(second.point.x || 0)) / 2,
+          y: (Number(first.point.y || 0) + Number(second.point.y || 0)) / 2,
+        },
+        startZoom,
+        startPanX: Number(this.agentGraphPan?.x || 0),
+        startPanY: Number(this.agentGraphPan?.y || 0),
+      };
+      this.agentGraphPanState = null;
+      this.agentGraphDragState = null;
+      return true;
+    },
+
     onAgentGraphCanvasWheel(event) {
       if (!this.agentGraphModalOpen) {
         return;
@@ -9518,26 +9615,50 @@ const app = window.Vue.createApp({
       if (!this.agentGraphModalOpen) {
         return;
       }
-      if (Number(event?.button) !== 0) {
+      if (!this.agentGraphAcceptsPrimaryPointer(event)) {
         return;
       }
-      const point = this.agentGraphClientToCanvas(event);
+      const tracked = this.trackAgentGraphPointer(event);
+      const pointerId = tracked ? tracked.pointerId : this.agentGraphPointerId(event);
+      if (
+        pointerId !== null &&
+        event?.currentTarget &&
+        typeof event.currentTarget.setPointerCapture === "function"
+      ) {
+        try {
+          event.currentTarget.setPointerCapture(pointerId);
+        } catch (_err) {}
+      }
+      const pointerCount = this.agentGraphPointerEntries().length;
+      if (pointerCount >= 2) {
+        this.startAgentGraphPinchFromTrackedPointers();
+        if (event?.cancelable) {
+          event.preventDefault();
+        }
+        return;
+      }
+      const point = tracked ? tracked.point : this.agentGraphClientToCanvas(event);
       if (!point) {
         return;
       }
+      this.agentGraphPinchState = null;
       this.agentGraphPanState = {
+        pointerId,
         startX: point.x,
         startY: point.y,
         panX: Number(this.agentGraphPan?.x || 0),
         panY: Number(this.agentGraphPan?.y || 0),
       };
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
     },
 
     startAgentGraphNodeDrag(event, nodeId) {
       if (!this.agentGraphModalOpen) {
         return;
       }
-      if (Number(event?.button) !== 0) {
+      if (!this.agentGraphAcceptsPrimaryPointer(event)) {
         return;
       }
       const id = String(nodeId || "").trim();
@@ -9549,18 +9670,96 @@ const app = window.Vue.createApp({
       if (!node || !worldPoint) {
         return;
       }
+      const tracked = this.trackAgentGraphPointer(event);
+      const pointerId = tracked ? tracked.pointerId : this.agentGraphPointerId(event);
+      if (
+        pointerId !== null &&
+        event?.currentTarget &&
+        typeof event.currentTarget.setPointerCapture === "function"
+      ) {
+        try {
+          event.currentTarget.setPointerCapture(pointerId);
+        } catch (_err) {}
+      }
+      if (this.agentGraphPointerEntries().length >= 2) {
+        this.startAgentGraphPinchFromTrackedPointers();
+        if (event?.cancelable) {
+          event.preventDefault();
+        }
+        return;
+      }
+      this.agentGraphPinchState = null;
       this.agentGraphDragState = {
         nodeId: id,
+        pointerId,
         offsetX: worldPoint.x - Number(node.x || 0),
         offsetY: worldPoint.y - Number(node.y || 0),
       };
       this.agentGraphPanState = null;
       this.agentGraphSelectedNodeId = id;
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
     },
 
     onAgentGraphCanvasMouseMove(event) {
+      const pointerId = this.agentGraphPointerId(event);
+      if (pointerId !== null) {
+        this.trackAgentGraphPointer(event);
+      }
+      const pinch = this.agentGraphPinchState;
+      if (pinch) {
+        const pointers = this.agentGraphActivePointers && typeof this.agentGraphActivePointers === "object"
+          ? this.agentGraphActivePointers
+          : {};
+        const pointA = pointers[pinch.pointerIdA];
+        const pointB = pointers[pinch.pointerIdB];
+        if (pointA && pointB) {
+          const currentDistanceRaw = Math.hypot(
+            Number(pointB.x || 0) - Number(pointA.x || 0),
+            Number(pointB.y || 0) - Number(pointA.y || 0)
+          );
+          const currentDistance = Number.isFinite(currentDistanceRaw) && currentDistanceRaw > 0
+            ? currentDistanceRaw
+            : Number(pinch.startDistance || 1);
+          const scale = currentDistance / Math.max(1, Number(pinch.startDistance || 1));
+          const safeStartZoom = Number.isFinite(Number(pinch.startZoom)) && Number(pinch.startZoom) > 0
+            ? Number(pinch.startZoom)
+            : 1;
+          const nextZoom = Math.max(
+            AGENT_GRAPH_MIN_ZOOM,
+            Math.min(AGENT_GRAPH_MAX_ZOOM, safeStartZoom * scale)
+          );
+          const center = {
+            x: (Number(pointA.x || 0) + Number(pointB.x || 0)) / 2,
+            y: (Number(pointA.y || 0) + Number(pointB.y || 0)) / 2,
+          };
+          const worldX = (Number(pinch.startCenter?.x || 0) - Number(pinch.startPanX || 0)) / safeStartZoom;
+          const worldY = (Number(pinch.startCenter?.y || 0) - Number(pinch.startPanY || 0)) / safeStartZoom;
+          this.agentGraphZoom = nextZoom;
+          this.agentGraphPan = {
+            x: center.x - worldX * nextZoom,
+            y: center.y - worldY * nextZoom,
+          };
+          if (event?.cancelable) {
+            event.preventDefault();
+          }
+          return;
+        }
+        this.agentGraphPinchState = null;
+      }
+      if (this.agentGraphPointerEntries().length >= 2) {
+        this.startAgentGraphPinchFromTrackedPointers();
+        if (event?.cancelable) {
+          event.preventDefault();
+        }
+        return;
+      }
       const drag = this.agentGraphDragState;
       if (drag && drag.nodeId) {
+        if (drag.pointerId !== null && pointerId !== null && drag.pointerId !== pointerId) {
+          return;
+        }
         const worldPoint = this.agentGraphClientToWorld(event);
         if (!worldPoint) {
           return;
@@ -9571,13 +9770,21 @@ const app = window.Vue.createApp({
           ...(this.agentGraphPositions || {}),
           [drag.nodeId]: { x: nextX, y: nextY },
         };
+        if (event?.cancelable) {
+          event.preventDefault();
+        }
         return;
       }
       const pan = this.agentGraphPanState;
       if (!pan) {
         return;
       }
-      const point = this.agentGraphClientToCanvas(event);
+      if (pan.pointerId !== null && pointerId !== null && pan.pointerId !== pointerId) {
+        return;
+      }
+      const point = pointerId !== null
+        ? (this.agentGraphActivePointers && this.agentGraphActivePointers[pointerId]) || this.agentGraphClientToCanvas(event)
+        : this.agentGraphClientToCanvas(event);
       if (!point) {
         return;
       }
@@ -9585,11 +9792,57 @@ const app = window.Vue.createApp({
         x: Number(pan.panX || 0) + (point.x - Number(pan.startX || 0)),
         y: Number(pan.panY || 0) + (point.y - Number(pan.startY || 0)),
       };
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
     },
 
-    onAgentGraphCanvasMouseUp() {
-      this.agentGraphDragState = null;
-      this.agentGraphPanState = null;
+    onAgentGraphCanvasMouseUp(event = null) {
+      const pointerId = this.agentGraphPointerId(event);
+      if (
+        pointerId !== null &&
+        event?.currentTarget &&
+        typeof event.currentTarget.releasePointerCapture === "function"
+      ) {
+        try {
+          event.currentTarget.releasePointerCapture(pointerId);
+        } catch (_err) {}
+      }
+      this.untrackAgentGraphPointer(pointerId);
+      const drag = this.agentGraphDragState;
+      if (drag && (pointerId === null || Number(drag.pointerId) === pointerId)) {
+        this.agentGraphDragState = null;
+      }
+      const pan = this.agentGraphPanState;
+      if (pan && (pointerId === null || Number(pan.pointerId) === pointerId)) {
+        this.agentGraphPanState = null;
+      }
+      const pinch = this.agentGraphPinchState;
+      if (
+        pinch &&
+        (
+          pointerId === null ||
+          Number(pinch.pointerIdA) === pointerId ||
+          Number(pinch.pointerIdB) === pointerId
+        )
+      ) {
+        this.agentGraphPinchState = null;
+      }
+      const remaining = this.agentGraphPointerEntries();
+      if (remaining.length >= 2) {
+        this.startAgentGraphPinchFromTrackedPointers();
+        return;
+      }
+      if (remaining.length === 1 && !this.agentGraphDragState) {
+        const lone = remaining[0];
+        this.agentGraphPanState = {
+          pointerId: lone.pointerId,
+          startX: Number(lone.point.x || 0),
+          startY: Number(lone.point.y || 0),
+          panX: Number(this.agentGraphPan?.x || 0),
+          panY: Number(this.agentGraphPan?.y || 0),
+        };
+      }
     },
 
     seedAgentGraphLayout() {

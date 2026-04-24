@@ -10,6 +10,12 @@
       "fallback_to_ollama": true
     }
   },
+  "premium_models": [
+    "qwen3:14b",
+    "deepseek-r1:14b",
+    "qwen2.5-coder:14b",
+    "qwen2.5:32b"
+  ],
   "reynard_layer": {
     "purpose": "User-facing messenger layer above the internal orchestrator",
     "provider": "ollama",
@@ -80,6 +86,11 @@
     "retry_backoff_sec": 2.5,
     "validation_cycles": 3,
     "gap_fill_enabled": false,
+    "draft_critique_revise": {
+      "enabled": true,
+      "critic_lane": "synthesis",
+      "max_revise_loops": 2
+    },
     "fallback_models": [
       "deepseek-r1:8b",
       "qwen2.5-coder:7b",
@@ -138,8 +149,90 @@
     "synthesis_fallback_models": [
       "deepseek-r1:8b",
       "qwen2.5-coder:7b"
-    ]
+    ],
+    "tier_default": {
+      "model": "qwen3:8b",
+      "num_ctx": 12288,
+      "temperature": 0.2,
+      "timeout_sec": 480,
+      "retry_attempts": 4,
+      "retry_backoff_sec": 2.0,
+      "fallback_models": [
+        "deepseek-r1:8b",
+        "qwen2.5-coder:7b"
+      ],
+      "synthesis_retry_attempts": 4,
+      "synthesis_retry_backoff_sec": 2.0,
+      "synthesis_validation_cycles": 2,
+      "synthesis_fallback_models": [
+        "deepseek-r1:8b",
+        "qwen2.5-coder:7b"
+      ]
+    },
+    "tier_premium": {
+      "model": "qwen3:14b",
+      "num_ctx": 16384,
+      "temperature": 0.2,
+      "num_gpu": 20,
+      "keep_alive": "0",
+      "timeout_sec": 900,
+      "retry_attempts": 2,
+      "retry_backoff_sec": 2.0,
+      "fallback_models": [
+        "qwen2.5:32b",
+        "deepseek-r1:8b"
+      ],
+      "synthesis_retry_attempts": 2,
+      "synthesis_retry_backoff_sec": 2.0,
+      "synthesis_validation_cycles": 2,
+      "synthesis_fallback_models": [
+        "qwen2.5:32b",
+        "deepseek-r1:8b"
+      ]
+    },
+    "escalation_policy": {
+      "enabled": true,
+      "importance_min": "high",
+      "severity_min": 3,
+      "max_premium_passes": 1,
+      "max_revise_loops": 2,
+      "require_prior_default_pass": true,
+      "cooloff_sec": 60
+    }
   },
+  "make_longform": {
+    "purpose": "Long-form essays, video scripts, guides, tutorials, newsletters, press releases",
+    "provider": "ollama",
+    "model": "qwen2.5:32b",
+    "temperature": 0.6,
+    "num_ctx": 24576,
+    "timeout_sec": 600,
+    "retry_attempts": 4,
+    "retry_backoff_sec": 2.0,
+    "num_gpu": 28,
+    "fallback_models": [
+      "qwen3:8b",
+      "deepseek-r1:8b",
+      "dolphin3:8b"
+    ],
+    "tier_premium": {
+      "model": "deepseek-r1:14b",
+      "num_ctx": 12288,
+      "num_gpu": 20,
+      "keep_alive": "0",
+      "timeout_sec": 900,
+      "retry_attempts": 2,
+      "retry_backoff_sec": 2.0
+    },
+    "escalation_policy": {
+      "enabled": true,
+      "importance_min": "high",
+      "severity_min": 3,
+      "max_premium_passes": 1,
+      "max_revise_loops": 1
+    }
+  },
+  
   "ui_pool": {
     "purpose": "Flask + vanilla JS implementation planning and code generation",
     "provider": "ollama",
@@ -206,22 +299,6 @@
     "fallback_models": [
       "deepseek-r1:8b",
       "qwen2.5-coder:7b"
-    ]
-  },
-  "make_longform": {
-    "purpose": "Long-form essays, video scripts, guides, tutorials, newsletters, press releases",
-    "provider": "ollama",
-    "model": "qwen2.5:32b",
-    "temperature": 0.6,
-    "num_ctx": 24576,
-    "timeout_sec": 600,
-    "retry_attempts": 4,
-    "retry_backoff_sec": 2.0,
-    "num_gpu": 28,
-    "fallback_models": [
-      "qwen3:8b",
-      "deepseek-r1:8b",
-      "dolphin3:8b"
     ]
   },
   "make_tool": {
